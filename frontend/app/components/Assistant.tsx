@@ -17,6 +17,12 @@ import {
 import { Markdown } from "./Markdown";
 import { TimeAgo } from "./TimeAgo";
 import { streamAssistantTurn } from "@/app/lib/assistant";
+import {
+  ALERT_DRAFT_EVENT,
+  ASSISTANT_OPEN_EVENT,
+  readPageContext,
+  type AlertDraftArgs,
+} from "@/app/lib/pageContext";
 import { ActivityLog, closeActivity, type Activity } from "./ActivityLog";
 
 /* The in-app assistant — a launcher in the bottom-right corner opening a chat panel, mounted
@@ -251,6 +257,23 @@ export function Assistant() {
     })();
   }, [open, loadChats, openChat]);
 
+  // A page can open the chat with a prompt already typed ("✦ Ask the assistant" on the alert
+  // editor) — the user still presses send, so the canvas is never redrawn by a click. It starts
+  // a fresh conversation: the boot below would otherwise reopen yesterday's chat underneath the
+  // prompt a moment later, and the question would land in the wrong transcript.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const prompt = String((e as CustomEvent<{ prompt?: string }>).detail?.prompt ?? "");
+      booted.current = true;
+      void loadChats();
+      newChat();
+      setOpen(true);
+      if (prompt) setDraft(prompt);
+    };
+    window.addEventListener(ASSISTANT_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(ASSISTANT_OPEN_EVENT, onOpen);
+  }, []);
+
   // ⌘J / Ctrl-J opens the assistant, Esc closes it — the same idiom as the ⌘K palette.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -314,6 +337,9 @@ export function Assistant() {
     // Whether the answer bubble exists yet: the first delta appends it, every later one grows it.
     // A ref, not state, because the frames arrive faster than a re-render.
     let started = false;
+    // `draft_alert`'s arguments ARE the draft. Held until its `tool_done` says the backend
+    // accepted them, then handed to whichever page is listening (the alert editor's canvas).
+    let alertDraft: AlertDraftArgs | null = null;
     const fail = (content: string) =>
       setMessages((m) => [...m, { role: "assistant", content, error: true }]);
     try {
@@ -323,12 +349,18 @@ export function Assistant() {
           chat_id: chatId,
           attachments,
           path: pathname ?? "",
+          context: readPageContext(),
         },
         (e) => {
-          if (e.type === "tool")
+          if (e.type === "tool") {
+            if (e.name === "draft_alert") alertDraft = e.args as AlertDraftArgs;
             return setActivity((a) => [...a, { name: e.name, at: Date.now(), state: "run" }]);
-          if (e.type === "tool_done")
+          }
+          if (e.type === "tool_done") {
+            if (e.name === "draft_alert" && e.ok && alertDraft)
+              window.dispatchEvent(new CustomEvent(ALERT_DRAFT_EVENT, { detail: alertDraft }));
             return setActivity((a) => closeActivity(a, e.name, e.ok));
+          }
           if (e.type === "delta") {
             setActivity([]);
             const first = !started;

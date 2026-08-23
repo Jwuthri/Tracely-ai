@@ -36,6 +36,48 @@ export function durationMs(span: SpanOut): number | null {
   return null;
 }
 
+/** How much of `span` is time it spent itself, rather than waiting on its children.
+ *
+ *  A span that WRAPS another measures the child's work as well as its own. The case that forced
+ *  this: `tracely.thinking()` used around an LLM call produces a THINKING span and a GENERATION
+ *  span with the same start and the same duration, and the timeline offers no way to tell which
+ *  cost what — because there is only one 3.4s event with two labels on it. Self time says the
+ *  honest thing: the wrapper cost ~0, the call cost everything.
+ *
+ *  Children are unioned, not summed: concurrent calls under one parent overlap, and summing them
+ *  reports more covered time than the parent ever ran for (negative self time).
+ *
+ *  Returns null when nothing is nested — the caller then has nothing extra to show.
+ */
+export function selfMs(span: SpanOut, all: SpanOut[]): number | null {
+  const total = durationMs(span);
+  if (total == null) return null;
+  const parentStart = new Date(span.start_time).getTime();
+  const spans: [number, number][] = [];
+  for (const c of all) {
+    if (c.parent_span_id !== span.span_id || !c.end_time) continue;
+    const a = new Date(c.start_time).getTime();
+    const b = new Date(c.end_time).getTime();
+    if (Number.isNaN(a) || Number.isNaN(b) || b <= a) continue;
+    spans.push([a, b]);
+  }
+  if (!spans.length) return null;
+  spans.sort((x, y) => x[0] - y[0]);
+  let covered = 0;
+  let [cs, ce] = spans[0];
+  for (const [a, b] of spans.slice(1)) {
+    if (a > ce) {
+      covered += ce - cs;
+      [cs, ce] = [a, b];
+    } else if (b > ce) ce = b;
+  }
+  covered += ce - cs;
+  // Clip to the parent's own window: a child whose clock skewed past its parent (different
+  // process, different machine) must not push self time negative.
+  covered = Math.min(covered, total, Math.max(0, new Date(span.end_time ?? 0).getTime() - parentStart) || total);
+  return Math.max(0, total - covered);
+}
+
 // ── readable-text extraction (title / message) ───────────────────────────────────
 // Pull the first human-readable text out of a value that may be a string, a content-block
 // array ([{type:"text",text}, {type:"image_url"}…]), a chat-message array, or a {content} object.

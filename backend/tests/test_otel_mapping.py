@@ -672,3 +672,44 @@ def test_an_array_shaped_tool_input_is_not_overwritten():
     tool["input"] = '["already", "recorded"]'
     _enrich_tool_io(events)
     assert json.loads(tool["input"]) == ["already", "recorded"]
+
+
+def test_tool_calls_indexed_from_a_bare_output_dict() -> None:
+    """`tracely.output` bypasses `_io_messages` entirely — a single (unlisted) message dict must
+    still index its tool calls, or `missing_tools` can never fire."""
+    e = _event(
+        {
+            "gen_ai.request.model": "gpt-4o",
+            "tracely.output": json.dumps(
+                {
+                    "content": "on it",
+                    "tool_calls": [
+                        {"id": "c1", "type": "function",
+                         "function": {"name": "search", "arguments": '{"q": "x"}'}}
+                    ],
+                }
+            ),
+        }
+    )
+    assert e["tool_call_names"] == ["search"]
+
+
+def test_tool_calls_indexed_from_anthropic_tool_use_blocks() -> None:
+    e = _event(
+        {
+            "gen_ai.request.model": "claude-sonnet-4",
+            "gen_ai.output.messages": json.dumps(
+                [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "checking"},
+                            {"type": "tool_use", "id": "tu_1", "name": "get_weather",
+                             "input": {"city": "SF"}},
+                        ],
+                    }
+                ]
+            ),
+        }
+    )
+    assert e["tool_call_names"] == ["get_weather"]

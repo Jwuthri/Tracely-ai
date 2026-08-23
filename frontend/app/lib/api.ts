@@ -87,6 +87,9 @@ export type SpanOut = {
   start_time: string;
   end_time: string | null;
   latency_ms: number | null;
+  // Time to the first CONTENT token on a streamed call. For a reasoning model this is the
+  // thinking/answering boundary; null when the call wasn't streamed.
+  ttft_ms?: number | null;
   agent_id: string;
   agent_run_id: string;
   turn_id: string;

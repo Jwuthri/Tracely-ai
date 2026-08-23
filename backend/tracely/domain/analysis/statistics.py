@@ -162,3 +162,46 @@ def build_matrix(rows: list[dict]) -> Matrix:
         metric: {conv: sum(vs) / len(vs) for conv, vs in conv_vals.items()}
         for metric, conv_vals in buckets.items()
     }
+
+
+def metric_stats(matrix: Matrix) -> list[dict]:
+    """Per-metric snapshot `{metric, n, mean, std, min, max}`, sorted by name — stored on every
+    analysis so the next run can report how each metric MOVED (`mean_shifts`)."""
+    out: list[dict] = []
+    for metric in sorted(matrix):
+        arr = np.asarray(list(matrix[metric].values()), dtype=float)
+        out.append(
+            {
+                "metric": metric,
+                "n": int(len(arr)),
+                "mean": round(float(arr.mean()), 4),
+                "std": round(float(arr.std()), 4),
+                "min": round(float(arr.min()), 4),
+                "max": round(float(arr.max()), 4),
+            }
+        )
+    return out
+
+
+def mean_shifts(current: list[dict], previous: list[dict] | None) -> list[dict]:
+    """How each metric's mean moved since the previous analysis: `{metric, prev_mean, mean,
+    delta, n, prev_n}` for metrics present in BOTH snapshots, sorted by |delta| descending.
+    A metric that appeared or disappeared is not a shift — it simply isn't listed."""
+    prev = {s["metric"]: s for s in previous or []}
+    shifts: list[dict] = []
+    for cur in current:
+        p = prev.get(cur["metric"])
+        if p is None:
+            continue
+        shifts.append(
+            {
+                "metric": cur["metric"],
+                "prev_mean": p["mean"],
+                "mean": cur["mean"],
+                "delta": round(cur["mean"] - p["mean"], 4),
+                "n": cur["n"],
+                "prev_n": p["n"],
+            }
+        )
+    shifts.sort(key=lambda x: abs(x["delta"]), reverse=True)
+    return shifts

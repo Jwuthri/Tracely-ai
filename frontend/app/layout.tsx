@@ -3,6 +3,7 @@ import { Bricolage_Grotesque, Hanken_Grotesk, JetBrains_Mono } from "next/font/g
 
 import "./globals.css";
 import { AuthRootProvider } from "./_providers/AuthRootProvider";
+import { PostHogProvider } from "./_providers/PostHogProvider";
 import { SITE_DESCRIPTION, SITE_TITLE, SITE_URL } from "./lib/site";
 
 // Site-wide defaults. `metadataBase` is what turns the relative OG/canonical paths every other
@@ -74,7 +75,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="min-h-screen bg-ink font-sans text-fg antialiased">
         {/* The dashboard shell (sidebar/topbar) lives in the (app) route group; (auth) pages render bare. */}
-        <AuthRootProvider>{children}</AuthRootProvider>
+        <PostHogProvider>
+          <AuthRootProvider>{children}</AuthRootProvider>
+        </PostHogProvider>
       </body>
     </html>
   );

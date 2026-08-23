@@ -193,7 +193,7 @@ def _map_span(
         ),
         "model_parameters": _model_parameters(a),
         "usage_details": _usage(a),
-        "tool_call_names": _tool_call_names(a, otype),
+        "tool_call_names": _tool_call_names(a, otype, span_output),
         "input": span_input,
         "output": span_output,
         "metadata": {

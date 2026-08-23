@@ -33,7 +33,7 @@ from typing import Literal
 import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_principal
@@ -49,6 +49,7 @@ router = APIRouter(prefix="/api")
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS = 5
+MAX_CONTEXT_CHARS = 20_000
 _ID_RE = re.compile(r"^[0-9a-f]{32}$")  # what we mint — and the only thing we'll look up
 
 
@@ -64,6 +65,16 @@ class ChatBody(BaseModel):
     chat_id: str | None = Field(default=None, max_length=36)
     attachments: list[Attachment] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
     path: str = Field(default="", max_length=200)  # the page the user is looking at
+    # What that page chose to share about itself (the alert editor's unsaved rule). Capped so a
+    # page can't paste a workspace into every turn.
+    context: dict | None = None
+
+    @field_validator("context")
+    @classmethod
+    def _small(cls, v: dict | None) -> dict | None:
+        if v is not None and len(json.dumps(v, default=str)) > MAX_CONTEXT_CHARS:
+            raise ValueError(f"context exceeds {MAX_CONTEXT_CHARS} chars")
+        return v
 
 
 class MessageOut(BaseModel):
@@ -108,6 +119,7 @@ async def chat(
         message=body.message,
         attachments=[a.model_dump() for a in body.attachments],
         path=body.path,
+        context=body.context,
         headers=auth_headers_from(request.headers),
     )
 

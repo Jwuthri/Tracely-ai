@@ -333,46 +333,6 @@ async def subjects(trigger: str, project_id: str = Depends(get_project_id)) -> l
     return await run_in_threadpool(work)
 
 
-class GenerateRequest(BaseModel):
-    prompt: str = Field(min_length=3, max_length=2000)
-    trigger: str = Field(default="", max_length=40)
-    """The rule as the canvas has it right now — inlined so a follow-up is an EDIT, not a rebuild."""
-    current: dict[str, Any] | None = None
-
-
-@router.post("/monitors/generate", dependencies=[Depends(require_user)])
-async def generate_rule(body: GenerateRequest, project_id: str = Depends(get_project_id)) -> dict:
-    """Draft a whole rule — trigger, filters and a wired flow — from one sentence.
-
-    Runs on the workspace's own OpenRouter key (like evaluator generation), so a workspace with no
-    key gets a 400 saying exactly that rather than a silent empty draft.
-    """
-
-    def work():
-        from tracely.services.alert_assistant_service import generate_rule as draft_rule
-
-        with SyncSessionLocal() as s:
-            agents = [a.slug for a in repo.agents_list(s, project_id)]
-            score_names = [
-                e.score_name for e in repo.evaluators_list(s, project_id) if getattr(e, "score_name", "")
-            ]
-        return draft_rule(
-            project_id,
-            body.prompt,
-            trigger_hint=body.trigger,
-            current=body.current,
-            agents=agents,
-            score_names=score_names,
-        )
-
-    try:
-        return await run_in_threadpool(work)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except Exception as exc:  # a model that answers badly must not read as a server fault
-        raise HTTPException(status_code=502, detail=f"the model could not draft that: {exc}") from None
-
-
 @router.get("/monitors/{monitor_id}")
 async def get_monitor(monitor_id: str, project_id: str = Depends(get_project_id)) -> dict:
     def work():

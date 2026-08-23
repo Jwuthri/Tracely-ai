@@ -111,12 +111,36 @@ tracely.flush()   # force-flush the exporter (call before the process exits)
 | `llm(model, *, agent, temperature, top_p, max_tokens, frequency_penalty, presence_penalty, seed, tool_calls, metadata)` | `GENERATION` | `gen_ai.request.model` + the sampling params as `gen_ai.request.*`; `tool_calls`→`tracely.tool_calls` (tools the model **requested**); `metadata`→`tracely.metadata.*`. |
 | `tool(name, *, agent)` | `TOOL` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`. |
 | `skill(name, *, agent, version)` | `SKILL` | a named capability/playbook the agent ran — `tracely.step.name`; `version`→`tracely.metadata.skill_version`. |
-| `thinking(name="thinking", *, agent, model)` | `THINKING` | reasoning emitted as its own span; optional `model`. |
+| `thinking(name="thinking", *, agent, model)` | `THINKING` | reasoning emitted as its own span; optional `model`. **Do not wrap the LLM call in it** — see below. |
 | `retriever(name="retrieve", *, agent)` | `RETRIEVER` | a retrieval step — query in `set_io(input=)`, hits in `set_io(output=)`. |
 | `embedding(model, *, agent)` | `EMBEDDING` | `gen_ai.request.model`; record tokens with `set_usage(input_tokens=)`. |
 | `guardrail(name="guardrail", *, agent)` | `GUARDRAIL` | a safety/policy check — verdict in `set_io(output={"action": "allow"\|"block"})`. |
 | `chain(name, *, agent)` | `CHAIN` | a grouping span (e.g. a RAG pipeline) — nest other spans inside it. |
 | `turn(turn_id, *, index)` / `step(name, *, step_id)` | marker / generic | `tracely.turn.*` / `tracely.step.*`. |
+
+#### `thinking()` is a separate step, not a wrapper
+
+`thinking()` is for reasoning your agent does on its own — a planning step, a rule check, a scratchpad
+pass. Putting the model call *inside* it produces a THINKING span and a GENERATION span with the same
+start and the same duration, because there is only one event: the timeline then shows `3.42s` twice
+with no way to tell which spent it.
+
+If the reasoning you want to record is the model's own (an extended-thinking / reasoning model), you
+do not need `thinking()` at all — **stream the call**. The drop-in wrappers
+(`tracely_sdk.openai`, `.anthropic`, `.google`, `.mistral`) keep the span open for the whole stream
+and stamp `tracely.completion_start_time` at the first *content* token, which for a reasoning model
+is precisely where thinking stops and answering starts. The trace shows the split (`0.91s + 0.40s`)
+on the one GENERATION span, and the reasoning text is captured under `output.reasoning`.
+
+```python
+from tracely_sdk.openai import OpenAI
+client = OpenAI()
+for chunk in client.chat.completions.create(model=..., messages=[...], stream=True):
+    ...   # consume normally — the span closes when the stream ends
+```
+
+Non-streamed calls cannot be split: reasoning and output tokens arrive in one response, so no
+wall-clock boundary between them exists to record.
 
 ### Annotating spans
 - `set_io(span, *, input=None, output=None)` → `tracely.input` / `tracely.output` (objects are JSON-encoded; message content is a `{role, content:[blocks]}` object or a content-block list).

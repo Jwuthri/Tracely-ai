@@ -20,7 +20,10 @@ from tracely.infrastructure.clickhouse.client import get_client
 # invocation array) backs the advanced-judge `@CURRENT_STEP.tool_call` template variable.
 _SPAN_COLS = [
     "span_id", "parent_span_id", "type", "name", "level", "status_message",
-    "start_time", "end_time", "agent_id", "agent_version_id", "agent_run_id",
+    # `completion_start_time` is the first-CONTENT-token mark the SDK stamps on a streamed call.
+    # It splits a GENERATION span into thinking-vs-answering, which wall time alone cannot.
+    "start_time", "end_time", "completion_start_time",
+    "agent_id", "agent_version_id", "agent_run_id",
     "turn_id", "step_id", "model_id", "input", "output", "tool_call_names", "tool_calls",
     "trace_id", "is_app_root", "conversation_id", "env",
     # handoff edge (DELEGATE spans): raw slugs as the SDK recorded them — the replay resolves

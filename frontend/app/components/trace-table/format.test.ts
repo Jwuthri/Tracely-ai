@@ -8,6 +8,7 @@ import {
   firstText,
   fmtDateTime,
   fmtMs,
+  selfMs,
   fmtScoreValue,
   fmtTokens,
   imageSrc,
@@ -280,5 +281,61 @@ describe("imageSrc", () => {
     expect(imageSrc({ type: "image", image: { url: "https://x/c.jpg" } })).toBe("https://x/c.jpg");
     expect(imageSrc({ type: "image" })).toBeNull();
     expect(imageSrc({ type: "image", image_url: { url: "javascript:alert(1)" } })).toBeNull();
+  });
+});
+
+// ── self time ──────────────────────────────────────────────────────────────────
+// The reason this exists: `tracely.thinking()` wrapped around an LLM call yields a THINKING span
+// and a GENERATION span with identical start and duration. Wall time can't say which one spent
+// the time; self time can.
+describe("selfMs", () => {
+  const at = (id: string, parent: string, startMs: number, endMs: number): SpanOut =>
+    ({ ...span(), span_id: id, parent_span_id: parent,
+       start_time: new Date(startMs).toISOString(), end_time: new Date(endMs).toISOString(),
+       latency_ms: endMs - startMs });
+
+  it("returns null when the span has no children", () => {
+    const s = at("a", "", 0, 3420);
+    expect(selfMs(s, [s])).toBeNull();
+  });
+
+  it("reports ~0 for a wrapper whose child covers the whole window", () => {
+    const parent = at("think", "", 0, 3420);
+    const child = at("gen", "think", 0, 3420);
+    expect(selfMs(parent, [parent, child])).toBe(0);
+  });
+
+  it("subtracts only the nested time", () => {
+    const parent = at("a", "", 0, 1000);
+    const child = at("b", "a", 200, 600);
+    expect(selfMs(parent, [parent, child])).toBe(600);
+  });
+
+  it("unions overlapping children instead of summing them", () => {
+    // Two concurrent 400ms calls that overlap: 300–700 and 500–900 cover 600ms, not 800ms.
+    const parent = at("a", "", 0, 1000);
+    const c1 = at("b", "a", 300, 700);
+    const c2 = at("c", "a", 500, 900);
+    expect(selfMs(parent, [parent, c1, c2])).toBe(400);
+  });
+
+  it("counts a gap between children as the parent's own time", () => {
+    const parent = at("a", "", 0, 1000);
+    const c1 = at("b", "a", 100, 300);
+    const c2 = at("c", "a", 700, 900);
+    expect(selfMs(parent, [parent, c1, c2])).toBe(600);
+  });
+
+  it("never goes negative when a child's clock overruns its parent", () => {
+    const parent = at("a", "", 0, 500);
+    const child = at("b", "a", 0, 900); // skewed clock from another process
+    expect(selfMs(parent, [parent, child])).toBe(0);
+  });
+
+  it("ignores grandchildren — only direct children are nested time", () => {
+    const parent = at("a", "", 0, 1000);
+    const child = at("b", "a", 100, 400);
+    const grandchild = at("c", "b", 150, 380);
+    expect(selfMs(parent, [parent, child, grandchild])).toBe(700);
   });
 });

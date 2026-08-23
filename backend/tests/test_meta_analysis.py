@@ -101,3 +101,47 @@ def test_analyze_merges_llm_but_keeps_stats(monkeypatch):
     xy = next(c for c in result["correlations"] if {c["metric_a"], c["metric_b"]} == {"x", "y"})
     assert xy["coefficient"] == 1.0
     assert xy["interpretation"] == "they rise together"
+
+
+def test_metric_stats_and_mean_shifts():
+    m = st.build_matrix(_rows())
+    stats = st.metric_stats(m)
+    x = next(s for s in stats if s["metric"] == "x")
+    assert x["n"] == 6 and x["min"] == 0.1 and x["max"] == 5.0
+
+    prev = [dict(s) for s in stats]
+    prev_x = next(s for s in prev if s["metric"] == "x")
+    prev_x["mean"] = round(prev_x["mean"] - 0.5, 4)
+    prev.append({"metric": "gone", "n": 3, "mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0})
+    shifts = st.mean_shifts(stats, prev)
+    # only shared metrics; the biggest mover first; "gone" is not a shift
+    assert [s["metric"] for s in shifts][0] == "x"
+    assert all(s["metric"] != "gone" for s in shifts)
+    assert next(s for s in shifts if s["metric"] == "x")["delta"] == 0.5
+    assert st.mean_shifts(stats, None) == []
+
+
+def test_analyze_reports_stats_snapshot_and_shifts(monkeypatch):
+    monkeypatch.setattr(svc.provider, "llm_enabled", lambda: False)
+    first, _ = MetaAnalysisService._analyze("", "", _rows())
+    assert {s["metric"] for s in first["metric_stats"]} == {"x", "y", "z"}
+    assert first["metric_shifts"] == []  # nothing to compare against
+
+    prev = [dict(s) for s in first["metric_stats"]]
+    prev[0]["mean"] = round(prev[0]["mean"] + 0.25, 4)
+    second, _ = MetaAnalysisService._analyze("", "", _rows(), prev_stats=prev)
+    moved = next(s for s in second["metric_shifts"] if s["metric"] == prev[0]["metric"])
+    assert moved["delta"] == -0.25  # current − previous
+
+
+def test_ops_rows_flow_through_the_matrix():
+    """Operational rows use the same flat shape as score rows, so the matrix treats them as
+    metrics: per-turn values average per conversation, `ops.turns` arrives once per thread."""
+    rows = [
+        {"conversation_id": "t1", "metric_name": "ops.latency_ms", "value": 100.0},
+        {"conversation_id": "t1", "metric_name": "ops.latency_ms", "value": 300.0},
+        {"conversation_id": "t1", "metric_name": "ops.turns", "value": 2.0},
+    ]
+    m = st.build_matrix(rows)
+    assert m["ops.latency_ms"]["t1"] == 200.0
+    assert m["ops.turns"]["t1"] == 2.0

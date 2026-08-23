@@ -15,23 +15,23 @@ import json
 from typing import Any
 
 from tracely.otel.attributes import _first, _to_str
-from tracely.otel.messages import _io_messages
 from tracely.otel.types import GENERATION, TOOL
 
 
-def _tool_call_names(attrs: dict[str, Any], otype: str) -> list[str]:
+def _tool_call_names(attrs: dict[str, Any], otype: str, output: str | None = None) -> list[str]:
     """Tools the model requested. Explicit `tracely.tool_calls` (array) wins; else the function
-    names reassembled from output-message tool calls (any convention); else the tool name on a
-    TOOL span."""
+    names parsed out of the span's RESOLVED output (`_io_field`, i.e. what we actually store);
+    else the tool name on a TOOL span.
+
+    Reading the resolved output rather than re-deriving from `_io_messages` is the point: the
+    manual `tracely.output` / `langfuse.observation.output` escape hatches never go through
+    `_io_messages`, so a plain `{"content": …, "tool_calls": […]}` dict indexed nothing — and an
+    empty `tool_call_names` silently kills `missing_tools` in `domain/traces/spans.py`.
+    """
     tc = attrs.get("tracely.tool_calls")
     if isinstance(tc, list):
         return [str(x) for x in tc if x]
-    names: list[str] = []
-    for m in _io_messages(attrs, "output") or []:
-        for call in m.get("tool_calls") or []:
-            fn = (call.get("function") or {}).get("name") if isinstance(call, dict) else None
-            if fn:
-                names.append(str(fn))
+    names = [c["name"] for c in _extract_tool_calls(output or "")]
     if names:
         return names
     name = _first(attrs, ["gen_ai.tool.name", "tool.name"])
@@ -52,6 +52,14 @@ def _extract_tool_calls(output_str: str) -> list[dict[str, Any]]:
     for m in msgs:
         if not isinstance(m, dict):
             continue
+        # Anthropic-style content blocks: `{"type":"tool_use","name":…,"input":{…}}`.
+        for block in m.get("content") if isinstance(m.get("content"), list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name"):
+                out.append({
+                    "id": block.get("id"),
+                    "name": str(block["name"]),
+                    "args": block.get("input"),
+                })
         for tc in m.get("tool_calls") or []:
             if not isinstance(tc, dict):
                 continue

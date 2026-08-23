@@ -29,6 +29,12 @@ def _span_out(d: dict) -> SpanOut:
     latency = None
     if d.get("end_time") and d.get("start_time"):
         latency = (d["end_time"] - d["start_time"]).total_seconds() * 1000.0
+    ttft = None
+    if d.get("completion_start_time") and d.get("start_time"):
+        ttft = (d["completion_start_time"] - d["start_time"]).total_seconds() * 1000.0
+        # A mark outside the span's own window is a clock artefact, not a measurement.
+        if ttft < 0 or (latency is not None and ttft > latency):
+            ttft = None
     return SpanOut(
         span_id=d["span_id"],
         parent_span_id=d["parent_span_id"],
@@ -39,6 +45,7 @@ def _span_out(d: dict) -> SpanOut:
         start_time=d["start_time"],
         end_time=d["end_time"],
         latency_ms=latency,
+        ttft_ms=ttft,
         agent_id=d["agent_id"],
         agent_run_id=d["agent_run_id"],
         turn_id=d["turn_id"],

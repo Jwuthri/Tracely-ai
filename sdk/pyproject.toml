@@ -2,7 +2,7 @@
 # ponytail: dist name is `tracely-ai` because `tracely` and `tracely-sdk` are both taken
 # on PyPI by unrelated projects. The import name stays `tracely_sdk`.
 name = "tracely-ai"
-version = "0.4.1"
+version = "0.4.2"
 description = "Tracely Python SDK: automatic + manual agent tracing, exported to Tracely over OTLP."
 readme = "README.md"
 requires-python = ">=3.10"

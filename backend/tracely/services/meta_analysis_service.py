@@ -31,9 +31,11 @@ class MetaAnalysisService:
         with SyncSessionLocal() as s:
             agent = repositories.agent_in_project(s, project_id, agent_id) if agent_id else None
             agent_slug = agent.slug if agent else ""
+            prev = repositories.meta_analysis_latest_for_agent(s, project_id, agent_id)
+            prev_stats = (prev.result or {}).get("metric_stats") if prev else None
 
         with provider.use_project_key(project_id):
-            result, meta = cls._analyze(agent_id, agent_slug, rows)
+            result, meta = cls._analyze(agent_id, agent_slug, rows, prev_stats=prev_stats)
 
         with SyncSessionLocal() as s:
             row = repositories.meta_analysis_create(
@@ -42,21 +44,33 @@ class MetaAnalysisService:
             return _to_response(row)
 
     @classmethod
-    def _analyze(cls, agent_id: str, agent_slug: str, rows: list[dict]) -> tuple[dict, dict]:
+    def _analyze(
+        cls,
+        agent_id: str,
+        agent_slug: str,
+        rows: list[dict],
+        prev_stats: list[dict] | None = None,
+    ) -> tuple[dict, dict]:
         matrix = statistics.build_matrix(rows)
         metrics = sorted(matrix)
         conversations = sorted({c for conv_vals in matrix.values() for c in conv_vals})
         correlations = statistics.spearman_correlations(matrix)
         outliers = statistics.zscore_outliers(matrix)
+        stats = statistics.metric_stats(matrix)
+        shifts = statistics.mean_shifts(stats, prev_stats)
 
         llm_out: MetaAnalysisOutput | None = None
         if provider.llm_enabled() and metrics:
             try:
-                llm_out = synthesize(_build_prompt(matrix, correlations, outliers, agent_slug))
+                llm_out = synthesize(
+                    _build_prompt(matrix, correlations, outliers, agent_slug, shifts)
+                )
             except Exception as exc:  # a failed synthesis degrades to stats-only, never errors
                 log.warning("meta_analysis_synthesis_failed", error=str(exc))
 
         result = _merge(matrix, metrics, conversations, correlations, outliers, llm_out)
+        result["metric_stats"] = stats
+        result["metric_shifts"] = shifts
         meta = {
             "model": (settings_model() if llm_out else ""),
             "agent_id": agent_id,
@@ -91,6 +105,7 @@ def _build_prompt(
     correlations: list[dict],
     outliers: list[dict],
     agent_slug: str,
+    shifts: list[dict] | None = None,
 ) -> str:
     lines: list[str] = []
     who = f" for agent '{agent_slug}'" if agent_slug else " across the whole project"
@@ -119,6 +134,14 @@ def _build_prompt(
     else:
         lines.append("PRECOMPUTED OUTLIERS: none.")
     lines.append("")
+    moved = [s for s in (shifts or []) if s["delta"] != 0]
+    if moved:
+        lines.append("SINCE THE PREVIOUS ANALYSIS (mean shifts, current − previous):")
+        for s in moved[:15]:
+            lines.append(
+                f"- {s['metric']}: {s['prev_mean']} → {s['mean']} (Δ {s['delta']:+})"
+            )
+        lines.append("")
     lines.append(
         "Write the meta-analysis: patterns, correlation interpretations, outlier explanations, "
         "recommendations, a summary, and a confidence score."

@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import set_io, set_usage
-from ._wrap import wrap_method
+from ._wrap import anthropic_delta, wrap_method
 
 try:  # the real Anthropic SDK is an optional dependency of this drop-in
     import anthropic as _anthropic
@@ -76,7 +76,15 @@ def _input_with_system(kwargs: dict) -> Any:
 def wrap_anthropic(client: Any) -> Any:
     """Trace an Anthropic/AsyncAnthropic client *instance* by wrapping its `messages.create` on the
     instance only (no global patching). Returns the same client. Idempotent."""
-    wrap_method(client.messages, "create", _capture, input_extractor=_input_with_system)
+    wrap_method(
+        client.messages,
+        "create",
+        _capture,
+        input_extractor=_input_with_system,
+        # Anthropic streams its own event shape, and extended thinking arrives as
+        # `thinking_delta` before any `text_delta` — the boundary we mark.
+        stream_delta=anthropic_delta,
+    )
     return client
 
 

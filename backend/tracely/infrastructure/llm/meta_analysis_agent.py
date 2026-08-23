@@ -64,7 +64,13 @@ _SYSTEM = (
     "- recommendations: concrete, actionable steps an engineer could take next.\n"
     "- summary: 3-6 sentences of the key findings.\n"
     "- confidence: 0..1, lower when there are few conversations or few metrics.\n\n"
-    "Be precise and evidence-bound. If the data is thin, say so and keep confidence low."
+    "Be precise and evidence-bound. If the data is thin, say so and keep confidence low.\n\n"
+    "Metrics prefixed `ops.` are operational, not judged: per-turn latency in ms, per-turn "
+    "tokens, per-turn errored tool calls, and turns per conversation. Connecting them to the "
+    "quality metrics is the most valuable kind of pattern — 'the low-groundedness conversations "
+    "are the slow, tool-error-heavy ones' is a finding; restating one metric alone is not. When "
+    "mean shifts since the previous analysis are provided, say which metrics moved and whether "
+    "the movement is an improvement or a regression."
 )
 
 

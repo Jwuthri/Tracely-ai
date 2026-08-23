@@ -17,6 +17,9 @@ class SpanOut(BaseModel):
     start_time: datetime
     end_time: datetime | None = None
     latency_ms: float | None = None
+    # Time-to-first-CONTENT-token on a streamed call (the SDK stamps it). Splits the span into
+    # thinking-vs-answering for a reasoning model; None whenever the call was not streamed.
+    ttft_ms: float | None = None
     agent_id: str = ""
     agent_run_id: str = ""
     turn_id: str = ""

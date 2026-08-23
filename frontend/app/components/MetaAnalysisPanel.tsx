@@ -33,7 +33,11 @@ type Outlier = {
   severity: string;
   reason: string;
 };
+type MetricStat = { metric: string; n: number; mean: number; std: number; min: number; max: number };
+type MetricShift = { metric: string; prev_mean: number; mean: number; delta: number; n: number; prev_n: number };
 type Result = {
+  metric_stats?: MetricStat[];
+  metric_shifts?: MetricShift[];
   patterns: Pattern[];
   correlations: Correlation[];
   outliers: Outlier[];
@@ -60,6 +64,15 @@ function severityVariant(s: string) {
   if (s === "medium") return "warn" as const;
   return "info" as const;
 }
+
+// For scores, up is good; for latency / tool errors, down is. `ops.turns` is neutral.
+const LOWER_IS_BETTER = new Set(["ops.latency_ms", "ops.tool_errors"]);
+function shiftClass(m: MetricShift) {
+  if (m.delta === 0 || m.metric === "ops.turns") return "text-fg-muted";
+  const improved = LOWER_IS_BETTER.has(m.metric) ? m.delta < 0 : m.delta > 0;
+  return improved ? "text-ok" : "text-fail";
+}
+const fmtNum = (v: number) => (Math.abs(v) >= 100 ? Math.round(v).toLocaleString() : v.toFixed(2).replace(/\.?0+$/, ""));
 
 function coefClass(c: number) {
   const a = Math.abs(c);
@@ -182,6 +195,35 @@ export function MetaAnalysisPanel() {
           </div>
           {res.summary && (
             <p className="text-[13.5px] leading-relaxed text-fg-muted">{res.summary}</p>
+          )}
+
+          {(res.metric_shifts?.length ?? 0) > 0 && (
+            <Block title="Since last run">
+              <div className="overflow-hidden rounded-lg border border-line">
+                <table className="w-full text-[12.5px]">
+                  <thead className="bg-hilite/[0.03] text-fg-faint">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Metric</th>
+                      <th className="px-3 py-2 text-right font-medium">Previous mean</th>
+                      <th className="px-3 py-2 text-right font-medium">Now</th>
+                      <th className="px-3 py-2 text-right font-medium">Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {res.metric_shifts!.map((m) => (
+                      <tr key={m.metric} className="border-t border-line/60">
+                        <td className="px-3 py-2 font-mono text-[11.5px] text-fg">{m.metric}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums text-fg-faint">{fmtNum(m.prev_mean)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums text-fg">{fmtNum(m.mean)}</td>
+                        <td className={`px-3 py-2 text-right font-mono tabular-nums ${shiftClass(m)}`}>
+                          {m.delta > 0 ? "+" : ""}{fmtNum(m.delta)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Block>
           )}
 
           {res.patterns.length > 0 && (
@@ -399,6 +441,13 @@ function exportMarkdown(a: Analysis) {
     lines.push("## Patterns");
     for (const p of r.patterns) {
       lines.push(`- ${p.description}${p.evidence ? ` _(${p.evidence})_` : ""}`);
+    }
+    lines.push("");
+  }
+  if (r.metric_shifts?.length) {
+    lines.push("## Since last run", "", "| Metric | Previous mean | Now | Δ |", "| --- | --- | --- | --- |");
+    for (const m of r.metric_shifts) {
+      lines.push(`| ${m.metric} | ${m.prev_mean} | ${m.mean} | ${m.delta > 0 ? "+" : ""}${m.delta} |`);
     }
     lines.push("");
   }

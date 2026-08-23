@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
       chat_id: body?.chat_id ?? null,
       attachments: body?.attachments ?? [],
       path: body?.path ?? "",
+      context: body?.context ?? null,
     }),
     // @ts-expect-error — duplex is required by undici for streaming request/response pairs
     duplex: "half",

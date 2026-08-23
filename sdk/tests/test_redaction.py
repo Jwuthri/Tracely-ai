@@ -70,3 +70,31 @@ def test_redacting_exporter_scrubs_span_attributes() -> None:
     assert "[REDACTED]" in out["llm.prompt"]
     assert out["tracely.output"] == "ok"  # no PII → unchanged
     assert out["gen_ai.usage.input_tokens"] == 42  # ints pass through
+
+
+def test_redaction_survives_immutable_attribute_maps() -> None:
+    """Regression: a finished span carries `BoundedAttributes`, whose `__setitem__` raises. Scrubbing
+    in place therefore silently did nothing and PII reached the exporter. Redaction must replace the
+    mapping, so it holds on every OTel version — not only the ones where the map happens to be
+    writable."""
+    from opentelemetry.attributes import BoundedAttributes
+
+    tracely.init(env="prod", instrument=False)
+    capture = InMemorySpanExporter()
+    tracely._provider.add_span_processor(SimpleSpanProcessor(capture))
+
+    with tracely._t().start_as_current_span("redact-immutable") as span:
+        tracely.set_io(span, input="reach me at jane@example.com", output="ok")
+        span.add_event("tool.call", {"arg": "jane@example.com"})
+
+    readable = next(s for s in capture.get_finished_spans() if s.name == "redact-immutable")
+    # Guard the premise: if OTel ever ships a writable map, this test still passes but stops
+    # proving anything — assert we are exercising the immutable path.
+    assert isinstance(readable._attributes, BoundedAttributes)
+
+    inner = InMemorySpanExporter()
+    tracely._RedactingSpanExporter(inner, tracely._build_redactor(True)).export([readable])
+    exported = inner.get_finished_spans()[0]
+
+    assert "jane@example.com" not in exported.attributes["tracely.input"]
+    assert "jane@example.com" not in str(dict(exported.events[0].attributes))

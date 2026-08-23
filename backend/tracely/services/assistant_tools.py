@@ -120,11 +120,12 @@ def _clip_text(text: str) -> str:
     return text if len(text) <= RECORD_CHARS else text[:RECORD_CHARS] + f"… [{len(text)} chars]"
 
 
-def build_tools(headers: dict[str, str]) -> list:
+def build_tools(headers: dict[str, str], path: str = "") -> list:
     """The assistant's toolbox, bound to one caller's credentials.
 
     Built per turn rather than once at import: the headers are the caller's, and a tool that
-    outlived the request that made it would be a tool pointed at the wrong workspace.
+    outlived the request that made it would be a tool pointed at the wrong workspace. `path` is
+    the page the user is on — `draft_alert` is only useful while the alert editor is open.
     """
     from langchain_core.tools import tool
 
@@ -471,6 +472,73 @@ def build_tools(headers: dict[str, str]) -> list:
             },
         )
 
+    @tool
+    async def draft_alert(
+        name: str,
+        trigger: str,
+        steps: list[dict[str, Any]],
+        description: str = "",
+        target_agent: str = "",
+        contains: str = "",
+        score_name: str = "",
+        env: str = "",
+        threshold: float = 0.0,
+        window_minutes: int = 60,
+        min_samples: int = 20,
+    ) -> Any:
+        """Draw a whole alert rule — trigger, filters and a wired chain of steps — onto the alert
+        editor the user has open (/settings/alerts/new or /settings/alerts/{id}). Nothing is
+        saved: the canvas redraws and the user presses Save. Use it for anything richer than one
+        notification; `create_alert` is for a one-step rule from any page.
+
+        The page's current rule arrives as page state with the user's message; when they ask
+        for a change, pass the whole rule back with only that change made, step names intact.
+
+        `trigger` and filters are as in `create_alert`. `steps` run in order, each
+        `{"name": str, "step_type": str, "config": {...}}`; the config shapes:
+          condition          {"expression": "{{ jinja }}"}  — falsy stops the flow
+          slack              {"url": "", "text_template": "…"}
+          send_email         {"to_template": "", "subject_template": "…", "body_template": "…"}
+          webhook            {"url": "", "method": "POST", "headers": [{"key": "Authorization",
+                              "value": "Bearer "}], "body_template": "{\\"k\\": \\"{{ v }}\\"}"}
+          llm_prompt         {"model": "", "system_prompt": "…", "user_prompt_template": "…",
+                              "temperature": 0, "output_schema": [{"name": "…", "type": "string",
+                              "description": "…"}]}
+          python_expression  {"expression": "len(failing_evaluators)"} — names directly, no {{ }}
+        Every string is a Jinja template over the trigger's variables ({{ alert.summary }},
+        {{ trace.url }}, {{ failure_reason }}, {{ failing_evaluators }}, {{ gate.status }},
+        {{ cluster.label }}); an upstream step is positional — `{{ steps[0].result }}` is the
+        first step before this one, and an llm_prompt with an output_schema exposes
+        `steps[i].result.<field>`, otherwise `steps[i].result.text`.
+
+        NEVER invent a URL, an email address or a model id: leave `url` / `to_template` / `model`
+        empty (the user picks them in the step's inspector) and say so.
+        Prefer a trigger filter to a condition step when the trigger can express it — a filter
+        stops the flow from running at all. Add an llm_prompt step only when they asked for
+        written or classified output.
+        """
+        from tracely.domain.monitoring.conditions import EVENT_TYPES, POLLED_TYPES
+        from tracely.services.alert_flow_service import STEP_TYPES
+
+        if not path.startswith("/settings/alerts/"):
+            return (
+                "error: the user is not on the alert editor, so there is no canvas to draw on. "
+                "Use create_alert for a one-step rule, or send them to /settings/alerts/new and "
+                "draft it there."
+            )
+        if trigger not in EVENT_TYPES | POLLED_TYPES:
+            return f"error: unknown trigger {trigger!r}; one of {sorted(EVENT_TYPES | POLLED_TYPES)}"
+        bad = [s.get("step_type") for s in steps if s.get("step_type") not in STEP_TYPES]
+        if bad or not steps:
+            return f"error: steps must be non-empty with step_type in {sorted(STEP_TYPES)}; got {bad}"
+        # The browser applies the ARGUMENTS of this call (it sees them on the stream), so a
+        # rejected draft never reaches the canvas and an accepted one is exactly what was sent.
+        return {
+            "drawn": True,
+            "steps": len(steps),
+            "note": "on the canvas now; the user must paste destinations and press Save",
+        }
+
     # ── scenarios: emulated conversations that gate a PR ─────────────────────
 
     @tool
@@ -604,7 +672,7 @@ def build_tools(headers: dict[str, str]) -> list:
         list_evaluators, list_evaluator_templates, create_evaluator, update_evaluator,
         run_evaluation,
         list_scenarios, create_scenario, import_scenario, run_scenario,
-        list_alerts, create_alert,
+        list_alerts, create_alert, draft_alert,
         promote_trace, promote_cluster, replay_case,
         delete_evaluator, delete_scenario, delete_case, delete_clusters, delete_conversations,
     )]

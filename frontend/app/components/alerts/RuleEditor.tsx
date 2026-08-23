@@ -14,7 +14,12 @@ import {
   type StepDraft,
 } from "@/app/lib/ruleFlow";
 import { Toggle } from "../Toggle";
-import { AssistantPanel, type GeneratedDraft } from "./AssistantPanel";
+import {
+  ALERT_DRAFT_EVENT,
+  openAssistant,
+  setPageContext,
+  type AlertDraftArgs,
+} from "@/app/lib/pageContext";
 import { ExecutionCard, type Execution } from "./ExecutionCard";
 import { RuleFlowCanvas } from "./RuleFlowCanvas";
 import type { CatalogRow } from "./InspectorPanel";
@@ -113,38 +118,66 @@ export function RuleEditor({
     if (monitorId) void loadHistory(monitorId);
   }, [monitorId, loadHistory]);
 
-  /** Push a generated draft onto the live canvas without a remount, and fold its trigger half into
-   *  the form. Fresh step ids: the generator's are placeholders, and two drafts in a row must not
-   *  collide on the same node id. */
-  function applyGenerated(g: GeneratedDraft) {
-    const steps: StepDraft[] = (g.steps ?? []).map((s, i) => ({
-      id: newStepId(),
-      order_index: i,
-      name: s.name,
-      step_type: s.step_type,
-      config: s.config,
-    }));
-    const cond = g.condition ?? { type: draft.type };
-    const nextType = (cond.type as Draft["type"]) ?? draft.type;
-    patchDraft({
-      name: g.name || draft.name,
-      description: g.description || draft.description,
-      target_agent: g.target_agent ?? draft.target_agent,
-      type: nextType,
-      contains: (cond.contains as string) ?? "",
-      score_name: (cond.score_name as string) ?? "",
-      env: (cond.env as string) ?? "",
-      threshold: (cond.threshold as number) ?? draft.threshold,
-      window_minutes: (cond.window_minutes as number) ?? draft.window_minutes,
-      min_samples: (cond.min_samples as number) ?? draft.min_samples,
+  /** The in-app assistant draws rules here: `draft_alert`'s arguments arrive as a window event
+   *  (see `pageContext.ts`) and go onto the live canvas without a remount, the trigger half into
+   *  the form. Fresh step ids: two drafts in a row must not collide on the same node id. */
+  useEffect(() => {
+    const apply = (e: Event) => {
+      const g = (e as CustomEvent<AlertDraftArgs>).detail;
+      if (!g || !(g.trigger in TRIGGERS)) return;
+      const nextType = g.trigger as Draft["type"];
+      const steps: StepDraft[] = (g.steps ?? []).map((s, i) => ({
+        id: newStepId(),
+        order_index: i,
+        name: s.name || `Step ${i + 1}`,
+        step_type: s.step_type as StepDraft["step_type"],
+        config: s.config ?? {},
+      }));
+      setDraft((d) => ({
+        ...d,
+        name: g.name || d.name,
+        description: g.description || d.description,
+        target_agent: g.target_agent ?? d.target_agent,
+        type: nextType,
+        contains: g.contains ?? "",
+        score_name: g.score_name ?? "",
+        env: g.env ?? "",
+        threshold: g.threshold ?? d.threshold,
+        window_minutes: g.window_minutes ?? d.window_minutes,
+        min_samples: g.min_samples ?? d.min_samples,
+      }));
+      setSaved(false);
+      const next = buildFlowFromRule({
+        steps,
+        flow_layout: null,
+        triggerLabel: TRIGGERS[nextType].label,
+      });
+      flowRef.current?.replaceFlow(next.nodes, next.edges);
+    };
+    window.addEventListener(ALERT_DRAFT_EVENT, apply);
+    return () => window.removeEventListener(ALERT_DRAFT_EVENT, apply);
+  }, []);
+
+  // What the assistant is told about this page: the rule as the canvas has it when the message
+  // is sent, so "add a condition before the Slack step" is an edit, not a rebuild.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  useEffect(() => {
+    setPageContext(() => {
+      const d = draftRef.current;
+      return {
+        alert_rule: {
+          ...toBody(d),
+          steps: (flowRef.current?.getSavePayload().steps ?? []).map((s) => ({
+            name: s.name,
+            step_type: s.step_type,
+            config: s.config,
+          })),
+        },
+      };
     });
-    const next = buildFlowFromRule({
-      steps,
-      flow_layout: null,
-      triggerLabel: TRIGGERS[nextType].label,
-    });
-    flowRef.current?.replaceFlow(next.nodes, next.edges);
-  }
+    return () => setPageContext(null);
+  }, []);
 
   const flow = buildFlowFromRule({
     steps: initialSteps,
@@ -255,6 +288,20 @@ export function RuleEditor({
               onChange={(enabled) => patchDraft({ enabled })}
               label={draft.enabled ? "armed" : "off"}
             />
+            <button
+              type="button"
+              onClick={() =>
+                openAssistant(
+                  flowRef.current?.getSavePayload().steps.length
+                    ? ""
+                    : "Draw this alert: Slack me when a conversation fails the PII judge, but only on support-bot",
+                )
+              }
+              className="btn-ghost whitespace-nowrap"
+              title="Describe the alert in a sentence and the assistant draws the flow (⌘J)"
+            >
+              ✦ Ask the assistant
+            </button>
             <button onClick={save} disabled={saving} className="btn-primary">
               {saving ? "Saving…" : monitorId ? "Save" : "Create alert"}
             </button>
@@ -271,24 +318,17 @@ export function RuleEditor({
         {saved ? <p className="mt-2 text-[12.5px] text-ok">Saved.</p> : null}
       </section>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
-        <RuleFlowCanvas
-          ref={flowRef}
-          initialNodes={flow.nodes}
-          initialEdges={flow.edges}
-          draft={draft}
-          onDraftChange={patchDraft}
-          agents={agents}
-          scoreNames={scoreNames}
-          catalog={catalog}
-          modelOptions={modelOptions}
-        />
-        <AssistantPanel
-          draft={draft}
-          steps={() => flowRef.current?.getSavePayload().steps ?? []}
-          onApply={applyGenerated}
-        />
-      </div>
+      <RuleFlowCanvas
+        ref={flowRef}
+        initialNodes={flow.nodes}
+        initialEdges={flow.edges}
+        draft={draft}
+        onDraftChange={patchDraft}
+        agents={agents}
+        scoreNames={scoreNames}
+        catalog={catalog}
+        modelOptions={modelOptions}
+      />
 
       <section className="card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">

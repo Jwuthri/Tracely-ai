@@ -73,6 +73,17 @@ def _no_demo_seed_subprocesses(monkeypatch):
     monkeypatch.setattr(settings, "seed_new_workspaces", False)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_posthog(monkeypatch):
+    """A developer's `.env` may hold a real POSTHOG_API_KEY (the wizard writes one). Tests must
+    never build a live client — they'd ship every fake LLM call to PostHog, and the handler's
+    import is fragile under other tests' module patching."""
+    from tracely.infrastructure.llm import provider as _prov
+
+    monkeypatch.setattr(settings, "posthog_api_key", "")
+    monkeypatch.setattr(_prov, "_posthog_client", None)
+
+
 @pytest_asyncio.fixture
 async def engine():
     eng = create_async_engine(

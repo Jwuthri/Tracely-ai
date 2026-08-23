@@ -10,7 +10,7 @@ import { FloatingPanel, IconBox, JsonPill, Pill, Plain } from "../JsonView";
 import { IconCheck, IconCopy } from "../icons";
 import { TypeChip } from "../ui";
 import { AgentBadge, MessageContent, ModelBadge, RoleBadge, StateCell, stateWritesOf, TurnMessage } from "./content";
-import { asRoleMessage, deriveTitle, durationMs, fmtDateTime, fmtMs, fmtPanelOutput, fmtScoreValue, jsonResultLabel, nearestAgentLabel } from "./format";
+import { asRoleMessage, deriveTitle, durationMs, fmtDateTime, fmtMs, fmtPanelOutput, fmtScoreValue, jsonResultLabel, nearestAgentLabel, selfMs } from "./format";
 import type { Col } from "./columns";
 import { EvalViewContext, RollingSummaryContext, useLiveScore } from "./contexts";
 
@@ -389,8 +389,41 @@ export function renderCell(col: Col, ctx: RowCtx): ReactNode {
       return ctx.level === "S" ? <TypeChip type={ctx.span.type} /> : null;
     case "stime":
       return ctx.level === "S" ? <span className="font-mono text-xs text-fg-muted">{fmtDateTime(ctx.span.start_time)}</span> : null;
-    case "sdur":
-      return ctx.level === "S" ? <span className="font-mono text-xs tabular-nums text-fg-muted">{fmtMs(durationMs(ctx.span))}</span> : null;
+    // Wall time, plus SELF time when this span wraps others. A `thinking()` block around an LLM
+    // call shows the call's 3.4s on both rows; without the second number there is no way to read
+    // which one actually spent it.
+    case "sdur": {
+      if (ctx.level !== "S") return null;
+      const total = durationMs(ctx.span);
+      const self = selfMs(ctx.span, ctx.turn.spans ?? []);
+      const nested = self != null && total != null && total - self >= 1;
+      // A streamed call carries the first-content-token mark, which is the real split between
+      // waiting on the model and receiving its answer — the only number that separates thinking
+      // from generating inside one request.
+      const ttft = ctx.span.ttft_ms;
+      const split = ttft != null && total != null && ttft > 0 && ttft < total;
+      return (
+        <span className="font-mono text-xs tabular-nums text-fg-muted">
+          {fmtMs(total)}
+          {split && (
+            <span
+              className="ml-1.5 text-fg-faint"
+              title={`${fmtMs(ttft)} to the first token, then ${fmtMs(total! - ttft!)} streaming the answer`}
+            >
+              {fmtMs(ttft)} + {fmtMs(total! - ttft!)}
+            </span>
+          )}
+          {!split && nested && (
+            <span
+              className="ml-1.5 text-fg-faint"
+              title="Time this span spent itself — the rest was its nested spans"
+            >
+              {fmtMs(self)} self
+            </span>
+          )}
+        </span>
+      );
+    }
     case "agent": {
       if (ctx.level !== "S") return null;
       const label = nearestAgentLabel(ctx.span, ctx.turn.spans ?? []);
