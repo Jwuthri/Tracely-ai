@@ -206,23 +206,50 @@ def _build_redactor(
     return _scrub
 
 
-def _scrub_mapping(attrs: Any, redactor: Callable[[str, str], str]) -> None:
-    """Apply `redactor` to every string (or string-sequence) value in a span/event attribute map,
-    in place. Best-effort: a read-only/immutable map is silently skipped (never crash export)."""
+def _scrubbed_mapping(
+    attrs: Any, redactor: Callable[[str, str], str]
+) -> dict[str, Any] | None:
+    """Return a NEW attribute dict with `redactor` applied to every string (or string-sequence)
+    value, or None when nothing changed.
+
+    Deliberately not in place: from OTel SDK 1.29 on, a finished span's attributes are a
+    `BoundedAttributes` mapping whose `__setitem__` raises `TypeError`. Mutating it therefore
+    scrubbed nothing, and because the failure was swallowed the redaction silently no-opped —
+    PII reached the exporter while `init(redact=...)` reported success. The caller swaps the
+    whole mapping instead; see `_replace_attributes`."""
     if not attrs:
-        return
-    for k, v in list(attrs.items()):
+        return None
+    out: dict[str, Any] = {}
+    changed = False
+    for k, v in attrs.items():
+        nv: Any = v
         try:
             if isinstance(v, str):
                 nv = redactor(k, v)
-                if nv != v:
-                    attrs[k] = nv
             elif isinstance(v, (list, tuple)) and v and all(isinstance(x, str) for x in v):
-                nv_list = [redactor(k, x) for x in v]
-                if nv_list != list(v):
-                    attrs[k] = nv_list
+                scrubbed = [redactor(k, x) for x in v]
+                if scrubbed != list(v):
+                    nv = scrubbed
         except Exception:  # noqa: BLE001 — redaction must never break the export path
+            nv = v
+        if nv != v:
+            changed = True
+        out[k] = nv
+    return out if changed else None
+
+
+def _replace_attributes(target: Any, attrs: dict[str, Any]) -> bool:
+    """Swap the attribute mapping on a ReadableSpan or Event. Returns False when the object does
+    not allow it — the one case where redaction cannot be applied, which is logged rather than
+    passed over in silence."""
+    for setter in (lambda: object.__setattr__(target, "_attributes", attrs),
+                   lambda: setattr(target, "_attributes", attrs)):
+        try:
+            setter()
+            return True
+        except Exception:  # noqa: BLE001 — try the next strategy
             continue
+    return False
 
 
 class _RedactingSpanExporter:
@@ -236,10 +263,20 @@ class _RedactingSpanExporter:
 
     def export(self, spans: Any) -> Any:
         for span in spans:
-            _scrub_mapping(getattr(span, "_attributes", None), self._redactor)
+            self._scrub(span, getattr(span, "_attributes", None))
             for ev in getattr(span, "events", None) or ():
-                _scrub_mapping(getattr(ev, "attributes", None), self._redactor)
+                self._scrub(ev, getattr(ev, "attributes", None))
         return self._inner.export(spans)
+
+    def _scrub(self, target: Any, attrs: Any) -> None:
+        scrubbed = _scrubbed_mapping(attrs, self._redactor)
+        if scrubbed is None:  # nothing matched — leave the original mapping alone
+            return
+        if not _replace_attributes(target, scrubbed):
+            log.warning(
+                "tracely: redaction could not be applied to %s — sensitive values may leave "
+                "this process unredacted", type(target).__name__,
+            )
 
     def shutdown(self) -> Any:
         return self._inner.shutdown()

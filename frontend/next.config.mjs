@@ -10,6 +10,15 @@
 const OLD_HOSTS = ["tracely-studio.xyz", "www.tracely-studio.xyz", "www.tracely-ai.com"];
 
 const nextConfig = {
+  // PostHog reverse proxy: the browser talks to OUR origin (/ingest), which ad blockers leave
+  // alone; Next forwards to PostHog Cloud US. skipTrailingSlashRedirect keeps /ingest/e/ intact.
+  skipTrailingSlashRedirect: true,
+  async rewrites() {
+    return [
+      { source: "/ingest/static/:path*", destination: "https://us-assets.i.posthog.com/static/:path*" },
+      { source: "/ingest/:path*", destination: "https://us.i.posthog.com/:path*" },
+    ];
+  },
   async redirects() {
     return OLD_HOSTS.map((host) => ({
       source: "/:path*",
