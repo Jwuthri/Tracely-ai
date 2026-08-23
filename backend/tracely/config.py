@@ -136,6 +136,14 @@ class Settings(BaseSettings):
     llm_judge_api_key: str = ""
     llm_judge_base_url: str = "https://api.openai.com/v1"
 
+    # AI Observability (PostHog). Every LLM call funnels through infrastructure/llm/provider.py,
+    # so that is the one place a `posthog.ai.langchain.CallbackHandler` is attached — sessions,
+    # traces, generations and tool spans for the judge, the assistant, and scenario simulation.
+    # Blank key disables it exactly like every other optional credential here (OPENROUTER_API_KEY,
+    # RESEND_API_KEY, SENTRY_DSN): no capture, nothing to configure for a deployment that opts out.
+    posthog_api_key: str = ""
+    posthog_host: str = "https://us.i.posthog.com"
+
     # The in-app assistant (the dashboard's chat widget). Unlike every other LLM call, this one
     # runs on OUR OpenRouter key — it answers questions about Tracely, so it must work in a
     # workspace that has configured no key of its own (`provider.use_server_key`). A Gemini flash

@@ -20,6 +20,7 @@ Heavy imports are lazy so the worker/API start even when the LLM stack isn't exe
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import json
@@ -220,6 +221,46 @@ def _redis():
 
         _redis_client = redis.Redis.from_url(settings.redis_url)
     return _redis_client
+
+
+# AI Observability. `None` when `POSTHOG_API_KEY` is unset — capture is then a no-op, the same
+# way an unset OPENROUTER_API_KEY disables the LLM itself.
+_posthog_client: Any = None
+
+
+def _posthog():
+    global _posthog_client
+    if _posthog_client is None and settings.posthog_api_key:
+        from posthog import Posthog
+
+        _posthog_client = Posthog(
+            settings.posthog_api_key,
+            host=settings.posthog_host,
+            enable_exception_autocapture=True,
+        )
+        atexit.register(_posthog_client.shutdown)
+    return _posthog_client
+
+
+def _posthog_callbacks(session_id: str | None, distinct_id: str | None) -> list:
+    """The LangChain `callbacks` list for one `create_agent` call: a PostHog `CallbackHandler`
+    when AI Observability is configured, empty otherwise (LangChain treats an empty list the same
+    as none). `$ai_provider` is forced to "openrouter" — every call here goes through OpenRouter's
+    OpenAI-compatible endpoint (`get_chat_model`), and the wrapper would otherwise report "openai"
+    for models that are anything but, mispricing and mislabeling every non-OpenAI call."""
+    client = _posthog()
+    if client is None:
+        return []
+    try:
+        from posthog.ai.langchain import CallbackHandler
+
+        properties: dict[str, Any] = {"$ai_provider": "openrouter"}
+        if session_id:
+            properties["$ai_session_id"] = session_id
+        return [CallbackHandler(client=client, distinct_id=distinct_id, properties=properties)]
+    except Exception as exc:  # observability must never take the model call down with it
+        log.warning("posthog_ai_handler_unavailable", error=str(exc))
+        return []
 
 
 def _encrypted_key_for(project_id: str) -> str | None:
@@ -595,7 +636,14 @@ def get_chat_model(
     )
 
 
-def _invoke(agent, prompt: str | list[dict], thread_id: str | None = None) -> dict[str, Any]:
+def _invoke(
+    agent,
+    prompt: str | list[dict],
+    thread_id: str | None = None,
+    *,
+    posthog_session_id: str | None = None,
+    posthog_distinct_id: str | None = None,
+) -> dict[str, Any]:
     """Run the agent, translating one badly-disguised provider failure into a readable error.
 
     `thread_id` addresses a checkpointed conversation: LangGraph loads that thread's messages,
@@ -607,9 +655,14 @@ def _invoke(agent, prompt: str | list[dict], thread_id: str | None = None) -> di
     and raises `TypeError: 'NoneType' object is not iterable`, which tells an operator nothing and
     reads like a Tracely bug. The judge swallows exceptions per-evaluator, so the visible symptom
     is simply "no scores appeared" — worth spending a few lines to name the real cause."""
-    config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+    config: dict[str, Any] = {}
+    if thread_id:
+        config["configurable"] = {"thread_id": thread_id}
+    callbacks = _posthog_callbacks(posthog_session_id, posthog_distinct_id)
+    if callbacks:
+        config["callbacks"] = callbacks
     try:
-        return agent.invoke({"messages": [{"role": "user", "content": prompt}]}, config)
+        return agent.invoke({"messages": [{"role": "user", "content": prompt}]}, config or None)
     except TypeError as exc:
         raise _provider_error(exc) from exc
 
@@ -698,6 +751,7 @@ def run_structured_agent(
     temperature: float = 0.0,
     on_usage: UsageSink | None = None,
     chat_id: str | None = None,
+    posthog_distinct_id: str | None = None,
 ) -> T:
     """One `create_agent` invocation with a structured response schema. Returns the validated
     pydantic instance; raises on transport/validation errors (callers decide whether a failed
@@ -706,7 +760,12 @@ def run_structured_agent(
     `chat_id` continues a durable conversation instead of asking a fresh question: the rubric and
     every earlier item→verdict pair are already on that thread, so only `prompt` goes over the
     wire and the cached prefix does the rest. Without a reachable checkpointer it degrades to the
-    one-shot call — a lost transcript is worth less than a lost grade."""
+    one-shot call — a lost transcript is worth less than a lost grade.
+
+    AI Observability: `chat_id` doubles as the PostHog `$ai_session_id` when present — it already
+    identifies the one durable conversation this call belongs to. A batch (no `chat_id`) call is
+    independent by design, so it gets no session, only its own trace — minting one per call would
+    look instrumented and group nothing."""
     from langchain.agents import create_agent
 
     checkpointer = _checkpointer_for(chat_id)
@@ -718,7 +777,11 @@ def run_structured_agent(
         **({"checkpointer": checkpointer} if checkpointer else {}),
     )
     with _recorded(prompt, system_prompt, model) as sink:
-        result = _invoke(agent, prompt, chat_id if checkpointer else None)
+        result = _invoke(
+            agent, prompt, chat_id if checkpointer else None,
+            posthog_session_id=chat_id if checkpointer else None,
+            posthog_distinct_id=posthog_distinct_id,
+        )
         usage = _extract_usage(result, model)
         structured = result["structured_response"]
         sink.append((_dump(structured), usage))
@@ -898,6 +961,8 @@ def stream_agent(
     on_usage: UsageSink | None = None,
     middleware: list | None = None,
     budget_usd: float | None = None,
+    posthog_session_id: str | None = None,
+    posthog_distinct_id: str | None = None,
 ) -> AsyncIterator[dict]:
     """A tool-using agent, streamed. The in-app assistant's primitive.
 
@@ -910,6 +975,10 @@ def stream_agent(
 
     `middleware` is passed to `create_agent` — how the caller narrows the toolset per turn or
     caps the loop (see `langchain.agents.middleware`).
+
+    `posthog_session_id`/`posthog_distinct_id` are this turn's PostHog identity: the caller owns
+    what "one conversation" means (the assistant's `chat_id`), this function just forwards it so
+    every model call and tool run of the turn lands in AI Observability as one session/trace.
 
     `budget_usd` stops the loop as soon as this run's own spend reaches it, and marks the final
     frame `stopped="budget"`. Checked after each model call rather than only at the end, because
@@ -934,6 +1003,7 @@ def stream_agent(
     )
 
     answering_model = _normalize_model((model or settings.llm_judge_model).strip())
+    posthog_callbacks = _posthog_callbacks(posthog_session_id, posthog_distinct_id)
 
     async def _run() -> AsyncIterator[dict]:
         ai_messages: list = []  # every model turn, for the token roll-up: a tool loop is N calls
@@ -950,6 +1020,7 @@ def stream_agent(
                         # the first is what streams, the second is what's reliable to read tool
                         # calls and usage off. Both costs nothing and saves reassembling either.
                         stream_mode=["updates", "messages"],
+                        config={"callbacks": posthog_callbacks} if posthog_callbacks else None,
                     )
                 ) as stream:
                     async for mode, payload in stream:

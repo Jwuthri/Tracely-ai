@@ -33,6 +33,11 @@ dependencies = [
   "langgraph-checkpoint-postgres>=2.0",
   "langchain>=1.3",
   "langchain-openai>=1.2",
+  # AI Observability: the CallbackHandler wired into every create_agent call in provider.py
+  # (posthog.ai.langchain) so judge/assistant/simulation LLM calls land in PostHog as sessions,
+  # traces and generations. >=7 required: posthog.ai.langchain imports langchain.callbacks.base
+  # unconditionally below that, which doesn't exist on langchain>=1.0 (moved to langchain_core).
+  "posthog>=7",
   # auth & multi-tenancy: JWT sign/verify (HS256 local + RS256/JWKS Clerk), argon2 password hashing
   "pyjwt[crypto]>=2.8",
   "argon2-cffi>=23.1",

@@ -57,6 +57,10 @@ x-app-env: &app-env
   ASSISTANT_MAX_MODEL_CALLS: ${ASSISTANT_MAX_MODEL_CALLS:-12}
   # USD one conversation may spend of OUR credit, cumulative across its turns.
   ASSISTANT_BUDGET_USD: ${ASSISTANT_BUDGET_USD:-1.0}
+  # AI Observability: attaches a PostHog CallbackHandler to every judge/assistant/simulation LLM
+  # call (infrastructure/llm/provider.py). Blank = no capture, like every other optional key here.
+  POSTHOG_API_KEY: ${POSTHOG_API_KEY:-}
+  POSTHOG_HOST: ${POSTHOG_HOST:-https://us.i.posthog.com}
   META_ANALYSIS_MODEL: ${META_ANALYSIS_MODEL:-openai/gpt-5-mini}
   ROLLING_SUMMARY_MODEL: ${ROLLING_SUMMARY_MODEL:-openai/gpt-5.4-nano}
   ROLLING_SUMMARY_STEP_MAX_TOKENS: ${ROLLING_SUMMARY_STEP_MAX_TOKENS:-512}

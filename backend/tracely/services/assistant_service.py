@@ -295,6 +295,12 @@ async def answer_stream(
 
     history.append({"role": "user", "content": message, "attachments": attachments, "ts": _now()})
 
+    # AI Observability: one PostHog session per conversation. An existing chat's id already
+    # identifies it; a brand-new chat has none yet (repo.assistant_chat_save mints one after this
+    # turn), so it gets a fresh id here — which is still correct, since this turn is the whole
+    # session so far. Namespaced so it can never collide with a real conversation id.
+    posthog_session_id = f"assistant:{chat_id or uuid.uuid4().hex}"
+
     # OUR key for the model, deliberately: the assistant explains Tracely, so it must answer in a
     # workspace that has configured no key of its own (CLAUDE.md's one exception to
     # `use_project_key`). `llm_enabled()` is checked INSIDE the wrap because under
@@ -324,6 +330,8 @@ async def answer_stream(
                     answering_model=settings.assistant_model,
                 ),
                 budget_usd=(budget - already) if budget > 0 else None,
+                posthog_session_id=posthog_session_id,
+                posthog_distinct_id=user_id,
                 # This turn spends OUR credit, so log what it cost and for whom — otherwise the
                 # only place the assistant's bill shows up is the OpenRouter invoice,
                 # undifferentiated. A tool loop is several model calls; the usage covers them all.
