@@ -54,6 +54,8 @@ The analysis runs in four steps. The first three are deterministic Python; only 
 
 **1. Gather the scores.** Tracely takes the agent's most recent traces (up to 2,000), and collects every online-evaluation score attached to them at every level — step, message and conversation (conversation-level scores carry no trace id, so they are fetched through the thread). Each score becomes a row: `conversation_id · metric_name · value`. Text-only results (a `text` column, or a `json` column without a numeric score) have no value and are skipped.
 
+Alongside the scores, four **operational metrics** are read straight off the same traces and join the matrix as first-class metrics: `ops.latency_ms` (per-turn wall clock), `ops.tokens` (per-turn tokens), `ops.tool_errors` (errored tool calls per turn) and `ops.turns` (turns per conversation). That is what lets the analysis connect quality to cost and speed — *"the low-groundedness conversations are the slow, tool-error-heavy ones"* is only findable with both halves in one table.
+
 **2. Build the matrix.** Rows collapse into one table — **one number per metric per conversation**. Where a metric produced several values for the same conversation (a step metric over many tool calls, a message metric over many turns) they are **averaged**, so a 10-turn conversation and a 1-turn conversation each count once. Only conversations are compared, never individual turns — that is why the panel counts *conversations analysed*.
 
 **3. Statistics.** Two computations over that matrix:
@@ -77,4 +79,4 @@ The analysis runs in four steps. The first three are deterministic Python; only 
   Correlation is not causation, and a correlation of exactly **+1.00** usually means two metrics measure the same event (a tool error makes both *tool success* and *run outcome* fail). Treat it as confirmation that the signal is coherent, not as a discovery.
 </Callout>
 
-Analyses are stored per agent, so a run is a snapshot you can come back to and compare against after a change.
+Analyses are stored per agent, and each one snapshots its per-metric means. When a previous analysis exists for the same agent, the panel opens with a **Since last run** table — each metric's previous mean, current mean and delta, coloured by whether the movement is an improvement (for `ops.latency_ms` and `ops.tool_errors`, down is good). The shifts are also handed to the model, so the summary says what moved, not just what is.

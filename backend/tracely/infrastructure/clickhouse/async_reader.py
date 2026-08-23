@@ -765,11 +765,39 @@ async def agent_ids_with_spans(project_id: str) -> set[str]:
     return {r[0] for r in res.result_rows}
 
 
+async def _trace_ops_rows(project_id: str, trace_ids: list[str]) -> list[dict]:
+    """Per-TRACE operational aggregates for meta-analysis: wall-clock ms, total tokens, errored
+    tool calls. One row per (trace, metric); the matrix builder averages them per conversation,
+    so `ops.latency_ms` reads as "average turn latency of this conversation"."""
+    client = await get_async_client()
+    res = await client.query(
+        f"""
+        SELECT trace_id,
+               dateDiff('millisecond', min(start_time), max(coalesce(end_time, start_time))) AS ms,
+               toUInt64(sum(arraySum(mapValues(usage_details))))                             AS tokens,
+               countIf(type = 'TOOL' AND level = 'ERROR')                                    AS tool_errors
+        FROM events FINAL
+        WHERE project_id = {{p:String}} AND {_REAL} AND trace_id IN {{ids:Array(String)}}
+        GROUP BY trace_id
+        """,
+        parameters={"p": project_id, "ids": trace_ids},
+    )
+    return [
+        {"trace_id": r[0], "ops.latency_ms": float(r[1]), "ops.tokens": float(r[2]), "ops.tool_errors": float(r[3])}
+        for r in res.result_rows
+    ]
+
+
 async def agent_score_rows(project_id: str, agent_id: str, max_traces: int = 2000) -> list[dict]:
     """Flat online-eval score rows for an agent, across ALL levels, for meta-analysis. Each row:
     `{conversation_id (thread), trace_id, metric_name, evaluation_level, value, string_value,
     verdict}`. Composes the trace lookup with the existing per-trace + per-thread score readers
-    (so conversation-level scores — which carry no trace_id — are included via their thread)."""
+    (so conversation-level scores — which carry no trace_id — are included via their thread).
+
+    Also emits OPERATIONAL rows (`ops.latency_ms`, `ops.tokens`, `ops.tool_errors` per turn, and
+    `ops.turns` per conversation) so the analysis can correlate quality with cost and speed —
+    "low groundedness is the slow conversations" is exactly the kind of finding a score-only
+    matrix cannot produce."""
     traces = await agent_trace_ids(project_id, agent_id, max_traces)
     if not traces:
         return []
@@ -810,6 +838,22 @@ async def agent_score_rows(project_id: str, agent_id: str, max_traces: int = 200
                     "verdict": sc.get("verdict", ""),
                 }
             )
+
+    def ops_row(thread: str, tid: str | None, metric: str, value: float) -> dict:
+        return {
+            "conversation_id": thread, "trace_id": tid, "metric_name": metric,
+            "evaluation_level": "OPS", "value": value, "string_value": "", "verdict": "",
+        }
+
+    for o in await _trace_ops_rows(project_id, trace_ids):
+        thread = thread_of.get(o["trace_id"], o["trace_id"])
+        for metric in ("ops.latency_ms", "ops.tokens", "ops.tool_errors"):
+            rows.append(ops_row(thread, o["trace_id"], metric, o[metric]))
+    turns: dict[str, int] = {}
+    for thread in thread_of.values():
+        turns[thread] = turns.get(thread, 0) + 1
+    for thread, n in turns.items():
+        rows.append(ops_row(thread, None, "ops.turns", float(n)))
     return rows
 
 
