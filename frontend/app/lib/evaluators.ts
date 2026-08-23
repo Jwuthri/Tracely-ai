@@ -241,11 +241,13 @@ export async function streamEvaluationRun(
       if (!line.startsWith("data: ")) continue;
       const payload = line.slice("data: ".length).trim();
       if (payload === "[DONE]") return;
+      let ev: RunEvent;
       try {
-        onEvent(JSON.parse(payload) as RunEvent);
+        ev = JSON.parse(payload) as RunEvent;
       } catch {
-        /* skip malformed frame */
+        continue; /* skip malformed frame */
       }
+      onEvent(ev);
     }
   }
 }
