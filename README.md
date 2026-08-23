@@ -122,9 +122,9 @@ appears that nobody has seen before, or a rate crosses a line) and **what happen
 canvas. Conditions that gate the rest of the flow, Slack, email, a webhook with your own method and
 headers, an **LLM step** whose answer the next step can use, and a Python expression for a number a
 template can't compute. Every field is a template over the failure's own variables, dragged in as
-chips. Describe it in a sentence and the **rule assistant** draws the whole thing.
+chips. Or describe it to the in-app assistant and it draws the whole thing onto the canvas.
 
-<img src=".github/assets/alerts-flow.png" alt="The alert flow builder — When → condition → LLM prompt → Slack, with the inspector's input chips, step config and declared outputs, and the rule assistant panel" width="100%" />
+<img src=".github/assets/alerts-flow.png" alt="The alert flow builder — When → condition → LLM prompt → Slack, with the inspector's input chips, step config and declared outputs" width="100%" />
 
 ### Plus — trends, cross-metric analysis, judge calibration
 

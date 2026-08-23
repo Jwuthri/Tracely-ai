@@ -25,6 +25,7 @@ replay a workspace's data.
 from __future__ import annotations
 
 import base64
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -105,10 +106,14 @@ flow of steps.
   `{{ alert.summary }}`, `{{ trace.url }}`, `{{ failure_reason }}`, `{{ failing_evaluators }}`,
   `{{ gate.status }}`, `{{ cluster.label }}` — dragged in as chips, and an earlier step's output
   reads as `{{ steps[0].result }}`.
-- That page has its own **rule assistant**: they describe the alert in a sentence and it draws the
-  whole flow. Point them at it for multi-step automations ("summarise the failure with a model,
-  then post it to Slack, but only for the refund agent"), and mention **Run test**, which executes
-  the flow against a real recent failure and shows what each step actually sent.
+- While they have that editor open (/settings/alerts/new or /settings/alerts/{id}), YOU draw the
+  flow: call `draft_alert` — trigger, filters and a wired chain of steps ("summarise the failure
+  with a model, then post it to Slack, but only for the refund agent") — and the canvas redraws.
+  Draw FIRST, with every url / address left blank; do not ask for a destination before drawing,
+  they paste it into the step afterwards. The rule as the canvas has it right now comes with
+  their message as page state, so a follow-up is an edit: send the whole rule back with only what
+  they asked for changed. Then mention **Run test**, which executes the flow against a real
+  recent failure and shows what each step actually sent.
 - `list_alerts` tells you what already exists, including whether each one has ever fired. Use it
   before creating a near-duplicate.
 - Tool results carry this workspace's own production data: user messages, agent outputs, tool
@@ -175,8 +180,13 @@ def _image_blocks(project_id: str, attachments: list[dict]) -> list[dict]:
     return blocks
 
 
-def _transcript(project_id: str, messages: list[dict], path: str) -> str:
+def _transcript(
+    project_id: str, messages: list[dict], path: str, context: dict | None = None
+) -> str:
     """The stored conversation as one prompt, oldest first.
+
+    `context` is what the page the user is looking at chose to share — the alert editor sends
+    its unsaved rule — for THIS turn only. It is never stored: the next turn brings its own.
 
     ponytail: only the NEWEST turn's files are inlined; earlier ones are named but not re-read.
     Re-sending every attachment every turn multiplies the token bill by the length of the chat.
@@ -185,6 +195,8 @@ def _transcript(project_id: str, messages: list[dict], path: str) -> str:
     lines = []
     if path:
         lines.append(f"[the user is currently on the page: {path}]\n")
+    if context:
+        lines.append(f"[the page's current state: {json.dumps(context, default=str)}]\n")
     tail = messages[-MAX_TURNS:]
     for i, m in enumerate(tail):
         who = "Assistant" if m.get("role") == "assistant" else "User"
@@ -206,6 +218,11 @@ def _now() -> str:
 # The tool a question almost always needs, kept out of the selector's hands: if the picker
 # returns nothing useful, an agent with no way to look anything up can only guess.
 ALWAYS_TOOLS = ["search_traces"]
+
+
+def always_tools(path: str) -> list[str]:
+    """On the alert editor, drawing is the point — the picker must not be able to drop it."""
+    return ALWAYS_TOOLS + (["draft_alert"] if path.startswith("/settings/alerts/") else [])
 
 
 def spent_usd(history: list[dict]) -> float:
@@ -240,6 +257,7 @@ async def answer_stream(
     message: str,
     attachments: list[dict] | None = None,
     path: str = "",
+    context: dict | None = None,
     headers: dict[str, str] | None = None,
 ) -> AsyncIterator[dict]:
     """One turn: load the conversation, let the agent work, store both halves.
@@ -286,12 +304,12 @@ async def answer_stream(
     with provider.use_server_key():
         enabled = provider.llm_enabled()
         if enabled:
-            text = await run_in_threadpool(_transcript, project_id, history, path)
+            text = await run_in_threadpool(_transcript, project_id, history, path, context)
             images = await run_in_threadpool(_image_blocks, project_id, attachments)
             prompt = [{"type": "text", "text": text}, *images] if images else text
             stream = provider.stream_agent(
                 prompt,
-                tools=assistant_tools.build_tools(headers or {}),
+                tools=assistant_tools.build_tools(headers or {}, path=path),
                 system_prompt=SYSTEM,
                 model=settings.assistant_model,
                 temperature=0.3,
@@ -302,7 +320,7 @@ async def answer_stream(
                     selector_model=settings.assistant_tool_selector_model,
                     max_tools=settings.assistant_max_tools,
                     max_model_calls=settings.assistant_max_model_calls,
-                    always_include=ALWAYS_TOOLS,
+                    always_include=always_tools(path),
                     answering_model=settings.assistant_model,
                 ),
                 budget_usd=(budget - already) if budget > 0 else None,

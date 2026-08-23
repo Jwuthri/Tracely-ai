@@ -241,3 +241,25 @@ async def test_a_backfill_is_capped_and_summarised(client, sync_db, make_workspa
     assert len(asked["threads"]) == assistant_tools.EVAL_TARGET_MAX
 
     assert await t["run_evaluation"].ainvoke({}) == "error: pass at least one thread_id or trace_id"
+
+
+async def test_draft_alert_validates_and_only_draws_on_the_editor():
+    """The browser applies this tool's ARGUMENTS, so a bad draft must be refused here — and a
+    draft with no canvas open must say so rather than vanish."""
+    slack = [{"name": "Post", "step_type": "slack", "config": {"url": "", "text_template": "x"}}]
+    on_editor = {t.name: t for t in assistant_tools.build_tools({}, path="/settings/alerts/new")}
+    elsewhere = {t.name: t for t in assistant_tools.build_tools({}, path="/traces")}
+
+    out = await on_editor["draft_alert"].ainvoke(
+        {"name": "PII", "trigger": "trace_failed", "steps": slack}
+    )
+    assert out["drawn"] is True and out["steps"] == 1
+    assert "error" in await on_editor["draft_alert"].ainvoke(
+        {"name": "x", "trigger": "trace_failed", "steps": [{"step_type": "teleport"}]}
+    )
+    assert "error" in await on_editor["draft_alert"].ainvoke(
+        {"name": "x", "trigger": "nope", "steps": slack}
+    )
+    assert "create_alert" in await elsewhere["draft_alert"].ainvoke(
+        {"name": "x", "trigger": "trace_failed", "steps": slack}
+    )

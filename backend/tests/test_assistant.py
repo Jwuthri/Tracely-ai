@@ -153,7 +153,7 @@ def test_the_prompt_names_the_surfaces_the_assistant_can_send_people_to():
     for phrase in (
         "Alerts",              # the page
         "/settings/alerts",    # the link it should hand over
-        "rule assistant",      # the thing on that page that does the drawing
+        "draft_alert",         # how it draws a multi-step flow onto that page's canvas
         "create_alert",        # what it can do itself, without sending them anywhere
         "Run test",            # how they check an alert reaches them
         "/clusters/",

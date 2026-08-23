@@ -91,9 +91,8 @@ Every occurrence of the old domain in the repo was rewritten. Notable ones:
       *Settings → Change of address* from the `tracely-studio.xyz` property. That is the signal that
       makes Google transfer rankings quickly instead of re-discovering the site. Requires both
       properties verified and the 308 live. Resubmit `https://tracely-ai.com/sitemap.xml`.
-- [ ] **Resend** — `EMAIL_FROM` is still `invites@tracely-studio.xyz`. Verify `tracely-ai.com` at
-      resend.com/domains (DNS records go in Railway's DNS for the domain), then set
-      `EMAIL_FROM="Tracely <invites@tracely-ai.com>"` on the `api` service. It works as-is until then.
+- [x] **Resend** — `tracely-ai.com` verified (DKIM/SPF live); `EMAIL_FROM` on the `api` service is
+      now `Tracely <support@tracely-ai.com>` (2026-08-22).
 - [ ] **PyPI** — the new `Homepage`/`Documentation` only appear after the next `tracely-ai` release.
 - [ ] **MCP registry** — republish `server.json` so the listed remote URL is the new one.
 - [ ] **The 2–3 existing backlinks** — the 308 is enough for SEO, but ask the linking sites to point

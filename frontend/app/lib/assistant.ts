@@ -16,6 +16,8 @@ export type TurnRequest = {
   chat_id: string | null;
   attachments: { id: string; name: string; mime: string; size: number }[];
   path: string;
+  /** What the current page shares about itself (see `pageContext.ts`); this turn only. */
+  context?: unknown;
 };
 
 // POST the turn and invoke `onEvent` per frame. Resolves when the stream ends; rejects on a

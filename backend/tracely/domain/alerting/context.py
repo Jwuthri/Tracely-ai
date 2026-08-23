@@ -2,7 +2,7 @@
 advertises it.
 
 This is the most important contract in the feature: `BASE_INPUTS` is what the chip panel shows,
-what the rule assistant is told about, and what `build_context` actually produces.
+what the assistant's `draft_alert` tool is told about, and what `build_context` actually produces.
 `tests/test_alert_flow.py` pins the two together, because this is exactly the kind of
 thing that drifts until a template silently renders an empty string.
 

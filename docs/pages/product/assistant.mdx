@@ -16,7 +16,7 @@ The chat panel in the bottom-right corner is an **agent over this workspace**, n
 - **History** — every conversation is kept; the back arrow lists them, **+** starts a new one. Coming back tomorrow reopens where you left off.
 - **Attachments** — drop, paste or pick a file; images render inline, other files as chips.
 - It knows **where you are**: ask *"why did this one fail?"* on a conversation page and it reads that conversation.
-- It can **set up an alert** for you — *"Slack me when the refund judge fails a live conversation"* — and hands back a link to the rule. For anything multi-step (a condition, a model-written message, a webhook with its own headers) it points you at the [flow builder and its rule assistant](/product/alerts#the-rule-assistant), which draws the whole thing from a sentence.
+- It can **set up an alert** for you — *"Slack me when the refund judge fails a live conversation"* — and hands back a link to the rule. For anything multi-step (a condition, a model-written message, a webhook with its own headers) open the [flow builder](/product/alerts#drafting-with-the-assistant) and ask there: it draws the whole flow onto the canvas, and a follow-up edits what it drew.
 
 <Callout type="info">
   **Whose key, whose reach.** The assistant's *model* runs on Tracely's own key, so it works in a brand-new workspace with no key configured. Its *tools* call the same API you do, as you — it cannot see or change anything your account cannot, and a write it gets wrong is rejected by the same checks as a write of yours.

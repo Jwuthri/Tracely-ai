@@ -9,7 +9,7 @@ import { Callout } from "nextra/components";
 **Settings → Alerts.** An alert rule has two halves: **when** it fires, and **what happens** —
 drawn as a flow.
 
-<img className="screenshot" src="/screenshots/alerts-flow.png" alt="The alert flow builder: a When node wired through a condition, an LLM step and Slack, with the inspector below and the rule assistant beside it" />
+<img className="screenshot" src="/screenshots/alerts-flow.png" alt="The alert flow builder: a When node wired through a condition, an LLM step and Slack, with the inspector below" />
 
 Rules are workspace-level and optionally scoped to a single agent.
 
@@ -91,10 +91,10 @@ When (conversation failed)
   → Slack        "{{ steps[0].result.note }} — {{ trace.url }}"
 ```
 
-## The rule assistant
+## Drafting with the assistant
 
-The panel beside the canvas turns a sentence into a flow. Type what you want, press **Draft the
-flow**, and the canvas redraws: the trigger, its filters, and the steps, wired.
+**✦ Ask the assistant** (or ⌘J) opens the in-app chat with the editor in view. Describe the alert
+and the canvas redraws as the assistant works: the trigger, its filters, and the steps, wired.
 
 ```
 "Slack me when a conversation fails the PII judge, but only on support-bot"
@@ -108,8 +108,8 @@ template should read. Three things it deliberately does:
 - **It never invents a destination.** Every `url` and `to` comes back empty and it says so in its
   reply, so a drafted rule can't post into someone else's Slack. You paste yours and save.
 - **It edits rather than restarts.** The rule as the canvas has it right now is sent with your
-  message, so *"add a condition so it only fires for the refund agent"* keeps the steps you already
-  configured.
+  message, and the chat remembers the conversation, so *"add a condition so it only fires for the
+  refund agent"* keeps the steps you already configured.
 - **It picks filters over steps.** A trigger filter (evaluator, text, env, agent) stops the flow
   from running at all, so it prefers one of those to a condition step whenever the trigger supports
   it.
