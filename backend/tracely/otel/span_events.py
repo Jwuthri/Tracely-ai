@@ -1,6 +1,6 @@
 """Span *events* — the half of OTLP the attribute mappers can't see.
 
-Two things ride on events rather than attributes, and both were being dropped:
+Three things ride on events rather than attributes, and all were being dropped:
 
 1. **Exceptions.** `span.record_exception()` writes an `exception` event with the type, message
    and stacktrace. Plenty of instrumentors record one WITHOUT also setting the span status to
@@ -12,14 +12,20 @@ Two things ride on events rather than attributes, and both were being dropped:
    (which the Tracely SDK itself activates as a fallback) emits prompts and completions as
    `gen_ai.user.message` / `gen_ai.choice` events instead of attributes, so those spans arrived
    with a model and a token count but no conversation at all.
+
+3. **Time to first token.** The OpenInference instrumentors — the default `init(instrument=[...])`
+   path — mark the first streamed chunk with a `First Token Stream Event` span event rather than an
+   attribute, so `completion_start_time` (attribute-only until now) was always NULL on that path and
+   the ops TTFT metric had nothing to read. See `first_token_time`.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
-from tracely.otel.attributes import _attrs
+from tracely.otel.attributes import _attrs, _ns_to_dt
 
 # Event name → the role the message carries. `gen_ai.choice` is the model's reply.
 _ROLE_EVENTS = {
@@ -29,6 +35,10 @@ _ROLE_EVENTS = {
     "gen_ai.tool.message": "tool",
 }
 _CHOICE_EVENT = "gen_ai.choice"
+
+# OpenInference's first-streamed-chunk marker. Named, not versioned — same string across their
+# openai / mistralai / llama-index instrumentors.
+_FIRST_TOKEN_EVENT = "First Token Stream Event"
 
 # Where an event puts its payload, in order. Emitters disagree: the stable semconv uses the
 # `content`/`role` attribute pair, the 0.4x-era one packed a JSON body under `gen_ai.event.content`.
@@ -55,6 +65,26 @@ def exception_text(span: Any) -> str:
         if etype or emsg:
             return etype or emsg
     return ""
+
+
+def first_token_time(span: Any) -> datetime | None:
+    """When the first streamed chunk arrived, from the instrumentors' own first-token span event.
+
+    OpenInference's stream proxies (`openai`, `mistralai`, `llama_index`) call
+    `span.add_event("First Token Stream Event")` on the first chunk — this maps that existing signal
+    instead of instrumenting the default path ourselves. Note it fires on the first chunk of ANY
+    kind, so unlike the drop-in wrappers' `tracely.completion_start_time` (first CONTENT delta, which
+    doubles as the thinking→answering boundary) it is plain TTFT: for a reasoning model it lands at
+    the start of the thinking, not after it.
+
+    The other instrumentors (anthropic, langchain, google-genai, groq, bedrock) emit no such event,
+    so their streamed spans still have no TTFT — they do, however, already hold the span open until
+    the stream is exhausted, so nothing is lost beyond this one mark.
+    """
+    for event in getattr(span, "events", None) or ():
+        if getattr(event, "name", "") == _FIRST_TOKEN_EVENT:
+            return _ns_to_dt(getattr(event, "time_unix_nano", 0) or 0)
+    return None
 
 
 def _payload(a: dict[str, Any]) -> Any:

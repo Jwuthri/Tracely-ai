@@ -18,7 +18,7 @@ from tracely.otel.io_field import (
 )
 from tracely.otel.attributes import _to_str as _stringify
 from tracely.otel.messages import _as_obj, _normalize_parsed
-from tracely.otel.span_events import events_io, exception_text
+from tracely.otel.span_events import events_io, exception_text, first_token_time
 from tracely.otel.tool_enrichment import _tool_call_names
 from tracely.otel.types import EMBEDDING, GENERATION, TOOL, map_observation_type
 from tracely.otel.usage import (
@@ -102,7 +102,9 @@ def _map_span(
         "parent_span_id": parent_span_id,
         "start_time": _ns_to_dt(span.start_time_unix_nano),
         "end_time": _ns_to_dt(span.end_time_unix_nano),
-        "completion_start_time": _completion_start(a),
+        # Our own attribute (the drop-in wrappers) first; the OpenInference instrumentors' own
+        # first-token span *event* is the fallback that gives the default path a TTFT at all.
+        "completion_start_time": _completion_start(a) or first_token_time(span),
         # For TOOL spans, prefer the actual tool name from attrs over the framework's generic
         # span name (LlamaIndex uses `FunctionTool.acall`, etc.) — so the UI shows the tool
         # name and the tool_consistency eval can match "requested" against "executed".
