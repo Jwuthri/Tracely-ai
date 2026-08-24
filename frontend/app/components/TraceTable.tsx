@@ -12,6 +12,7 @@ import type {
   SpanOut,
 } from "../lib/api";
 import {
+  deleteColumnError,
   deleteEvaluator,
   levelGroup,
   listEvaluators,
@@ -325,7 +326,9 @@ export function TraceTable({
       if (!window.confirm(`Delete the "${ev.name}" column? Past results stay in the score history.`)) return;
       void deleteEvaluator(ev.id)
         .then(() => listEvaluators().then(setEvaluators))
-        .catch((e) => setRunError(e instanceof Error ? e.message : "delete failed"));
+        // Say why it failed and what to do about it — the API's own "insufficient role" in a red
+        // banner reads as the product being broken.
+        .catch((e) => setRunError(deleteColumnError(e, ev.name)));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [busyCols, busyRows, evaluators, conversations, turns]);

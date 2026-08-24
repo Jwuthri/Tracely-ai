@@ -64,6 +64,18 @@ export type EvaluatorDraft = {
   score_name?: string;
 };
 
+/** An evaluator write that the API refused, carrying the status so callers can explain WHY
+ *  rather than echoing the backend's wording at the user. */
+export class EvaluatorActionError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+    this.name = "EvaluatorActionError";
+  }
+}
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
@@ -73,9 +85,31 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     } catch {
       /* keep statusText */
     }
-    throw new Error(detail);
+    throw new EvaluatorActionError(detail, res.status);
   }
   return res.json() as Promise<T>;
+}
+
+/** What to show when deleting a metric column fails.
+ *
+ *  The raw API text is right but unhelpful in a banner: a machine credential gets back
+ *  "insufficient role", which tells a user neither what happened nor what to do. Changing the
+ *  workspace needs a signed-in person — any role, owner through member — because an ingest key
+ *  lives in CI logs and `.env` files, and a leak should cost traces, not the columns people built.
+ */
+export function deleteColumnError(err: unknown, columnName: string): string {
+  const status = err instanceof EvaluatorActionError ? err.status : 0;
+  if (status === 403) {
+    return `Not allowed to delete “${columnName}”. Deleting a column needs a signed-in Tracely account — an ingest key can send and read traces, but can't change the workspace.`;
+  }
+  if (status === 401) {
+    return `Your session has expired — sign in again to delete “${columnName}”.`;
+  }
+  if (status === 404) {
+    return `“${columnName}” no longer exists — someone may have deleted it already. Refresh to update the table.`;
+  }
+  const detail = err instanceof Error && err.message ? err.message : "unknown error";
+  return `Could not delete “${columnName}”: ${detail}`;
 }
 
 export async function listEvaluators(): Promise<EvaluatorDef[]> {
