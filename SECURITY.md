@@ -5,7 +5,7 @@
 **Please do not open a public issue for security problems.**
 
 Report privately via GitHub's
-[private vulnerability reporting](https://github.com/Jwuthri/Tracely/security/advisories/new).
+[private vulnerability reporting](https://github.com/Jwuthri/Tracely-ai/security/advisories/new).
 Include what the issue is, how to reproduce it, and what you think the impact is.
 
 You can expect an acknowledgement within 72 hours and a fix or mitigation plan within 14 days

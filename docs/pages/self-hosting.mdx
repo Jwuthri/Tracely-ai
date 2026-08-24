@@ -15,7 +15,7 @@ Two paths: **one-click Railway**, or **docker compose** on a box you own.
 ## Docker compose (one machine, 5 minutes)
 
 ```bash
-git clone https://github.com/Jwuthri/Tracely && cd Tracely
+git clone https://github.com/Jwuthri/Tracely-ai && cd Tracely
 docker compose up -d --build --wait
 ```
 
@@ -65,7 +65,7 @@ volume automatically; keep them all private.
 
 ### Add the three app services
 
-**New → GitHub Repo** (a fork of `Jwuthri/Tracely`) three times, setting each service's
+**New → GitHub Repo** (a fork of `Jwuthri/Tracely-ai`) three times, setting each service's
 config-as-code path: `deploy/railway/backend.json`, `deploy/railway/worker.json`,
 `deploy/railway/frontend.json`. Give **backend** and **frontend** public domains; leave the
 worker private.
@@ -73,7 +73,7 @@ worker private.
 ### Paste the variables
 
 Every variable — including the `${{Service.VAR}}` cross-references — is pre-written in
-[`deploy/railway/.env.railway.example`](https://github.com/Jwuthri/Tracely/blob/master/deploy/railway/.env.railway.example).
+[`deploy/railway/.env.railway.example`](https://github.com/Jwuthri/Tracely-ai/blob/master/deploy/railway/.env.railway.example).
 Generate two secrets with `openssl rand -hex 32`: `SESSION_SECRET` (login) and
 `SECRETS_ENCRYPTION_KEY` (encrypts each workspace's OpenRouter key and scenario endpoint tokens
 at rest).
@@ -88,9 +88,9 @@ workspace, and point the SDK at the backend's public domain.
 
 The full walkthrough — IPv6 binding gotchas, private networking, scaling the worker, re-publishing
 the template — lives in
-[`deploy/railway/README.md`](https://github.com/Jwuthri/Tracely/blob/master/deploy/railway/README.md);
+[`deploy/railway/README.md`](https://github.com/Jwuthri/Tracely-ai/blob/master/deploy/railway/README.md);
 the production-hardening runbook (auth guards, backups, post-deploy verification) is
-[`guides/DEPLOY.md`](https://github.com/Jwuthri/Tracely/blob/master/guides/DEPLOY.md).
+[`guides/DEPLOY.md`](https://github.com/Jwuthri/Tracely-ai/blob/master/guides/DEPLOY.md).
 
 <Callout type="info">
   **LLM judges on self-host.** Each workspace brings its own OpenRouter key (**Settings →

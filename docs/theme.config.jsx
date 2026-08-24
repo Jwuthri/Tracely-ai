@@ -1,7 +1,7 @@
 import { useRouter } from "next/router";
 import { useConfig } from "nextra-theme-docs";
 
-const REPO = "https://github.com/Jwuthri/Tracely";
+const REPO = "https://github.com/Jwuthri/Tracely-ai";
 const SITE = "https://tracely-ai.com";
 const DOCS = "https://doc.tracely-ai.com";
 

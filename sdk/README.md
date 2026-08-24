@@ -74,7 +74,7 @@ incoming context is ambient — pass `conversation` and leave `traceparent` unse
 (`instrument=["litellm"]` — 100+ providers via one callback), and a non-patching drop-in
 (`from tracely_sdk.openai import OpenAI` / `wrap_openai`). Under `"auto"`, when the LangChain
 instrumentor is present it owns LLM spans and the provider instrumentors are skipped to avoid
-duplicate spans (override with an explicit list). Full guide: the docs [Automatic instrumentation](https://github.com/Jwuthri/Tracely/blob/master/docs/pages/automatic.mdx) page.
+duplicate spans (override with an explicit list). Full guide: the docs [Automatic instrumentation](https://github.com/Jwuthri/Tracely-ai/blob/master/docs/pages/automatic.mdx) page.
 
 ### Manual / custom spans (the escape hatch)
 
@@ -223,7 +223,7 @@ def run(user_input: str):
 
 **Auto-instrument / drop-in code replays too** (no manual seam required): inside a `fixtures()` block Tracely class-patches the provider's create-method, so code that calls the SDK directly — `client.chat.completions.create(...)` under `instrument="auto"` or the `tracely_sdk.openai` drop-in — is served the recorded completion (reconstructed into a provider-shaped response) and never hits the network. Covered today: **OpenAI `chat.completions`**, **Anthropic `messages`**, **Google GenAI `models.generate_content`**, **Mistral `chat.complete`** and **LiteLLM `completion`/`acompletion`** (sync + async each). A provider outside that list stays live in replay — so when a replayed run ends with recorded calls it never asked for, the SDK logs a warning naming them: that is the signal something went to the network instead of being replayed, and the gate's verdict is worth less than it looks. The manual `call_llm` seam remains the way to get provider-agnostic hermetic replay everywhere.
 
-This is what makes replay deterministic, offline, and free (no API keys, no cost). See [regression-testing design](https://github.com/Jwuthri/Tracely/blob/master/design/part2-tracely/05-regression-testing.md).
+This is what makes replay deterministic, offline, and free (no API keys, no cost). See [regression-testing design](https://github.com/Jwuthri/Tracely-ai/blob/master/design/part2-tracely/05-regression-testing.md).
 
 ---
 

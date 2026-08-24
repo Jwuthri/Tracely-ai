@@ -74,7 +74,7 @@ Every item here costs $0. Verified 2026-08-15: OpenAlternative is no longer on t
 ```
 Name:        Tracely
 URL:         https://tracely-ai.com
-GitHub:      https://github.com/Jwuthri/Tracely
+GitHub:      https://github.com/Jwuthri/Tracely-ai
 Docs:        https://doc.tracely-ai.com
 License:     MIT · self-hostable · Python SDK: pip install tracely-ai
 
@@ -221,7 +221,7 @@ tags:
   - openai
   - langchain
 urls:
-  repo: https://github.com/Jwuthri/Tracely
+  repo: https://github.com/Jwuthri/Tracely-ai
   website: https://tracely-ai.com
   docs: https://doc.tracely-ai.com
 license: MIT

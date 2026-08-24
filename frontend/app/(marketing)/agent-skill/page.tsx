@@ -9,7 +9,7 @@ import { PageShell, prose } from "../_components/PageShell";
 // canonical install instruction the README and the docs both point at. The same command appears in
 // README.md and docs/pages/skill.mdx — change all three together or one of them installs nothing.
 
-const INSTALL = "npx skills add https://github.com/Jwuthri/Tracely --skill tracely";
+const INSTALL = "npx skills add https://github.com/Jwuthri/Tracely-ai --skill tracely";
 
 export const metadata: Metadata = {
   title: { absolute: "Tracely Agent Skill — Teach Claude Code and Cursor to Instrument Your Agents" },

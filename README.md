@@ -16,7 +16,7 @@ that would ship them again — and tells you the moment any of it happens.
 
 [**Website**](https://tracely-ai.com) · [**Docs**](https://doc.tracely-ai.com) · [**Product guide**](https://doc.tracely-ai.com/product) · [**Agent skill**](#teach-your-coding-agent-tracely) · [**Guided tour**](guides/OVERVIEW.md) · [**2-min demo**](guides/DEMO.md) · [**Design dossier**](design/README.md)
 
-[![CI](https://github.com/Jwuthri/Tracely/actions/workflows/ci.yml/badge.svg)](https://github.com/Jwuthri/Tracely/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/tracely-ai?logo=pypi&logoColor=white)](https://pypi.org/project/tracely-ai/) [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://pypi.org/project/tracely-ai/) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Stars](https://img.shields.io/github/stars/Jwuthri/Tracely?style=flat&logo=github)](https://github.com/Jwuthri/Tracely/stargazers)
+[![CI](https://github.com/Jwuthri/Tracely-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Jwuthri/Tracely-ai/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/tracely-ai?logo=pypi&logoColor=white)](https://pypi.org/project/tracely-ai/) [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://pypi.org/project/tracely-ai/) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Stars](https://img.shields.io/github/stars/Jwuthri/Tracely-ai?style=flat&logo=github)](https://github.com/Jwuthri/Tracely-ai/stargazers)
 
 **Self-host the whole stack in one click** — API, worker, UI, Postgres, ClickHouse, Redis and MinIO:
 
@@ -168,7 +168,7 @@ Long-term roadmap: [10-mvp-and-roadmap.md](design/part2-tracely/10-mvp-and-roadm
 ### Everything in Docker — the whole product, populated
 
 ```bash
-git clone https://github.com/Jwuthri/Tracely && cd Tracely
+git clone https://github.com/Jwuthri/Tracely-ai && cd Tracely
 docker compose --profile demo up -d --build --wait
 open http://localhost:3001
 ```
@@ -306,7 +306,7 @@ drives them itself. **Nothing to install, import or shim**, so a TypeScript or G
 like a Python one.
 
 ```yaml
-      - uses: Jwuthri/Tracely/.github/actions/tracely-gate@master
+      - uses: Jwuthri/Tracely-ai/.github/actions/tracely-gate@master
         with:
           api:   https://tracely.your-co.dev
           key:   ${{ secrets.TRACELY_KEY }}
@@ -338,7 +338,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # → your existing step(s) that run the agent and emit env=ci traces go here ←
-      - uses: Jwuthri/Tracely/.github/actions/tracely-gate@master
+      - uses: Jwuthri/Tracely-ai/.github/actions/tracely-gate@master
         with:
           mode:  gate                          # grade the ci traces this workflow emitted
           agent: planner                       # which agent's promoted suite to run
@@ -427,7 +427,7 @@ what to evaluate, and how to wire the gate — so "add Tracely to this agent" is
 of a docs tab.
 
 ```bash
-npx skills add https://github.com/Jwuthri/Tracely --skill tracely
+npx skills add https://github.com/Jwuthri/Tracely-ai --skill tracely
 ```
 
 Works with Claude Code, Cursor, Copilot, Antigravity and anything else the
@@ -498,7 +498,7 @@ One deliberate adaptation: ClickHouse server-side `async_insert` instead of an i
 | [`frontend/`](frontend/README.md) | The Next.js web app — trace explorer, clusters, cases, gates, trends, alerts builder, settings, auth. |
 | [`sdk/`](sdk/README.md) | The Python SDK (instrument agents over OTLP, hermetic record-replay) + the `tracely` CI gate CLI. |
 | [`docs/`](docs/README.md) | The published docs site (Nextra) — SDK reference **and** the per-screen product guide. `make docs` → :3002. |
-| [`skills/`](skills/tracely/SKILL.md) | The Tracely agent skill — `npx skills add https://github.com/Jwuthri/Tracely --skill tracely`. |
+| [`skills/`](skills/tracely/SKILL.md) | The Tracely agent skill — `npx skills add https://github.com/Jwuthri/Tracely-ai --skill tracely`. |
 | [`scripts/`](scripts/README.md) | Dev/demo helpers (raw-OTLP sender, one-command `seed_demo.py`, gate shim). |
 | [`design/`](design/README.md) | The full design dossier — reverse-engineered Langfuse + every Tracely design decision. |
 
@@ -539,7 +539,7 @@ cd frontend && pnpm test && pnpm build      # vitest + tsc typecheck + lint
 
 <div align="center">
 
-**[tracely-ai.com](https://tracely-ai.com)** · [Docs](https://doc.tracely-ai.com) · [Product guide](https://doc.tracely-ai.com/product) · [Star on GitHub](https://github.com/Jwuthri/Tracely)
+**[tracely-ai.com](https://tracely-ai.com)** · [Docs](https://doc.tracely-ai.com) · [Product guide](https://doc.tracely-ai.com/product) · [Star on GitHub](https://github.com/Jwuthri/Tracely-ai)
 
 If Tracely is useful to you, a ⭐ helps other people find it.
 

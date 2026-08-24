@@ -2,7 +2,7 @@
 
 Three end-to-end agent apps — **LangChain/LangGraph**, the **OpenAI Agents SDK** and
 **Anthropic (raw Claude API)** — each built idiomatically for its framework, each traced by
-[Tracely](https://github.com/Jwuthri/Tracely) with a couple of lines.
+[Tracely](https://github.com/Jwuthri/Tracely-ai) with a couple of lines.
 
 All three play the **same 4-turn customer conversation** against the same tiny fake store
 ([`shared.py`](shared.py)), so you can open Tracely and compare, side by side, how the same
@@ -140,7 +140,7 @@ Open the UI (local: <http://localhost:3001>) after a run:
 
 From there the rest of Tracely's loop applies to these demos as-is: failures cluster, a
 cluster becomes a regression case, and `tracely gate` / `tracely simulate` turn it into a PR
-check — see the [Tracely docs](https://github.com/Jwuthri/Tracely).
+check — see the [Tracely docs](https://github.com/Jwuthri/Tracely-ai).
 
 ## Notes
 

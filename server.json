@@ -5,7 +5,7 @@
   "description": "Query AI agent traces, failure clusters, evaluators and trends from your Tracely workspace.",
   "version": "0.3.2",
   "repository": {
-    "url": "https://github.com/Jwuthri/Tracely",
+    "url": "https://github.com/Jwuthri/Tracely-ai",
     "source": "github"
   },
   "websiteUrl": "https://tracely-ai.com",

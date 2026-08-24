@@ -23,8 +23,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://tracely-ai.com"
 Documentation = "https://doc.tracely-ai.com"
-Source = "https://github.com/Jwuthri/Tracely"
-Issues = "https://github.com/Jwuthri/Tracely/issues"
+Source = "https://github.com/Jwuthri/Tracely-ai"
+Issues = "https://github.com/Jwuthri/Tracely-ai/issues"
 
 [project.optional-dependencies]
 # frontier providers

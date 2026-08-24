@@ -2,7 +2,7 @@
 // it, and a wrong value there silently breaks every absolute URL Google and Slack resolve.
 export const SITE_URL = "https://tracely-ai.com";
 export const DOCS_URL = "https://doc.tracely-ai.com";
-export const GITHUB_URL = "https://github.com/Jwuthri/Tracely";
+export const GITHUB_URL = "https://github.com/Jwuthri/Tracely-ai";
 
 /** The homepage's search-facing title. Leads with what people type, not with the positioning line. */
 export const SITE_TITLE = "Tracely — LLM Observability & AI Agent Evaluation in CI";

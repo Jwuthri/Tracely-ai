@@ -29,7 +29,7 @@ Examples of unacceptable behavior:
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the
 maintainers by opening a private report via the repository's
-[Security advisories](https://github.com/Jwuthri/Tracely/security/advisories/new) page (it is
+[Security advisories](https://github.com/Jwuthri/Tracely-ai/security/advisories/new) page (it is
 visible only to maintainers) or by contacting the maintainer directly through GitHub.
 
 All complaints will be reviewed and investigated promptly and fairly. Maintainers are obligated

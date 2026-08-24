@@ -155,7 +155,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: Jwuthri/Tracely/.github/actions/tracely-gate@master
+      - uses: Jwuthri/Tracely-ai/.github/actions/tracely-gate@master
         with:
           api: ${{ secrets.TRACELY_API }}
           key: ${{ secrets.TRACELY_KEY }}
