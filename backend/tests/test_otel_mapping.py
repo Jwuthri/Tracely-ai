@@ -87,25 +87,35 @@ def test_to_rows_shape() -> None:
 
 
 def _event(
-    attrs: dict, *, status_code: int = 0, name: str = "span", events: list | None = None
+    attrs: dict,
+    *,
+    status_code: int = 0,
+    name: str = "span",
+    events: list | None = None,
+    times: tuple[int, int, int] = (1_000, 2_000, 1_500),
 ) -> dict:
     """Build one span from a flat {key: value} attr dict and return its mapped event.
 
     `events` is a list of `(event_name, {attr: value})` — span events, which carry both recorded
     exceptions and the OTel GenAI *event* message convention.
+
+    `times` is `(span start, span end, event)` in epoch nanoseconds. The default is a toy window;
+    anything that asserts on a *duration* must pass real nanos, since a datetime only has
+    microsecond resolution and the default 500ns gap rounds away.
     """
+    start_ns, end_ns, event_ns = times
     span = Span(
         name=name,
         trace_id=b"\x01" * 16,
         span_id=b"\x02" * 8,
-        start_time_unix_nano=1_000,
-        end_time_unix_nano=2_000,
+        start_time_unix_nano=start_ns,
+        end_time_unix_nano=end_ns,
     )
     span.attributes.extend([_kv(k, v) for k, v in attrs.items()])
     for ev_name, ev_attrs in events or []:
         ev = span.events.add()
         ev.name = ev_name
-        ev.time_unix_nano = 1_500
+        ev.time_unix_nano = event_ns
         ev.attributes.extend([_kv(k, v) for k, v in ev_attrs.items()])
     if status_code:
         span.status.code = status_code
@@ -401,6 +411,46 @@ def test_genai_event_convention_messages_are_read():
     )
     assert json.loads(e["input"])[0] == {"role": "user", "content": "what is 2+2?"}
     assert json.loads(e["output"])[0]["content"] == "4"
+
+
+# span 1.0s → 3.0s, first chunk at 1.5s: a 500ms TTFT.
+_STREAMED = (1_000_000_000, 3_000_000_000, 1_500_000_000)
+
+
+def test_openinference_first_token_event_becomes_completion_start_time():
+    """The default `init(instrument=[...])` path marks the first streamed chunk with a span EVENT,
+    not an attribute — so streamed spans arrived with a NULL `completion_start_time` and the ops
+    TTFT metric had nothing to read for anyone who wasn't on the drop-in wrappers."""
+    e = _event(
+        {"openinference.span.kind": "LLM", "llm.model_name": "gpt-4o"},
+        events=[("First Token Stream Event", {})],
+        times=_STREAMED,
+    )
+    assert (e["completion_start_time"] - e["start_time"]).total_seconds() == 0.5
+
+
+def test_our_own_completion_start_attribute_wins_over_the_event():
+    """The drop-in wrappers stamp the first CONTENT delta — a sharper mark than the instrumentors'
+    first-chunk-of-any-kind, and the one the thinking/generation split reads."""
+    e = _event(
+        {"openinference.span.kind": "LLM", "tracely.completion_start_time": 2_000_000_000},
+        events=[("First Token Stream Event", {})],
+        times=_STREAMED,
+    )
+    assert (e["completion_start_time"] - e["start_time"]).total_seconds() == 1.0
+
+
+def test_an_unrelated_span_event_is_not_a_first_token_mark():
+    e = _event(
+        {"openinference.span.kind": "LLM"},
+        events=[("exception", {"exception.type": "ValueError"})],
+        times=_STREAMED,
+    )
+    assert e["completion_start_time"] is None
+
+
+def test_a_non_streamed_span_has_no_completion_start_time():
+    assert _event({"openinference.span.kind": "LLM"})["completion_start_time"] is None
 
 
 def test_attributes_win_over_events():
