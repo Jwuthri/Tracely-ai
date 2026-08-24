@@ -235,7 +235,7 @@ def render_markdown(data: dict, web_url: str, sha: str) -> str:
         lines.append("")
     link = gate_link(data, web_url)
     if link:
-        lines.append(f"[View the full gate run →]({link})")
+        lines.append(f"[View full verdict on Tracely →]({link})")
     return "\n".join(lines)
 
 

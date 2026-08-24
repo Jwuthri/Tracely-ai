@@ -584,14 +584,29 @@ export type SharedSession = {
   scores: EvalScore[];
 };
 
-/** A shared CI gate verdict. A trimmed `GateRun`: the backend drops every id that would let an
- *  anonymous reader reach anything else (trace ids, case ids, the project). */
-export type SharedGate = Omit<GateRun, "cases"> & {
+/** A shared CI gate verdict. NOT a trimmed `GateRun` — an allow-list built server-side (see
+ *  `api/routers/share.py`). There is no prompt/response text, no judge rationale, no trace or case
+ *  ids, no model names, no cost, no latency, no branch name. `evaluators` holds the NAMES of the
+ *  checks that failed and nothing else. Don't widen this type without widening that allow-list. */
+export type SharedGate = {
   kind: "gate";
-  cases: { title: string; verdict: string; detail: Record<string, unknown> }[];
+  agent: string | null;
+  status: string;
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  pr_number: number | null;
+  /** 7 chars, and only when the git ref actually looked like a commit SHA. */
+  sha: string | null;
+  ran_at: string | null;
+  /** Whether this deployment lets a stranger sign up — picks which CTA the page shows. */
+  signup_open: boolean;
+  cases: { label: string; verdict: string; evaluators: string[] }[];
 };
 
-export type Shared = SharedSession | SharedGate;
+/** Unix seconds; the footer tells a visitor when the link stops working. */
+export type Shared = (SharedSession | SharedGate) & { expires_at?: number };
 
 /** Read a publicly shared object. Deliberately NOT authenticated — the token in the path is the
  *  whole credential, and the visitor has no session to send. `null` on 404 (which the backend also

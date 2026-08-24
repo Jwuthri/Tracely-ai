@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getShared, type ConvNode, type SharedGate, type SharedSession } from "@/app/lib/api";
 import { convUsage, fmtUsd } from "@/app/lib/usage";
+import { DOCS_URL } from "@/app/lib/site";
 import { Badge, verdictVariant } from "@/app/components/ui";
 import { SessionView } from "@/app/components/SessionView";
 
@@ -22,40 +23,186 @@ export default async function SharedPage({ params }: { params: Promise<{ token: 
 
   return (
     <div className="bg-grid min-h-screen">
-      <main className="mx-auto w-full max-w-[1240px] px-8 py-8">
+      <main
+        className={clsx(
+          "mx-auto w-full px-6 py-10",
+          data.kind === "gate" ? "max-w-[880px]" : "max-w-[1240px]",
+        )}
+      >
         {data.kind === "gate" ? <GateVerdict gate={data} /> : <Conversation data={data} />}
-        <Cta kind={data.kind === "gate" ? "gate" : "conversation"} />
+        <Footer expiresAt={data.expires_at} />
       </main>
     </div>
   );
 }
 
-/** The logged-out CTA. This page exists because the link lands in a public pull request, so the
- *  one job below the fold is telling a stranger what they just looked at. */
-// ponytail: plain copy + one link. Oscar's spec (conv-t6) drops in here without touching anything
-// above it.
-function Cta({ kind }: { kind: "gate" | "conversation" }) {
+/** Same strip on both kinds of share page. Mono, uppercase, no logo, no nav. */
+function Footer({ expiresAt }: { expiresAt?: number }) {
+  const expires = expiresAt
+    ? new Date(expiresAt * 1000).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
   return (
-    <footer className="reveal mt-10 border-t border-line pt-6 text-center">
-      <p className="text-[13px] text-fg-muted">
-        {kind === "gate" ? (
-          <>
-            This is a <span className="text-fg">Tracely</span> regression gate — CI tests generated
-            from real production failures, run on every pull request.
-          </>
-        ) : (
-          <>
-            Traced and graded by <span className="text-fg">Tracely</span> — every agent run scored,
-            every failure turned into a test that gates the next pull request.
-          </>
-        )}
+    <footer className="mt-10 border-t border-line pt-5">
+      <p className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-faint">
+        Shared via Tracely · read-only{expires ? ` · link expires ${expires}` : ""}
       </p>
-      <a href="/" className="mt-3 inline-block btn-primary">
-        Try Tracely free →
+      <a
+        href={`${DOCS_URL}/cli#github-actions`}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-2 inline-block text-[12.5px] text-fg-muted transition-colors hover:text-signal"
+      >
+        Add the gate to your repo (5 lines of YAML) →
       </a>
     </footer>
   );
 }
+
+// ── CI gate verdict ──────────────────────────────────────────────────────────
+// Order is the spec's, and it is load-bearing: verdict banner and case table are the whole page
+// above the fold. Nothing markety renders before a visitor can answer "did this PR break it?".
+
+function GateVerdict({ gate: g }: { gate: SharedGate }) {
+  const failed = g.cases.filter((c) => c.verdict === "FAIL");
+  const skipped = g.cases.filter((c) => c.verdict === "SKIP");
+  const rest = g.cases.filter((c) => c.verdict !== "FAIL" && c.verdict !== "SKIP");
+
+  return (
+    <>
+      <VerdictBanner gate={g} />
+
+      <section className="reveal card mt-6 overflow-hidden">
+        {g.cases.length === 0 ? (
+          <div className="px-4 py-10 text-center text-[13px] text-fg-faint">
+            No cases were graded in this run.
+          </div>
+        ) : (
+          <>
+            {[...failed, ...rest].map((c, i) => (
+              <div
+                key={i}
+                className="flex flex-wrap items-center gap-3 border-b border-line/50 px-4 py-3 text-[12.5px] last:border-0"
+              >
+                <Badge variant={verdictVariant(c.verdict)}>{c.verdict}</Badge>
+                <span className="min-w-0 flex-1 text-fg">{c.label}</span>
+                {c.evaluators.map((e) => (
+                  <span key={e} className="font-mono text-[11px] text-fail">
+                    {e}
+                  </span>
+                ))}
+              </div>
+            ))}
+            {skipped.length > 0 && (
+              <details className="border-t border-line/50 px-4 py-3">
+                <summary className="cursor-pointer font-mono text-[11.5px] text-fg-faint">
+                  {skipped.length} not exercised
+                </summary>
+                <ul className="mt-2 space-y-1">
+                  {skipped.map((c, i) => (
+                    <li key={i} className="text-[12.5px] text-fg-muted">
+                      {c.label}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </>
+        )}
+      </section>
+
+      {/* The whole education, in one sentence. */}
+      <p className="reveal mt-4 text-[13px] leading-relaxed text-fg-muted">
+        Tracely replayed {g.total} real production failure{g.total === 1 ? "" : "s"} against this
+        PR&apos;s agent. Every row is a regression test frozen from a real trace — no hand-written
+        dataset.
+      </p>
+
+      <Cta signupOpen={g.signup_open} />
+    </>
+  );
+}
+
+function VerdictBanner({ gate: g }: { gate: SharedGate }) {
+  const tone =
+    g.status === "PASS"
+      ? { box: "border-ok/30 bg-ok/[0.04]", text: "text-ok" }
+      : g.status === "NO_COVERAGE"
+        ? { box: "border-warn/30 bg-warn/[0.05]", text: "text-warn" }
+        : g.status === "FAIL" || g.status === "ERROR"
+          ? { box: "border-fail/30 bg-fail/[0.05]", text: "text-fail" }
+          : { box: "border-info/30 bg-info/[0.04]", text: "text-info" };
+
+  const line = [
+    g.agent,
+    g.pr_number ? `PR #${g.pr_number}` : null,
+    g.sha,
+    `${g.total} case${g.total === 1 ? "" : "s"}: ${g.passed} passed · ${g.failed} failed · ${g.skipped} skipped`,
+    relativeTime(g.ran_at),
+  ].filter(Boolean);
+
+  return (
+    <header className={clsx("reveal card p-6", tone.box)}>
+      <div className={clsx("font-display text-[40px] font-extrabold leading-none", tone.text)}>
+        {g.status}
+      </div>
+      <div className="mt-3 font-mono text-[12px] text-fg-muted">{line.join(" · ")}</div>
+      {g.status === "NO_COVERAGE" && (
+        <p className="mt-3 max-w-xl text-[12.5px] leading-snug text-warn/90">
+          This run graded 0 of {g.total} case(s) — nothing was actually exercised. A gate that tests
+          nothing is not a pass.
+        </p>
+      )}
+    </header>
+  );
+}
+
+/** One card, no pricing: the visitor hasn't seen value yet. `?ref=gate` is the attribution the
+ *  whole feature is measured on — keep it on both branches. */
+function Cta({ signupOpen }: { signupOpen: boolean }) {
+  return (
+    <section className="reveal card mt-8 p-6 text-center">
+      <h2 className="font-display text-[20px] font-extrabold tracking-tight">
+        Your agent ships to prod with no tests either.
+      </h2>
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+        {/* `/register` is this app's hosted-signup page (the spec called it `/signup`; that route
+            doesn't exist). With ALLOW_PUBLIC_SIGNUP off it refuses everyone but the first user, so
+            a stranger goes to the landing page instead — a second wall is the bug we're fixing.
+            `?ref=gate` rides both branches: it is the attribution this whole feature is judged on. */}
+        <a href={signupOpen ? "/register?ref=gate" : "/?ref=gate"} className="btn-primary">
+          Gate your own agent — free
+        </a>
+        <a
+          href={`${DOCS_URL}/product/gates`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-[13px] text-fg-muted transition-colors hover:text-signal"
+        >
+          How this gate works →
+        </a>
+      </div>
+    </section>
+  );
+}
+
+function relativeTime(iso: string | null): string | null {
+  if (!iso) return null;
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!Number.isFinite(mins) || mins < 0) return null;
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// ── conversation (unchanged behaviour, kept on the same route) ────────────────
 
 function Conversation({ data }: { data: SharedSession }) {
   const { thread_id: threadId, turns, scores } = data;
@@ -80,9 +227,6 @@ function Conversation({ data }: { data: SharedSession }) {
       <header className="reveal">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <h1 className="font-display text-[22px] font-extrabold tracking-tight">Conversation</h1>
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-faint">
-            Shared via Tracely · read-only
-          </span>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[11.5px] text-fg-faint">
           <span>{turns.length} turns</span>
@@ -95,135 +239,5 @@ function Conversation({ data }: { data: SharedSession }) {
         <SessionView conv={conv} turns={turns} shared />
       </div>
     </>
-  );
-}
-
-/** The gate detail page, minus everything a stranger may not have: no trace links, no candidate
- *  ids, no navigation back into the app. Same tone vocabulary as `(app)/gates/[gateId]`. */
-function GateVerdict({ gate: g }: { gate: SharedGate }) {
-  const pass = g.status === "PASS";
-  const nocov = g.status === "NO_COVERAGE";
-  const running = g.status === "RUNNING" || (!g.finished_at && g.status !== "ERROR");
-  const tone = pass
-    ? { box: "border-ok/30 bg-ok/[0.04]", text: "text-ok" }
-    : running
-      ? { box: "border-info/30 bg-info/[0.04]", text: "text-info" }
-      : nocov
-        ? { box: "border-warn/30 bg-warn/[0.05]", text: "text-warn" }
-        : { box: "border-fail/30 bg-fail/[0.05]", text: "text-fail" };
-
-  return (
-    <>
-      <header className="reveal flex flex-wrap items-baseline justify-between gap-3">
-        <h1 className="font-display text-[22px] font-extrabold tracking-tight">
-          Regression gate{g.agent ? ` · ${g.agent}` : ""}
-        </h1>
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-faint">
-          Shared via Tracely · read-only
-        </span>
-      </header>
-
-      <div
-        className={clsx(
-          "reveal card mt-6 flex flex-wrap items-center justify-between gap-6 p-5",
-          tone.box,
-        )}
-      >
-        <div>
-          <div className={clsx("font-display text-[30px] font-extrabold leading-none", tone.text)}>
-            {g.status}
-          </div>
-          <div className="mt-1.5 font-mono text-[12px] text-fg-muted">
-            {g.env}
-            {g.git_ref && ` · ${g.git_ref.slice(0, 8)}`}
-            {g.pr_number ? ` · PR #${g.pr_number}` : ""}
-          </div>
-        </div>
-        <div className="flex gap-3">
-          <Stat n={g.passed} label="passed" tone="text-ok" />
-          <Stat n={g.failed} label="failed" tone={g.failed ? "text-fail" : "text-fg"} />
-          <Stat n={g.skipped} label="skipped" tone="text-fg-muted" />
-        </div>
-      </div>
-
-      {g.status === "FAIL" && (
-        <p className="reveal mt-4 text-[13px] leading-relaxed text-fg-muted">
-          These regression tests were promoted from <span className="text-fg">real production
-          failures</span>. A FAIL means this change reintroduces — or fails to fix — a known one.
-        </p>
-      )}
-      {nocov && (
-        <p className="reveal mt-4 text-[13px] leading-relaxed text-warn/90">
-          No coverage: this run graded 0 of {g.total} case(s). A gate that tests nothing is not a
-          pass.
-        </p>
-      )}
-
-      {(g.warnings?.length ?? 0) > 0 && (
-        <ul className="reveal card mt-4 space-y-1 border-warn/30 bg-warn/[0.05] p-4">
-          {g.warnings.map((w, i) => (
-            <li key={i} className="font-mono text-[12px] text-fg-muted">
-              ⚠️ {w}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <section className="reveal card mt-6 overflow-hidden">
-        <div className="border-b border-line px-4 py-3 text-[13px] font-semibold text-fg">Cases</div>
-        {g.cases.length === 0 ? (
-          <div className="px-4 py-10 text-center text-[13px] text-fg-faint">
-            {running ? "Still running — results appear as each case is graded." : "No cases."}
-          </div>
-        ) : (
-          g.cases.map((c, i) => (
-            <div
-              key={i}
-              className="grid grid-cols-[92px_1fr] items-start gap-3 border-b border-line/50 px-4 py-3 text-[12.5px] last:border-0"
-            >
-              <Badge variant={verdictVariant(c.verdict)}>{c.verdict}</Badge>
-              <span className="min-w-0">
-                <span className="text-fg">{c.title}</span>
-                {caseReasons(c.detail).map((r, j) => (
-                  <span key={j} className="mt-1 block font-mono text-[11px] text-fail">
-                    ✗ {r}
-                  </span>
-                ))}
-              </span>
-            </div>
-          ))
-        )}
-      </section>
-    </>
-  );
-}
-
-/** Why a case is not a PASS, in plain lines. Mirrors `case_reason()` in the SDK's PR comment —
- *  the reader of this page and the reader of that comment should see the same sentence. */
-function caseReasons(detail: Record<string, unknown>): string[] {
-  const d = detail ?? {};
-  const list = (k: string) => (Array.isArray(d[k]) ? (d[k] as string[]) : []);
-  const out: string[] = [];
-  if (typeof d.error === "string" && d.error) out.push(d.error);
-  out.push(...list("failed_expectations"), ...list("failed_scores"));
-  if (list("missing_tools").length) out.push(`missing tools: ${list("missing_tools").join(", ")}`);
-  if (list("run_errors").length) out.push(`run failed: ${list("run_errors").join(", ")}`);
-  else if (list("erroring_steps").length) out.push(`errors: ${list("erroring_steps").join(", ")}`);
-  if (d.tools_ok === false && !list("missing_tools").length) out.push("tool sequence mismatch");
-  if (d.quality_pass === false) {
-    out.push(`answer quality below bar${d.quality_reason ? `: ${d.quality_reason}` : ""}`);
-  }
-  if (typeof d.reason === "string" && d.reason) out.push(d.reason);
-  return out;
-}
-
-function Stat({ n, label, tone }: { n: number; label: string; tone: string }) {
-  return (
-    <div className="rounded-lg border border-line bg-ink-900/60 px-4 py-2 text-center">
-      <div className={clsx("font-display text-[22px] font-extrabold leading-none tabular-nums", tone)}>
-        {n}
-      </div>
-      <div className="mt-1 font-mono text-[9.5px] uppercase tracking-wider text-fg-faint">{label}</div>
-    </div>
   );
 }

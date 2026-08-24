@@ -85,7 +85,7 @@ def issue_share(
 
 
 def verify_share(token: str) -> dict:
-    """`{project_id, kind, subject_id, issued_at}` for a valid token; `TokenError` otherwise.
+    """`{project_id, kind, subject_id, issued_at, expires_at}` for a valid token; else `TokenError`.
 
     Tokens minted before this carried the conversation id as `tid` and no `kind`, so those two
     claims are read with the old names as a fallback — links already pasted into a Slack thread
@@ -114,4 +114,5 @@ def verify_share(token: str) -> dict:
         "subject_id": subject_id,
         # A token with no `iat` reads as epoch 0, so any revocation kills it. Fail closed.
         "issued_at": int(claims.get("iat") or 0),
+        "expires_at": int(claims["exp"]),
     }

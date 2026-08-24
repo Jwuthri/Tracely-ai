@@ -17,6 +17,7 @@ Two rules the readers below must keep:
 from __future__ import annotations
 
 import asyncio
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -24,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tracely.api.advisory import advisory_score_names
 from tracely.api.auth import get_project_id
+from tracely.config import settings
 from tracely.auth.tokens import (
     SHARE_KINDS,
     SHARE_TTL_SECONDS,
@@ -104,10 +106,13 @@ async def read_share(token: str) -> dict:
         raise _NOT_FOUND
 
     if kind == "conversation":
-        return await _shared_conversation(project_id, subject_id)
-    if kind == "gate":
-        return await _shared_gate(project_id, subject_id)
-    raise _NOT_FOUND  # a kind this build doesn't read — same answer as a bad token
+        payload = await _shared_conversation(project_id, subject_id)
+    elif kind == "gate":
+        payload = await _shared_gate(project_id, subject_id)
+    else:
+        raise _NOT_FOUND  # a kind this build doesn't read — same answer as a bad token
+    # The footer tells a visitor how long the link lives; the token already knows.
+    return {**payload, "expires_at": claims["expires_at"]}
 
 
 def _revoked_at(project_id: str, kind: str, subject_id: str) -> int | None:
@@ -140,60 +145,74 @@ async def _shared_conversation(project_id: str, thread_id: str) -> dict:
     }
 
 
-# What a case's `detail` may say in public. An ALLOWLIST, not a blocklist: the dict is written by
-# the gate/scenario pipeline and grows, and the keys being kept out are the linking ones
-# (`trace_ids`, `candidate_trace_id`) — a new key must be opted in, never leak by default.
-_PUBLIC_DETAIL_KEYS = frozenset(
-    {
-        "allow_tool_errors",
-        "erroring_steps",
-        "error",
-        "expectations",
-        "failed_expectations",
-        "failed_scores",
-        "match_mode",
-        "missing_tools",
-        "quality_pass",
-        "quality_reason",
-        "reason",
-        "run_errors",
-        "scores",
-        "tool_errors",
-        "tools_ok",
-        "turns",
-    }
+# A gate verdict is an ALLOW-LIST of fields, not "the gate page minus secrets". The page is
+# forwardable and lands in public pull requests that get crawled within hours, so anything not
+# named here is absent by construction — including fields nobody has written yet.
+#
+# SHOWN: agent name, verdict, case counts, case labels, the NAMES of the checks that failed.
+# HIDDEN, on purpose and against the authed view:
+#   · every scrap of prompt/response/tool I/O, system prompts, candidate-vs-original diffs
+#   · judge rationale — `failed_scores` reads "name: the agent replied '…'", and that quote is
+#     the customer's end-user PII. Only the name before the colon survives.
+#   · `failed_expectations` / `detail.reason` (authored scenario text), `detail.error` and
+#     `warnings` (hostnames, endpoint URLs, stack traces)
+#   · model + provider names, token counts, cost, latency — vendor stack and spend
+#   · branch names (`git_ref` is emitted only when it looks like a commit SHA), repo/org, env
+#   · trace ids, case/scenario ids, the gate id, project/workspace name, and who triggered the run
+_SHA = re.compile(r"[0-9a-f]{7,40}\Z")
+
+_STRUCTURAL_CHECKS = (
+    # (detail key, predicate, public check name). A fixed category name, never a message.
+    ("failed_expectations", bool, "scenario_expectation"),
+    ("error", bool, "endpoint_error"),
+    ("missing_tools", bool, "missing_tools"),
+    ("run_errors", bool, "run_outcome"),
+    ("erroring_steps", bool, "tool_errors"),
+    ("tools_ok", lambda v: v is False, "tool_sequence"),
+    ("quality_pass", lambda v: v is False, "answer_quality"),
 )
 
 
-def _public_gate(gate: GateRun, agent_slug: str | None, cases: list[tuple]) -> dict:
-    """The verdict, and only the verdict.
+def _failed_checks(detail: dict | None) -> list[str]:
+    """WHAT failed, never WHY.
 
-    Left out on purpose, because this URL ends up in a public pull request: `candidate_trace_id`
-    and `detail["trace_ids"]` (they name traces nobody anonymous may read), `evaluation_case_id` /
-    `scenario_id` (internal ids that would enumerate the suite), `project_id`, and `agent_id`.
+    Evaluator names come from `failed_scores`, which the gate writes as `"name: judge comment"` —
+    the comment quotes the agent's answer, so everything from the first colon on is dropped.
+    Structural failures have no evaluator, so they report a fixed category name instead.
     """
+    d = detail or {}
+    out = [
+        name
+        for raw in (d.get("failed_scores") or [])
+        if (name := str(raw).split(":", 1)[0].strip())
+    ]
+    out += [name for key, ok, name in _STRUCTURAL_CHECKS if ok(d.get(key))]
+    return list(dict.fromkeys(out))  # same evaluator can sink several turns
+
+
+def _public_gate(gate: GateRun, agent_slug: str | None, cases: list[tuple]) -> dict:
+    """The verdict, and only the verdict — see the allow-list note above."""
+    ran_at = gate.finished_at or gate.created_at
     return {
         "kind": "gate",
-        "id": gate.id,
         "agent": agent_slug,
-        "env": gate.env,
-        "git_ref": gate.git_ref,
-        "pr_number": gate.pr_number,
         "status": gate.status,
         "total": gate.total,
         "passed": gate.passed,
         "failed": gate.failed,
         "skipped": gate.skipped,
-        "latency_ms": gate.latency_ms,
-        "total_tokens": gate.total_tokens,
-        "warnings": gate.warnings or [],
-        "created_at": gate.created_at.isoformat() if gate.created_at else None,
-        "finished_at": gate.finished_at.isoformat() if gate.finished_at else None,
+        "pr_number": gate.pr_number,
+        # A SHA is public the moment the PR is; a branch name is roadmap ("feat/acme-acquisition").
+        "sha": gate.git_ref[:7] if gate.git_ref and _SHA.match(gate.git_ref) else None,
+        "ran_at": ran_at.isoformat() if ran_at else None,
+        # Whether this deployment lets a stranger sign up — it picks which CTA the page shows.
+        # Our own config, not a customer's; discoverable by visiting /signup either way.
+        "signup_open": settings.allow_public_signup,
         "cases": [
             {
-                "title": title,
+                "label": title,
                 "verdict": gc.verdict,
-                "detail": {k: v for k, v in (gc.detail or {}).items() if k in _PUBLIC_DETAIL_KEYS},
+                "evaluators": _failed_checks(gc.detail),
             }
             for gc, title in cases
         ],
