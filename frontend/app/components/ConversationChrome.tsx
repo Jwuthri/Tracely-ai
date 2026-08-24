@@ -15,7 +15,7 @@ import { Badge, verdictVariant } from "./ui";
    conversation page; Replay and Fleet are their own routes — but all four keep the same header
    and the same strip, so switching lens never looks like landing in a different app. */
 
-export type ConvView = "table" | "timeline" | "replay" | "fleet";
+export type ConvView = "table" | "timeline" | "replay" | "fleet" | "fleet3d";
 
 export function ConversationHeader({
   threadId, turns, usage, agentRef, firstInput,
@@ -94,6 +94,10 @@ export function ConversationTabs({
         <span className="mx-1 h-4 w-px bg-line" />
         <Link href={`${base}/replay`} className={cls("replay")}>▶ Replay{active === "replay" && underline}</Link>
         <Link href={`${base}/fleet`} className={cls("fleet")}>⌂ Fleet{active === "fleet" && underline}</Link>
+        <Link href={`${base}/fleet3d`} className={cls("fleet3d")}>
+          ◇ 3D <span className="rounded-sm bg-signal/15 px-1 font-mono text-[9px] text-signal">beta</span>
+          {active === "fleet3d" && underline}
+        </Link>
       </div>
       <div className="flex items-center gap-2">{right}</div>
     </div>
