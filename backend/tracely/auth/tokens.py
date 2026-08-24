@@ -53,25 +53,30 @@ def verify_session(token: str) -> dict:
 
 # ── public share links ────────────────────────────────────────────────────────
 
-# A share token is a read-only capability for exactly ONE conversation — not a login. It carries
-# its own issuer and deliberately NO `sub`, so it can never satisfy `verify_session` (which requires
-# both), and it must never be handed to `resolve_principal`: doing so would promote a share link
-# into a full project read key. `api/routers/share.py` verifies it directly for that reason.
+# A share token is a read-only capability for exactly ONE object — not a login. It carries its own
+# issuer and deliberately NO `sub`, so it can never satisfy `verify_session` (which requires both),
+# and it must never be handed to `resolve_principal`: doing so would promote a share link into a
+# full project read key. `api/routers/share.py` verifies it directly for that reason.
 SHARE_ISSUER = "tracely-share"
 SHARE_TTL_SECONDS = 30 * 24 * 3600
 
-# ponytail: stateless, so a link dies only when it expires — there is no revoke. To add one, either
-# a `share_revocations` table checked in `verify_share`, or a per-project salt mixed into the
-# signing key (bumping it kills every link for that project at once).
+# The subjects a link may point at. A token names one of these plus one id — never a project, never
+# a list. Adding a kind means adding a reader in `share.py`; an unknown kind reads as 404 there.
+SHARE_KINDS = ("conversation", "gate")
 
 
 def issue_share(
-    project_id: str, thread_id: str, *, ttl_seconds: int = SHARE_TTL_SECONDS
+    project_id: str,
+    subject_id: str,
+    *,
+    kind: str = "conversation",
+    ttl_seconds: int = SHARE_TTL_SECONDS,
 ) -> str:
     now = int(time.time())
     payload = {
         "pid": project_id,
-        "tid": thread_id,
+        "kind": kind,
+        "sid": subject_id,
         "iss": SHARE_ISSUER,
         "iat": now,
         "exp": now + ttl_seconds,
@@ -79,16 +84,34 @@ def issue_share(
     return jwt.encode(payload, settings.session_secret, algorithm="HS256")
 
 
-def verify_share(token: str) -> tuple[str, str]:
-    """`(project_id, thread_id)` for a valid share token; `TokenError` for anything else."""
+def verify_share(token: str) -> dict:
+    """`{project_id, kind, subject_id, issued_at}` for a valid token; `TokenError` otherwise.
+
+    Tokens minted before this carried the conversation id as `tid` and no `kind`, so those two
+    claims are read with the old names as a fallback — links already pasted into a Slack thread
+    keep resolving. A token with neither claim is rejected rather than falling through to "the
+    whole project".
+
+    Revocation is NOT checked here (this module does no I/O): the caller compares `issued_at`
+    against the subject's revocation timestamp — see `api/routers/share.py`.
+    """
     try:
         claims = jwt.decode(
             token,
             settings.session_secret,
             algorithms=["HS256"],
             issuer=SHARE_ISSUER,
-            options={"require": ["exp", "iss", "pid", "tid"]},
+            options={"require": ["exp", "iss", "pid"]},
         )
     except jwt.PyJWTError as e:
         raise TokenError(str(e)) from e
-    return claims["pid"], claims["tid"]
+    subject_id = claims.get("sid") or claims.get("tid")
+    if not subject_id:
+        raise TokenError("share token names no subject")
+    return {
+        "project_id": claims["pid"],
+        "kind": claims.get("kind") or "conversation",
+        "subject_id": subject_id,
+        # A token with no `iat` reads as epoch 0, so any revocation kills it. Fail closed.
+        "issued_at": int(claims.get("iat") or 0),
+    }

@@ -12,8 +12,9 @@ just as well as a Python one.
 
 Exits 0 on PASS, 1 on FAIL, 2 on error — so it blocks a merge on its own. Inside a
 GitHub Actions run (or with --github) it also posts a commit status + a PR comment,
-linking back to the gate in the Tracely UI. Stdlib only, so it installs with the SDK
-and runs anywhere CI does.
+linking to a PUBLIC, login-free page for that gate run so every reviewer can read the
+verdict (falling back to the authed gate page if a link can't be minted). Stdlib only,
+so it installs with the SDK and runs anywhere CI does.
 """
 
 from __future__ import annotations
@@ -158,6 +159,34 @@ def worst_status(results: list[dict]) -> str:
     )
 
 
+def gate_link(data: dict, web_url: str) -> str:
+    """Where the PR comment points. The PUBLIC share link when one was minted, the authed gate page
+    otherwise — a reviewer without a Tracely login is the whole point, so the login-walled URL is
+    the fallback, not the default."""
+    if data.get("share_url"):
+        return data["share_url"]
+    if web_url and data.get("id"):
+        return f"{web_url.rstrip('/')}/gates/{data['id']}"
+    return f"{web_url.rstrip('/')}/gates" if web_url else ""
+
+
+def mint_share_url(api: str, key: str, web_url: str, gate_id: str) -> str:
+    """A login-free URL for one gate run, or "" if we can't get one.
+
+    Never raises and never blocks the check: an older backend (no `kind` on /api/share), a key
+    without permission, or an unreachable API all mean "post the authed link instead". The gate's
+    own verdict and exit code do not depend on this."""
+    if not (api and key and web_url and gate_id):
+        return ""
+    try:
+        res = _post_json(f"{api.rstrip('/')}/api/share", key, {"kind": "gate", "id": gate_id})
+        token = (res or {}).get("token")
+        return f"{web_url.rstrip('/')}/share/{token}" if token else ""
+    except Exception as e:  # noqa: BLE001 — a link is a nicety; the check must still post
+        print(f"note: could not mint a public share link ({e}); linking to the authed gate page")
+        return ""
+
+
 def render_markdown(data: dict, web_url: str, sha: str) -> str:
     status = data["status"]
     head = _HEAD.get(status, "⚪")
@@ -204,8 +233,9 @@ def render_markdown(data: dict, web_url: str, sha: str) -> str:
             "pass — fix the CI step so the suite actually runs."
         )
         lines.append("")
-    if web_url:
-        lines.append(f"[View the full gate run →]({web_url.rstrip('/')}/gates/{data['id']})")
+    link = gate_link(data, web_url)
+    if link:
+        lines.append(f"[View the full gate run →]({link})")
     return "\n".join(lines)
 
 
@@ -353,6 +383,8 @@ def post_pr_check(
     repo: str,
     sha: str,
     pr: int | None,
+    api: str = "",
+    key: str = "",
 ) -> None:
     """Post the gate result to GitHub (commit status + PR comment) when running in/for Actions.
 
@@ -370,6 +402,11 @@ def post_pr_check(
         print("note: not in a GitHub repo context (no GITHUB_REPOSITORY); skipping PR check")
         return
     gh = GitHub(token, dry_run=args.dry_run)
+    # Mint the public link now, not at gate time: this is the only place we know the result is
+    # actually going to GitHub, and the link is stamped onto each result so both renderers see it.
+    for d in results:
+        if d.get("id"):
+            d["share_url"] = mint_share_url(api, key, web_url, d["id"])
     # NO_COVERAGE is a blocking non-PASS (the gate exercised nothing) → a failing check, not a
     # transient "error". Exit code is already non-zero for any non-PASS (see cmd_gate/cmd_replay).
     state = {"PASS": "success", "FAIL": "failure", "NO_COVERAGE": "failure"}.get(
@@ -379,13 +416,11 @@ def post_pr_check(
     desc = f"{totals['passed']} passed · {totals['failed']} failed · {totals['skipped']} skipped"
     if len(results) > 1:
         desc += f" · {len(results)} agents"
-    target = ""
-    if web_url:
-        base = web_url.rstrip("/")
-        # One agent links straight to its run; several (or a run that never got an id) link to
-        # the list, since there is no single run to open.
-        one = results[0].get("id") if len(results) == 1 else ""
-        target = f"{base}/gates/{one}" if one else f"{base}/gates"
+    # One agent links straight to its run (publicly, when we could mint a link); several link to
+    # the list, since there is no single run to open — and no public page for a set of runs.
+    target = gate_link(results[0], web_url) if len(results) == 1 else ""
+    if not target and web_url:
+        target = f"{web_url.rstrip('/')}/gates"
     if sha:
         gh.commit_status(repo, sha, state, desc, target)
     if pr:
@@ -459,7 +494,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
     render_console(data, sha)
     write_step_summary(render_markdown(data, web_url, sha))
-    post_pr_check(args, [data], web_url, repo, sha, pr)
+    post_pr_check(args, [data], web_url, repo, sha, pr, api, key)
     return 0 if data["status"] == "PASS" else 1
 
 
@@ -601,7 +636,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
         passed = sum(r["status"] == "PASS" for r in results)
         print(f"  {passed}/{len(results)} agents passed · Result: {worst}\n")
     write_step_summary(render_markdown_all(results, web_url, sha))
-    post_pr_check(args, results, web_url, repo, sha, pr)
+    post_pr_check(args, results, web_url, repo, sha, pr, api, key)
     # 0 pass · 1 the gate said no · 2 we never got an answer (timeout, unreachable API, or the
     # server marked the run ERROR). All non-zero, so the merge blocks either way — the split just
     # says whose fault it was.
@@ -713,7 +748,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     render_console(data, sha)
     write_step_summary(render_markdown(data, web_url, sha))
-    post_pr_check(args, [data], web_url, repo, sha, pr)
+    post_pr_check(args, [data], web_url, repo, sha, pr, api, key)
     return 0 if data["status"] == "PASS" else 1
 
 

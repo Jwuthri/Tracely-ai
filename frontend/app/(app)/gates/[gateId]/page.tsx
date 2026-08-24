@@ -4,6 +4,7 @@ import { Badge, verdictVariant } from "@/app/components/ui";
 import { CopyId } from "@/app/components/CopyId";
 import { GateAutoRefresh } from "@/app/components/GateAutoRefresh";
 import { IconArrowLeft, IconBolt, IconCheck, IconX } from "@/app/components/icons";
+import { ShareButton } from "@/app/components/ShareButton";
 
 export default async function GatePage({ params }: { params: Promise<{ gateId: string }> }) {
   const { gateId } = await params;
@@ -30,10 +31,12 @@ export default async function GatePage({ params }: { params: Promise<{ gateId: s
 
   return (
     <div className="space-y-6">
-      <header className="reveal">
+      <header className="reveal flex flex-wrap items-start justify-between gap-3">
         <a href="/gates" className="inline-flex items-center gap-1.5 text-[13px] text-fg-muted transition-colors hover:text-signal">
           <IconArrowLeft className="h-4 w-4" /> CI gates
         </a>
+        {/* The CLI mints one of these for every PR comment; this is the same link, by hand. */}
+        <ShareButton kind="gate" id={gateId} label="this gate result" />
       </header>
 
       {/* status banner */}

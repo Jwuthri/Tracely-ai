@@ -9,6 +9,7 @@ query-building in route handlers. Functions are grouped by aggregate; they retur
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import delete, desc, func, or_, select, update
@@ -45,6 +46,7 @@ from tracely.infrastructure.db.models import (
     RollingSummary,
     Scenario,
     ScoreAnnotation,
+    ShareRevocation,
     UsageCounter,
 )
 
@@ -1487,3 +1489,23 @@ def assistant_chat_delete(
     s.commit()
     return True
 
+
+
+# ── public share links ────────────────────────────────────────────────────────
+
+
+def share_revoked_at(s: Session, project_id: str, kind: str, subject_id: str) -> datetime | None:
+    """When sharing was stopped for this subject, if it ever was."""
+    row = s.get(ShareRevocation, (project_id, kind, subject_id))
+    return row.revoked_at if row else None
+
+
+def share_revoke(s: Session, project_id: str, kind: str, subject_id: str) -> None:
+    """Kill every link minted for this subject so far. Idempotent; re-revoking moves the line
+    forward, which also kills anything minted since the last call."""
+    row = s.get(ShareRevocation, (project_id, kind, subject_id))
+    if row is None:
+        row = ShareRevocation(project_id=project_id, kind=kind, subject_id=subject_id)
+        s.add(row)
+    row.revoked_at = datetime.now(UTC)
+    s.commit()

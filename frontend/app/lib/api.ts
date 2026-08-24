@@ -577,16 +577,31 @@ export async function getOps(days = 14): Promise<Ops> {
   return getJson<Ops>(`/api/ops?days=${days}`);
 }
 
-export type SharedSession = { thread_id: string; turns: FullTurn[]; scores: EvalScore[] };
+export type SharedSession = {
+  kind?: "conversation";
+  thread_id: string;
+  turns: FullTurn[];
+  scores: EvalScore[];
+};
 
-/** Read a publicly shared conversation. Deliberately NOT authenticated — the token in the path is
- *  the whole credential, and the visitor has no session to send. `null` on 404 (which the backend
- *  also returns for expired/forged tokens, so a bad link and a private one look identical). */
-export async function getSharedSession(token: string): Promise<SharedSession | null> {
+/** A shared CI gate verdict. A trimmed `GateRun`: the backend drops every id that would let an
+ *  anonymous reader reach anything else (trace ids, case ids, the project). */
+export type SharedGate = Omit<GateRun, "cases"> & {
+  kind: "gate";
+  cases: { title: string; verdict: string; detail: Record<string, unknown> }[];
+};
+
+export type Shared = SharedSession | SharedGate;
+
+/** Read a publicly shared object. Deliberately NOT authenticated — the token in the path is the
+ *  whole credential, and the visitor has no session to send. `null` on 404 (which the backend also
+ *  returns for expired, revoked, and forged tokens, so a bad link and a private one look
+ *  identical). */
+export async function getShared(token: string): Promise<Shared | null> {
   const res = await fetch(`${API}/api/share/${encodeURIComponent(token)}`, { cache: "no-store" });
   if (res.status === 404) return null;
   if (!res.ok) throw new ApiError(res.status, "/api/share");
-  return res.json() as Promise<SharedSession>;
+  return res.json() as Promise<Shared>;
 }
 
 /** Whether this workspace has its own OpenRouter key. Every LLM-backed feature (judge
