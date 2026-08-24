@@ -4,7 +4,7 @@ import clsx from "clsx";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { layoutOffice, librarySkills, narrate, poseAt, stationInfo, turnDigest, wallTools, type Bubble, type DeclaredTool, type Pose, type StationInfo, type TurnDigest } from "./office";
-import { Bookshelf, CoffeeMachine, Desk, OfficeDoor, PixelPerson, Plant, ToolsRack } from "./sprites";
+import { Bookshelf, CoffeeMachine, Desk, OfficeDoor, PixelPerson, Plant, ToolsRack, WallClock, WallPoster, WallWindow } from "./sprites";
 import { fmtMs, isCustomer, OFFICE_PACING, orderActors, realMsAt, toPlayEvents, type PlayEvent, type ReplayActor, type ReplayEvent } from "./timeline";
 import { usePlayClock, useWalking } from "./useClock";
 
@@ -65,7 +65,7 @@ export function OfficeStage({ threadId }: { threadId: string }) {
   const customer = actors.find(isCustomer);
   const turns = useMemo(() => turnDigest(events, actors), [events, actors]);
 
-  const clock = usePlayClock(total);
+  const clock = usePlayClock(total, 0.5); // half rate: office scenes read better slow
   const { t } = clock;
 
   const nameOf = useMemo(() => {
@@ -139,11 +139,17 @@ export function OfficeStage({ threadId }: { threadId: string }) {
             are tokens and would otherwise flip to ink-on-ink over the floor. */}
         <div data-theme="dark" className="fleet-stage relative aspect-[16/10] select-none overflow-hidden rounded-2xl border border-line shadow-panel">
           {/* wall */}
-          <div className="absolute inset-x-0 top-0 h-[17%] border-b-4 border-[#181022] bg-[#2a2138]">
-            <div className="absolute left-[6%] top-[22%] h-[52%] w-[9%] rounded-sm border-2 border-[#181022] bg-gradient-to-b from-[#3d4d79] to-[#27304b]" />
-            <div className="absolute left-[18%] top-[22%] h-[52%] w-[9%] rounded-sm border-2 border-[#181022] bg-gradient-to-b from-[#3d4d79] to-[#27304b]" />
+          <div className="absolute inset-x-0 top-0 h-[17%] border-b-4 border-[#181022] bg-gradient-to-b from-[#2d2542] to-[#251d36]">
+            {/* wainscot line */}
+            <div className="absolute inset-x-0 bottom-0 h-[10%] bg-[#221a33]" />
+            {/* night windows */}
+            <div className="absolute left-[5%] top-[12%] w-[8%]"><WallWindow /></div>
+            <div className="absolute left-[16%] top-[12%] w-[8%]"><WallWindow moon /></div>
+            {/* a framed chart + the office clock */}
+            <div className="absolute left-[73.5%] top-[22%] w-[3.2%]"><WallPoster /></div>
+            <div className="absolute left-[78.5%] top-[16%] w-[2.6%]"><WallClock /></div>
             {/* LED sign */}
-            <div className="absolute left-1/2 top-1/2 w-[44%] -translate-x-1/2 -translate-y-1/2 rounded border border-[#181022] bg-[#0a0f14] px-3 py-1.5">
+            <div className="fleet-sign absolute left-1/2 top-1/2 w-[44%] -translate-x-1/2 -translate-y-1/2 rounded border border-[#181022] bg-[#0a0f14] px-3 py-1.5">
               <p className="truncate text-center font-mono text-[10px] tracking-wider text-[#57e39a]" title={sign}>
                 {done ? doneSign : sign}
               </p>
@@ -154,6 +160,17 @@ export function OfficeStage({ threadId }: { threadId: string }) {
 
           {/* floor */}
           <div className="fleet-floor absolute inset-x-0 bottom-0 top-[17%]" />
+          {/* window light spilling onto the floor */}
+          <div className="fleet-lightpool pointer-events-none absolute left-[3.5%] top-[17%] h-[26%] w-[12.5%]" />
+          <div className="fleet-lightpool pointer-events-none absolute left-[16%] top-[17%] h-[26%] w-[12.5%]" />
+          {/* rug under the main desk row */}
+          <div className="fleet-rug pointer-events-none absolute left-1/2 top-[36%] h-[24%] w-[52%] -translate-x-1/2 rounded-lg" />
+          {/* dust motes drifting through the light */}
+          <span className="fleet-mote left-[9%] top-[38%]" />
+          <span className="fleet-mote left-[21%] top-[33%]" style={{ animationDelay: "2.1s" }} />
+          <span className="fleet-mote left-[56%] top-[52%]" style={{ animationDelay: "4.4s" }} />
+          <span className="fleet-mote left-[78%] top-[44%]" style={{ animationDelay: "1.2s" }} />
+          <span className="fleet-mote left-[40%] top-[70%]" style={{ animationDelay: "5.6s" }} />
 
           {/* fixed furniture */}
           <div className="absolute left-[2%] top-[30%] w-[10%]">
@@ -191,7 +208,11 @@ export function OfficeStage({ threadId }: { threadId: string }) {
             );
           })}
 
-          {done && <div className="fleet-done pointer-events-none absolute inset-0" />}
+          {/* room-light overlays — above everything, never interactive */}
+          <div className="fleet-crt pointer-events-none absolute inset-0 z-[300]" />
+          <div className="fleet-vignette pointer-events-none absolute inset-0 z-[300]" />
+
+          {done && <div className="fleet-done pointer-events-none absolute inset-0 z-[310]" />}
         </div>
 
         {/* ── inspect card ── */}
@@ -243,24 +264,35 @@ function Walker({ actor, pose, slot, selected, onClick }: {
       style={{ left: `${pose.x}%`, top: `${pose.y}%`, zIndex: Math.round(pose.y) + 10 + (pose.bubble && !pose.bubble.faded ? 100 : 0) }}
       title={actor.name}
     >
-      {pose.bubble && <BubbleView bubble={pose.bubble} x={pose.x} y={pose.y} beside={guest} />}
-      <div className={clsx(selected && "rounded-lg ring-2 ring-signal/70")}> 
+      {pose.bubble && (
+        <BubbleView bubble={pose.bubble} x={pose.x} y={pose.y} beside={guest}
+          // a visitor stands right next to their host — hang the visitor's bubble BELOW so
+          // the two bubbles don't cover each other (unless too close to the floor to fit)
+          forceBelow={pose.at === "peer" && pose.y < 72} />
+      )}
+      <div className={clsx(selected && "rounded-lg ring-2 ring-signal/70")}>
         <PixelPerson hue={hue} size={size} walking={walking} working={pose.working && !walking} facing={pose.facing} hat={guest} />
       </div>
-      <div className="mx-auto -mt-0.5 h-1.5 w-7 rounded-full bg-black/40 blur-[1.5px]" />
-      <span className={clsx("mt-0.5 block rounded-sm px-1 font-mono text-[9px]",
-        guest ? "bg-ink-950/80 text-warn" : pose.working ? "bg-ink-950/90 text-signal" : "bg-ink-950/70 text-fg-faint")}>
+      <div className="mx-auto -mt-0.5 h-1.5 w-8 rounded-full bg-black/45 blur-[2px]" />
+      <span className={clsx("mt-0.5 inline-flex items-center gap-1 rounded-sm border px-1.5 font-mono text-[9px]",
+        guest ? "border-warn/25 bg-ink-950/85 text-warn"
+          : pose.working ? "border-signal/30 bg-ink-950/90 text-signal shadow-[0_0_8px_rgba(125,240,255,0.15)]"
+          : "border-white/5 bg-ink-950/75 text-fg-faint")}>
+        <i className="h-1 w-1 rounded-full" style={{ background: `hsl(${hue} 70% 60%)` }} />
         {actor.name}
       </span>
     </button>
   );
 }
 
-function BubbleView({ bubble, x, y, beside = false }: {
+function BubbleView({ bubble, x, y, beside = false, forceBelow = false }: {
   bubble: NonNullable<Pose["bubble"]>; x: number; y: number;
   /** Hang the bubble to the LEFT of the character (the customer by the door, whose words
    *  must not drop onto the desks below). */
   beside?: boolean;
+  /** Hang the bubble BELOW the character (a visitor at a peer's desk, whose bubble would
+   *  otherwise cover the host's). */
+  forceBelow?: boolean;
 }) {
   // Keep the bubble inside the office on BOTH axes: right-aligned near the right wall (left
   // near the left), and dropped BELOW the character when they stand near the top — otherwise
@@ -268,7 +300,7 @@ function BubbleView({ bubble, x, y, beside = false }: {
   const side = x >= 64 ? "right" : x <= 36 ? "left" : "center";
   // only the door zone is close enough to the top to clip; the root row (y≈40) goes UP, or
   // its words land on the sub-agents' bubbles one row down
-  const below = y <= 34 && !beside;
+  const below = (y <= 34 || forceBelow) && !beside;
   const anchor = clsx(
     beside ? "right-full top-0 mr-1.5" : side === "right" ? "right-0" : side === "left" ? "left-0" : "left-1/2 -translate-x-1/2",
     !beside && (below ? "top-full mt-1" : "bottom-full mb-2"),
@@ -282,7 +314,7 @@ function BubbleView({ bubble, x, y, beside = false }: {
   if (bubble.type === "thought") {
     return (
       <div className={clsx("pointer-events-none absolute z-50 w-max max-w-[190px]", anchor)}>
-        <div className="rounded-[14px] border border-t_think/40 bg-ink-800/95 px-2.5 py-1.5 text-left font-mono text-[10px] leading-snug text-t_think">
+        <div className="rounded-[14px] border border-t_think/40 bg-ink-800/95 px-2.5 py-1.5 text-left font-mono text-[10px] leading-snug text-t_think shadow-[2px_2px_0_rgba(10,7,18,0.4)]">
           {bubble.text}
         </div>
         <div className={clsx("mt-0.5 h-2 w-2 rounded-full border border-t_think/40 bg-ink-800/95", tailDots)} />
@@ -293,7 +325,7 @@ function BubbleView({ bubble, x, y, beside = false }: {
   if (bubble.type === "speech") {
     return (
       <div className={clsx("pointer-events-none absolute z-50 w-max", beside ? "max-w-[168px]" : "max-w-[210px]", anchor)}>
-        <div className={clsx("rounded-lg border border-line-bright bg-[#f4f6fb] px-2.5 py-1.5 text-left text-[10.5px] font-medium leading-snug text-ink-900",
+        <div className={clsx("rounded-lg border border-line-bright bg-[#f4f6fb] px-2.5 py-1.5 text-left text-[10.5px] font-medium leading-snug text-ink-900 shadow-[3px_3px_0_rgba(10,7,18,0.45)]",
           bubble.faded && "line-clamp-3")}>
           {bubble.text}
         </div>
@@ -312,7 +344,7 @@ function BubbleView({ bubble, x, y, beside = false }: {
   }
   return (
     <div className={clsx("pointer-events-none absolute z-50 w-max max-w-[200px]", anchor)}>
-      <span className={clsx("block rounded-md border px-2 py-0.5 text-left font-mono text-[10px]",
+      <span className={clsx("block rounded-md border px-2 py-0.5 text-left font-mono text-[10px] shadow-[2px_2px_0_rgba(10,7,18,0.4)] backdrop-blur-[2px]",
         bubble.icon === "skill" ? "border-t_retriever/50 bg-t_retriever/15 text-t_retriever"
           : bubble.icon === "call" ? "border-t_llm/50 bg-t_llm/15 text-t_llm"
           : "border-t_tool/50 bg-t_tool/15 text-t_tool")}>

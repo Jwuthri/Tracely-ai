@@ -372,30 +372,95 @@
 .fleet-stage { background: #191322; }
 .fleet-floor {
   background:
-    radial-gradient(ellipse at 50% 20%, rgba(125, 240, 255, 0.05), transparent 55%),
-    repeating-conic-gradient(#241c31 0% 25%, #201a2c 0% 50%) 0 0 / 56px 56px;
-  box-shadow: inset 0 18px 40px -18px rgba(0, 0, 0, 0.75);
+    radial-gradient(ellipse at 50% 8%, rgba(125, 240, 255, 0.07), transparent 52%),
+    radial-gradient(ellipse at 12% 95%, rgba(244, 114, 182, 0.045), transparent 45%),
+    radial-gradient(ellipse at 90% 90%, rgba(122, 162, 255, 0.04), transparent 40%),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.14) 0 1px, transparent 1px 44px),
+    repeating-conic-gradient(#251d33 0% 25%, #211a2e 0% 50%) 0 0 / 44px 44px;
+  box-shadow:
+    inset 0 20px 44px -18px rgba(0, 0, 0, 0.8),
+    inset 0 -34px 50px -34px rgba(0, 0, 0, 0.55);
+}
+/* warm light spilling from a window onto the floor */
+.fleet-lightpool {
+  background: linear-gradient(to bottom, rgba(122, 162, 255, 0.09), transparent 85%);
+  clip-path: polygon(18% 0, 82% 0, 100% 100%, 0 100%);
+}
+/* woven rug under the main desk row */
+.fleet-rug {
+  background:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.02) 0 6px, transparent 6px 12px),
+    linear-gradient(180deg, #2d2340, #281f39);
+  border: 2px solid #3a2d52;
+  box-shadow: inset 0 0 0 4px #221a33, 0 3px 10px rgba(0, 0, 0, 0.35);
+}
+/* CRT scanlines + vignette — the whole scene reads as one lit room */
+.fleet-crt {
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.12) 0 1px, transparent 1px 3px);
+  opacity: 0.45;
+}
+.fleet-vignette {
+  background: radial-gradient(ellipse at 50% 42%, transparent 58%, rgba(9, 6, 16, 0.5) 100%);
+}
+/* drifting dust motes in the light */
+@keyframes fleet-mote-kf {
+  0% { transform: translateY(0); opacity: 0; }
+  15% { opacity: 0.4; }
+  80% { opacity: 0.25; }
+  100% { transform: translateY(-52px); opacity: 0; }
+}
+.fleet-mote {
+  position: absolute; width: 3px; height: 3px; border-radius: 9999px;
+  background: #cdb8ff; opacity: 0; animation: fleet-mote-kf 7s linear infinite;
 }
 @keyframes fleet-walk-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 .fleet-walk { animation: fleet-walk-bob 0.32s ease-in-out infinite; }
 .fleet-walk .fleet-leg-l { animation: fleet-step 0.32s steps(2) infinite; }
 .fleet-walk .fleet-leg-r { animation: fleet-step 0.32s steps(2) infinite reverse; }
+.fleet-walk .fleet-arm-l { animation: fleet-step 0.32s steps(2) infinite reverse; }
+.fleet-walk .fleet-arm-r { animation: fleet-step 0.32s steps(2) infinite; }
 @keyframes fleet-step { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
 @keyframes fleet-breathe-kf { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.015); } }
 .fleet-breathe { animation: fleet-breathe-kf 2.6s ease-in-out infinite; transform-origin: bottom; }
 .fleet-type .fleet-arm-l { animation: fleet-step 0.24s steps(2) infinite; }
 .fleet-type .fleet-arm-r { animation: fleet-step 0.24s steps(2) infinite reverse; }
+/* eyelids: closed for a couple of frames every few seconds */
+.fleet-lid { opacity: 0; }
+@keyframes fleet-blink-kf { 0%, 93%, 100% { opacity: 0; } 94%, 97% { opacity: 1; } }
+.fleet-blink { animation: fleet-blink-kf 4.6s linear infinite; }
 @keyframes fleet-screen-kf { 0%, 100% { opacity: 0.85; } 50% { opacity: 1; } }
 .fleet-screen { animation: fleet-screen-kf 1.1s ease-in-out infinite; }
+.fleet-monitor-on { filter: drop-shadow(0 0 7px var(--glow, rgba(125, 240, 255, 0.5))); }
 @keyframes fleet-led-kf { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .fleet-led { animation: fleet-led-kf 0.7s ease-in-out infinite; }
 @keyframes fleet-book-kf { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 .fleet-book { animation: fleet-book-kf 0.9s ease-in-out infinite; filter: drop-shadow(0 0 5px rgba(192, 132, 252, 0.8)); }
 @keyframes fleet-steam-kf { 0% { transform: translateY(0); opacity: 0.5; } 100% { transform: translateY(-5px); opacity: 0; } }
 .fleet-steam { animation: fleet-steam-kf 1.6s ease-out infinite; }
+@keyframes fleet-drip-kf { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(6px); opacity: 0; } }
+.fleet-drip { animation: fleet-drip-kf 1.1s ease-in infinite; }
+@keyframes fleet-sway-kf { 0%, 100% { transform: rotate(-1.6deg); } 50% { transform: rotate(1.6deg); } }
+.fleet-sway { animation: fleet-sway-kf 3.6s ease-in-out infinite; transform-origin: 50% 100%; }
+@keyframes fleet-twinkle-kf { 0%, 100% { opacity: 0.9; } 50% { opacity: 0.2; } }
+.fleet-twinkle { animation: fleet-twinkle-kf 2.8s ease-in-out infinite; }
+@keyframes fleet-rotate-kf { to { transform: rotate(360deg); } }
+.fleet-hand-min { animation: fleet-rotate-kf 60s linear infinite; }
+.fleet-hand-hr { animation: fleet-rotate-kf 720s linear infinite; }
+/* LED sign glow */
+.fleet-sign {
+  box-shadow: 0 0 14px rgba(87, 227, 154, 0.12), inset 0 0 8px rgba(0, 0, 0, 0.7);
+}
+.fleet-sign p { text-shadow: 0 0 6px rgba(87, 227, 154, 0.6); }
 .fleet-pop { animation: stage-pop 0.22s ease-out; }
 @keyframes fleet-done-kf { from { opacity: 0; } to { opacity: 1; } }
 .fleet-done {
   animation: fleet-done-kf 1s ease-out;
   background: radial-gradient(ellipse at 50% 40%, rgba(52, 211, 153, 0.08), transparent 60%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fleet-walk, .fleet-breathe, .fleet-type .fleet-arm-l, .fleet-type .fleet-arm-r,
+  .fleet-blink, .fleet-screen, .fleet-led, .fleet-book, .fleet-steam, .fleet-drip,
+  .fleet-sway, .fleet-twinkle, .fleet-hand-min, .fleet-hand-hr, .fleet-mote,
+  .fleet-walk .fleet-leg-l, .fleet-walk .fleet-leg-r,
+  .fleet-walk .fleet-arm-l, .fleet-walk .fleet-arm-r { animation: none; }
 }

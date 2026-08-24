@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 /** The shared play clock for the Replay and Fleet views. Advances every animation frame but
  *  COMMITS at ~25fps — a React commit re-renders the whole scene, and 60fps of that is pure
  *  waste when the stage reads identically. */
-export function usePlayClock(total: number) {
+export function usePlayClock(total: number, rate = 1) {
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
@@ -21,7 +21,7 @@ export function usePlayClock(total: number) {
       // otherwise carry the entire hidden duration — teleporting the play head to the end.
       const dt = Math.min(last.current ? now - last.current : 16, 100);
       last.current = now;
-      pending += dt * speed;
+      pending += dt * speed * rate;
       if (pending >= COMMIT_MS) {
         const step = pending;
         pending = 0;
@@ -41,7 +41,7 @@ export function usePlayClock(total: number) {
       if (raf.current) cancelAnimationFrame(raf.current);
       last.current = 0;
     };
-  }, [playing, speed, total]);
+  }, [playing, speed, total, rate]);
 
   const restart = () => {
     setT(0);
