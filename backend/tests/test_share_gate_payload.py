@@ -7,6 +7,7 @@ pure shaper, so it is checked directly — no DB, no ClickHouse.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from tracely.api.routers.share import _failed_checks, _public_gate
@@ -59,7 +60,7 @@ def test_it_shows_the_verdict_and_the_names_of_what_broke():
     assert out["agent"] == "planner"
     assert out["pr_number"] == 42
     assert out["cases"][0]["label"] == "refund beyond the 30-day window"
-    assert out["cases"][0]["evaluators"] == ["no_pii_leak"]
+    assert out["cases"][0]["failed_evaluators"] == ["no_pii_leak"]
 
 
 def test_judge_rationale_never_reaches_the_page():
@@ -109,7 +110,7 @@ def test_the_payload_is_an_allow_list_not_a_deny_list():
         assert secret not in flat, f"{secret} leaked onto a public share page"
 
     # …while still naming the categories, which is what a reviewer actually needs.
-    assert set(out["cases"][0]["evaluators"]) == {"scenario_expectation", "endpoint_error"}
+    assert set(out["cases"][0]["failed_evaluators"]) == {"scenario_expectation", "endpoint_error"}
 
 
 def test_a_branch_name_is_not_a_sha():
@@ -132,3 +133,71 @@ def test_the_same_evaluator_sinking_several_turns_is_named_once():
         "tone",
         "grounded",
     ]
+
+
+# The exact contract. A new field fails this test until someone deliberately opts it in — which is
+# the point: curation is what leaked last time, so the set is pinned rather than reviewed.
+_PUBLIC_KEYS = {
+    "kind",
+    "agent",
+    "status",
+    "total",
+    "passed",
+    "failed",
+    "skipped",
+    "pr_number",
+    "sha",
+    "ran_at",
+    "signup_open",
+    "cases",
+}
+_PUBLIC_CASE_KEYS = {"label", "verdict", "failed_evaluators"}
+
+
+def test_the_public_key_set_is_pinned():
+    """Adding a field to the gate payload must break a test, not ship silently to a crawler."""
+    out = json.loads(json.dumps(_public_gate(_gate(), "planner", [_case({"tools_ok": False})])))
+    assert set(out) == _PUBLIC_KEYS
+    assert set(out["cases"][0]) == _PUBLIC_CASE_KEYS
+
+
+def test_no_free_text_field_survives():
+    """Every string the payload carries is either a fixed label, an id-shaped value, or a name we
+    derived. Nothing is model-authored or operator-authored prose, so there is nothing for a quote
+    of a customer's data to hide inside."""
+    out = _public_gate(
+        _gate(),
+        "planner",
+        [
+            _case(
+                {
+                    "reason": "the judge said the agent leaked an email address",
+                    "quality_reason": "invented a refund policy",
+                    "error": "POST https://internal.acme.corp/agent -> 502",
+                    "failed_scores": ["no_pii_leak: quoting 'jane@acme.com'"],
+                }
+            )
+        ],
+    )
+    strings = _strings(out)
+    # `label` is the only customer-authored string, and it is on Oscar's SHOW list (it is already
+    # in the PR comment). Everything else must be one of ours.
+    allowed = {"gate", "planner", "FAIL", "deadbee", "refund beyond the 30-day window"}
+    unexpected = [s for s in strings if s not in allowed and not _is_timestamp(s)]
+    # Only derived names get through: the evaluator's name without its comment, and a fixed
+    # category standing in for the endpoint error whose text carried a hostname.
+    assert unexpected == ["no_pii_leak", "endpoint_error"], unexpected
+
+
+def _strings(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+def _is_timestamp(s: str) -> bool:
+    return s.startswith("2026-")

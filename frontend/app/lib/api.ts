@@ -586,8 +586,8 @@ export type SharedSession = {
 
 /** A shared CI gate verdict. NOT a trimmed `GateRun` — an allow-list built server-side (see
  *  `api/routers/share.py`). There is no prompt/response text, no judge rationale, no trace or case
- *  ids, no model names, no cost, no latency, no branch name. `evaluators` holds the NAMES of the
- *  checks that failed and nothing else. Don't widen this type without widening that allow-list. */
+ *  ids, no model names, no cost, no latency, no branch name. `failed_evaluators` holds the NAMES of
+ *  the checks that failed, nothing else. Don't widen this type without widening that allow-list. */
 export type SharedGate = {
   kind: "gate";
   agent: string | null;
@@ -602,7 +602,7 @@ export type SharedGate = {
   ran_at: string | null;
   /** Whether this deployment lets a stranger sign up — picks which CTA the page shows. */
   signup_open: boolean;
-  cases: { label: string; verdict: string; evaluators: string[] }[];
+  cases: { label: string; verdict: string; failed_evaluators: string[] }[];
 };
 
 /** Unix seconds; the footer tells a visitor when the link stops working. */

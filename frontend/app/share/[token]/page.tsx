@@ -89,7 +89,7 @@ function GateVerdict({ gate: g }: { gate: SharedGate }) {
               >
                 <Badge variant={verdictVariant(c.verdict)}>{c.verdict}</Badge>
                 <span className="min-w-0 flex-1 text-fg">{c.label}</span>
-                {c.evaluators.map((e) => (
+                {c.failed_evaluators.map((e) => (
                   <span key={e} className="font-mono text-[11px] text-fail">
                     {e}
                   </span>

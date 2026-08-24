@@ -212,7 +212,7 @@ def _public_gate(gate: GateRun, agent_slug: str | None, cases: list[tuple]) -> d
             {
                 "label": title,
                 "verdict": gc.verdict,
-                "evaluators": _failed_checks(gc.detail),
+                "failed_evaluators": _failed_checks(gc.detail),
             }
             for gc, title in cases
         ],
