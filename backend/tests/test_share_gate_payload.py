@@ -128,6 +128,20 @@ def test_structural_failures_report_a_category_never_a_message():
     assert _failed_checks(None) == []
 
 
+def test_an_entry_that_is_not_name_colon_comment_is_never_published():
+    """`"name: comment"` is an assumption about an upstream writer, not a guarantee. An entry with
+    no colon is judge prose quoting the customer's end user — it must not survive in ANY form."""
+    prose = "the agent told the caller their account number is 4111-1111-1111-1111"
+    checks = _failed_checks({"failed_scores": [prose]})
+    assert checks == ["evaluator"]
+    assert "4111" not in repr(checks)
+
+    # Same guard when there IS a colon but the left side is a sentence, not an identifier.
+    checks = _failed_checks({"failed_scores": ["the agent replied: jane@acme.com"]})
+    assert checks == ["evaluator"]
+    assert "jane" not in repr(checks)
+
+
 def test_the_same_evaluator_sinking_several_turns_is_named_once():
     assert _failed_checks({"failed_scores": ["tone: a", "tone: b", "grounded: c"]}) == [
         "tone",

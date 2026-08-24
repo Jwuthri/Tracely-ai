@@ -160,6 +160,9 @@ async def _shared_conversation(project_id: str, thread_id: str) -> dict:
 #   · branch names (`git_ref` is emitted only when it looks like a commit SHA), repo/org, env
 #   · trace ids, case/scenario ids, the gate id, project/workspace name, and who triggered the run
 _SHA = re.compile(r"[0-9a-f]{7,40}\Z")
+# An evaluator name, and nothing that could be a sentence — no spaces, no punctuation to hide a
+# quote behind. Anything failing this is prose, and prose on this endpoint is a customer's data.
+_EVALUATOR_NAME = re.compile(r"[A-Za-z0-9_.\-]{1,64}\Z")
 
 _STRUCTURAL_CHECKS = (
     # (detail key, predicate, public check name). A fixed category name, never a message.
@@ -179,13 +182,17 @@ def _failed_checks(detail: dict | None) -> list[str]:
     Evaluator names come from `failed_scores`, which the gate writes as `"name: judge comment"` —
     the comment quotes the agent's answer, so everything from the first colon on is dropped.
     Structural failures have no evaluator, so they report a fixed category name instead.
+
+    The split is not trusted: `"name: comment"` is an assumption about an upstream writer, and an
+    entry that never had a colon would publish the judge's whole sentence. So the extracted name
+    must LOOK like an identifier, and anything else degrades to the bare category `evaluator` —
+    the row still says a check failed, and says nothing at all about what was in it.
     """
     d = detail or {}
-    out = [
-        name
-        for raw in (d.get("failed_scores") or [])
-        if (name := str(raw).split(":", 1)[0].strip())
-    ]
+    out = []
+    for raw in d.get("failed_scores") or []:
+        name = str(raw).split(":", 1)[0].strip()
+        out.append(name if _EVALUATOR_NAME.match(name) else "evaluator")
     out += [name for key, ok, name in _STRUCTURAL_CHECKS if ok(d.get(key))]
     return list(dict.fromkeys(out))  # same evaluator can sink several turns
 
