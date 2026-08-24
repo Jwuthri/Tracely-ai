@@ -17,9 +17,8 @@ undesirable, wrap a client *instance* instead — only that client is traced, no
 
 It emits the same `gen_ai.*`/`tracely.*` attributes as the manual `llm()` helper, so it flows
 through the context processor (inheriting `tracely.trace(...)`) and the backend mapping identically.
-Non-streaming sync + async calls capture model · messages · output · usage · tool calls. Streaming
-calls are passed through and record the request (for full streaming capture, prefer the instrumentor
-path, R1/R3)."""
+Sync + async calls capture model · messages · output · usage · tool calls; streaming calls capture
+output, reasoning text and time-to-first-token."""
 
 from __future__ import annotations
 

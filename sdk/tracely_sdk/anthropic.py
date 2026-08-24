@@ -11,8 +11,9 @@ global patching.
     client = wrap_anthropic(Anthropic())
     anthropic.Anthropic().messages.create(...)
 
-Captures model · messages · output (text + tool_use blocks) · token usage · tool calls for
-non-streaming sync + async calls; emits the same attributes as the manual `llm()` helper."""
+Captures model · messages · output (text + tool_use blocks) · token usage · tool calls for sync +
+async calls; streaming calls capture output, reasoning text and time-to-first-token. Emits the same
+attributes as the manual `llm()` helper."""
 
 from __future__ import annotations
 

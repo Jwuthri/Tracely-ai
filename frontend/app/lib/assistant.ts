@@ -57,11 +57,13 @@ export async function streamAssistantTurn(
       if (!line.startsWith("data: ")) continue;
       const payload = line.slice("data: ".length).trim();
       if (payload === "[DONE]") return;
+      let ev: AssistantEvent;
       try {
-        onEvent(JSON.parse(payload) as AssistantEvent);
+        ev = JSON.parse(payload) as AssistantEvent;
       } catch {
-        /* skip malformed frame */
+        continue; /* skip malformed frame */
       }
+      onEvent(ev);
     }
   }
 }

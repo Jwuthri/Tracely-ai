@@ -162,7 +162,7 @@ class _TracedStream:
         return self
 
     def __exit__(self, *exc: Any) -> Any:
-        self._rec.finish()
+        self._rec.finish(exc[1] if len(exc) > 1 and isinstance(exc[1], BaseException) else None)
         if hasattr(self._inner, "__exit__"):
             return self._inner.__exit__(*exc)
         return None
@@ -173,7 +173,7 @@ class _TracedStream:
         return self
 
     async def __aexit__(self, *exc: Any) -> Any:
-        self._rec.finish()
+        self._rec.finish(exc[1] if len(exc) > 1 and isinstance(exc[1], BaseException) else None)
         if hasattr(self._inner, "__aexit__"):
             return await self._inner.__aexit__(*exc)
         return None
