@@ -201,13 +201,19 @@ def render_markdown(data: dict, web_url: str, sha: str) -> str:
         "| | Case | Verdict | Detail |",
         "|---|---|---|---|",
     ]
+    # `/sessions/...` is behind the login wall. Linking every case there is right when the only
+    # readers are teammates with accounts, and wrong the moment the comment carries a PUBLIC
+    # verdict link: a stranger follows the case title expecting detail and lands on a sign-in
+    # form — the same wall the public page exists to remove, one level down. So the per-case link
+    # is emitted only when there is no public link to be a stranger's entry point instead.
+    # Making the CONVERSATION itself public is not the alternative: that payload carries the full
+    # prompt/response text (see `share.py`), which a CI-minted link must never publish.
+    link_cases = bool(web_url) and not data.get("share_url")
     for c in data.get("cases", []):
         detail = c.get("detail") or {}
         reason = (case_reason(detail) or ungraded_note(c["verdict"], detail)).replace("|", "\\|")
-        # An emulated conversation links to the thread, so a reviewer can read what was actually
-        # said instead of taking the verdict's word for it.
         title = c["title"]
-        if c.get("scenario_id") and c.get("candidate_trace_id") and web_url:
+        if link_cases and c.get("scenario_id") and c.get("candidate_trace_id"):
             thread = f"{web_url.rstrip('/')}/sessions/{c['candidate_trace_id']}"
             title = f"[{title}]({thread})"
         lines.append(
