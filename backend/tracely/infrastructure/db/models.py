@@ -123,6 +123,9 @@ class Project(Base):
     # This workspace's own OpenRouter key (Fernet-encrypted, see infrastructure/llm/provider.py),
     # used for every LLM eval call instead of the server-wide OPENROUTER_API_KEY. NULL = server key.
     openrouter_api_key_encrypted: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Workspace UI defaults (migration 0032): today only `hiddenTypes` — span types the trace
+    # views hide by default. A browser's explicit localStorage filter overrides these.
+    ui_prefs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Hosted-cloud billing (migration 0021). `free | pro | unlimited` — `unlimited` is for
     # operator workspaces (set via SQL) and is never written by webhooks. Both defaults (Python +
     # server) so none of the Project-creation sites need to name the column.

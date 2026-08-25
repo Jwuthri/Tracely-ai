@@ -287,11 +287,14 @@ describe("TraceTable rolling summary", () => {
   it("loads one thread at a time instead of one request per row at once", async () => {
     let inFlight = 0;
     let peak = 0;
-    const fetchMock = vi.fn(() => {
-      peak = Math.max(peak, ++inFlight);
+    // count only rolling-summary requests — unrelated mount-time fetches (e.g. the workspace
+    // ui-prefs read) may legitimately overlap the first one
+    const fetchMock = vi.fn((url: unknown) => {
+      const isRsum = String(url).includes("rolling-summary");
+      if (isRsum) peak = Math.max(peak, ++inFlight);
       return Promise.resolve({
         ok: true,
-        json: () => { inFlight--; return Promise.resolve({ conversation: [], traces: {}, spans: {} }); },
+        json: () => { if (isRsum) inFlight--; return Promise.resolve({ conversation: [], traces: {}, spans: {} }); },
       });
     });
     vi.stubGlobal("fetch", fetchMock);

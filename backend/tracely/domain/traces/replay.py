@@ -428,6 +428,9 @@ def build_replay(
                 "dur_ms": _ms(span["start_time"], span.get("end_time")),
                 "actor": key,
                 "kind": kind,
+                # the RAW span type, so the UI's "filter step types" preference (which stores
+                # types, not replay kinds) can hide the same spans here it hides in the table
+                "type": stype,
                 "name": name,
                 "status": "error" if error else "ok",
                 # Containers bracket other spans rather than doing work — the UI shows them as the
@@ -470,6 +473,7 @@ def build_replay(
                 "status": "ok",
                 "container": False,
                 "station": "door",
+                "type": "",  # synthetic — no span type, so the type filter can never hide the ask
                 "delegate_to": "",
                 "say": "",
                 "model": "",

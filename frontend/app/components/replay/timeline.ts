@@ -11,6 +11,9 @@ export type ReplayEvent = {
   t_ms: number; dur_ms: number; actor: string; kind: string; name: string;
   status: "ok" | "error"; model: string; detail: string; span_id: string;
   trace_id: string; turn_id: string;
+  /** RAW span type (AGENT/GENERATION/TOOL/…) — what the shared "filter step types"
+   *  preference stores. Empty for synthetic events (the customer's ask). */
+  type?: string;
   /** True for spans that BRACKET other work (a turn wrapper, a sub-agent envelope) rather
    *  than being work themselves — they must never make an agent look "working". */
   container?: boolean;

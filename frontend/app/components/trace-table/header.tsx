@@ -65,7 +65,13 @@ export function ColumnsMenu({ all, hidden, cost, onToggle, onClose }: { all: Col
 
 // ── step-type filter menu ────────────────────────────────────────────────────────
 // Hide noisy span types (e.g. the many CHAIN spans some frameworks emit) from the step rows.
-export function TypesMenu({ types, hidden, onToggle, onReset, onClose }: { types: string[]; hidden: Set<string>; onToggle: (t: string) => void; onReset: () => void; onClose: () => void }) {
+// The filter has two layers: a WORKSPACE default everyone starts from, and this browser's own
+// override once the user touches it — the footer moves the current set between the two.
+export function TypesMenu({ types, hidden, source, onToggle, onReset, onUseDefault, onSaveDefault, onClose }: {
+  types: string[]; hidden: Set<string>; source?: "local" | "workspace";
+  onToggle: (t: string) => void; onReset: () => void;
+  onUseDefault?: () => void; onSaveDefault?: () => void; onClose: () => void;
+}) {
   return (
     <>
       <div className="fixed inset-0 z-20" onClick={onClose} />
@@ -86,6 +92,27 @@ export function TypesMenu({ types, hidden, onToggle, onReset, onClose }: { types
             </label>
           ))}
         </div>
+        {(onSaveDefault || onUseDefault) && (
+          <div className="mt-1 space-y-0.5 border-t border-line pt-1.5">
+            {onSaveDefault && source === "local" && (
+              <button onClick={onSaveDefault}
+                title="Make the current filter the default for everyone in this workspace"
+                className="block w-full rounded px-2 py-1 text-left text-[11px] text-fg-muted hover:bg-ink-700 hover:text-fg">
+                Save as workspace default
+              </button>
+            )}
+            {onUseDefault && source === "local" && (
+              <button onClick={onUseDefault}
+                title="Drop this browser's override and follow the workspace default"
+                className="block w-full rounded px-2 py-1 text-left text-[11px] text-fg-muted hover:bg-ink-700 hover:text-fg">
+                Use workspace default
+              </button>
+            )}
+            {source === "workspace" && (
+              <p className="px-2 py-1 text-[10px] text-fg-faint">following the workspace default</p>
+            )}
+          </div>
+        )}
       </div>
     </>
   );

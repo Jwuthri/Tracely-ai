@@ -112,7 +112,10 @@ export function TraceTable({
   const { turns, spans, openConv, openTurn, toggleConv, toggleTurn, toggleAll, allOpen } =
     useConversationTree(conversations);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const { hidden: hiddenTypes, toggle: toggleType, reset: resetTypes } = useHiddenTypes();
+  const {
+    hidden: hiddenTypes, source: typesSource, toggle: toggleType, reset: resetTypes,
+    useWorkspaceDefault, saveAsWorkspaceDefault,
+  } = useHiddenTypes();
   const [colMenu, setColMenu] = useState(false);
   const [typeMenu, setTypeMenu] = useState(false);
   const [wide, setWide] = useWide();
@@ -458,7 +461,12 @@ export function TraceTable({
                 <span>Types</span>
                 {hiddenTypes.size > 0 && <span className="rounded bg-signal/20 px-1.5 text-[10px] font-medium text-signal">{hiddenTypes.size}</span>}
               </button>
-              {typeMenu && <TypesMenu types={spanTypes} hidden={hiddenTypes} onToggle={toggleType} onReset={resetTypes} onClose={() => setTypeMenu(false)} />}
+              {typeMenu && (
+                <TypesMenu types={spanTypes} hidden={hiddenTypes} source={typesSource}
+                  onToggle={toggleType} onReset={resetTypes}
+                  onUseDefault={useWorkspaceDefault} onSaveDefault={saveAsWorkspaceDefault}
+                  onClose={() => setTypeMenu(false)} />
+              )}
             </div>
             <div className="relative">
               <button onClick={() => setColMenu((o) => !o)} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-fg-muted transition-colors hover:bg-ink-700 hover:text-fg" title="Manage Column Visibility">

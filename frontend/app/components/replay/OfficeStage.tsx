@@ -8,6 +8,7 @@ import { useOfficeSounds, verdictJingle } from "./sounds";
 import { Bookshelf, BreakCouch, CoffeeMachine, Desk, OfficeDoor, PingPongTable, PixelPerson, Plant, ReceptionCounter, ToolsRack, WallClock, WallPoster, WallWindow, WaterCooler } from "./sprites";
 import { fmtMs, isContainer, isCustomer, OFFICE_PACING, orderActors, realMsAt, toPlayEvents, type PlayEvent, type ReplayActor, type ReplayEvent } from "./timeline";
 import { usePlayClock, useWalking } from "./useClock";
+import { useHiddenTypes } from "../../lib/typePrefs";
 
 /* The Fleet office: the conversation acted out as a scene. Every character is a real agent
    from the trace. The customer asks at the reception counter and the supervisor takes the
@@ -64,7 +65,16 @@ export function OfficeStage({ threadId, src, verdict = null, shared = false }: {
     return () => { alive = false; };
   }, [threadId, src]);
 
-  const { events, total } = useMemo(() => toPlayEvents(data?.events ?? [], OFFICE_PACING), [data]);
+  // The shared "filter step types" preference (table/timeline) applies here too: a hidden
+  // span type never reaches the office. Asks are synthetic (type "") and can't be hidden.
+  const { hidden: hiddenTypes, reset: resetTypes } = useHiddenTypes();
+  const { events, total } = useMemo(
+    () => toPlayEvents(
+      (data?.events ?? []).filter((e) => !e.type || !hiddenTypes.has(e.type)),
+      OFFICE_PACING,
+    ),
+    [data, hiddenTypes],
+  );
   const actors = useMemo(() => orderActors(data?.actors ?? []), [data]);
   const durationMs = data?.durationMs ?? 0;
   const layout = useMemo(() => layoutOffice(actors), [actors]);
@@ -211,6 +221,13 @@ export function OfficeStage({ threadId, src, verdict = null, shared = false }: {
             {sound ? "🔊" : "🔇"} sound
           </button>
         </div>
+        {hiddenTypes.size > 0 && (
+          <button onClick={resetTypes}
+            title={`Step types hidden by the table/timeline filter: ${[...hiddenTypes].join(", ")} — click to show all`}
+            className="rounded-md border border-warn/30 bg-warn/10 px-2 py-1 font-mono text-[10px] text-warn hover:brightness-125">
+            {hiddenTypes.size} type{hiddenTypes.size > 1 ? "s" : ""} hidden ✕
+          </button>
+        )}
         <span className="ml-auto font-mono text-[11px] text-fg-faint"
           title="Real trace time — the play clock squeezes pauses and long calls">
           {fmtMs(realMsAt(events, t))} / {fmtMs(durationMs)}

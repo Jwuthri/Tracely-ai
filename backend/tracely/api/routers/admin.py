@@ -7,6 +7,8 @@ Pure HTTP shaping — ClickHouse deletes live in `infrastructure.clickhouse.dele
 
 from __future__ import annotations
 
+import json
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -167,6 +169,44 @@ class OpenRouterKeyIn(BaseModel):
 
 class OpenRouterKeyOut(BaseModel):
     configured: bool
+
+
+class UiPrefsBody(BaseModel):
+    # free-form but tiny: today only `hiddenTypes: list[str]`. Size-capped so this can never
+    # become an unbounded dumping ground.
+    prefs: dict
+
+    @classmethod
+    def validate_size(cls, prefs: dict) -> dict:
+        if len(json.dumps(prefs)) > 4096:
+            raise HTTPException(status_code=400, detail="prefs too large")
+        return prefs
+
+
+@router.get("/project/ui-prefs")
+async def get_ui_prefs(project_id: str = Depends(get_project_id)) -> dict:
+    """Workspace UI defaults (e.g. `hiddenTypes`). A browser's explicit local filter wins over
+    these; absent one, every member's views start from here."""
+
+    def work() -> dict:
+        with SyncSessionLocal() as s:
+            return repo.project_ui_prefs_get(s, project_id)
+
+    return {"prefs": await run_in_threadpool(work)}
+
+
+@router.put("/project/ui-prefs")
+async def set_ui_prefs(body: UiPrefsBody, project_id: str = Depends(get_project_id)) -> dict:
+    """Replace the workspace UI defaults. Deliberately NOT behind `require_user`: these are
+    cosmetic view defaults — no data, no secrets, nothing destroyed — and dev mode has no
+    human principal to satisfy."""
+    prefs = UiPrefsBody.validate_size(body.prefs)
+
+    def work() -> dict:
+        with SyncSessionLocal() as s:
+            return repo.project_ui_prefs_set(s, project_id, prefs)
+
+    return {"prefs": await run_in_threadpool(work)}
 
 
 @router.get("/project/llm-key", response_model=OpenRouterKeyOut)

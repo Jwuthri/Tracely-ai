@@ -197,6 +197,22 @@ def project_ingest_key(s: Session, project_id: str) -> str | None:
     ).scalar_one_or_none()
 
 
+def project_ui_prefs_get(s: Session, project_id: str) -> dict:
+    """This workspace's UI defaults (`{}` when unset or the project is gone)."""
+    proj = s.get(Project, project_id)
+    return dict(proj.ui_prefs) if proj and isinstance(proj.ui_prefs, dict) else {}
+
+
+def project_ui_prefs_set(s: Session, project_id: str, prefs: dict) -> dict:
+    """Replace this workspace's UI defaults. Returns what was stored."""
+    proj = s.get(Project, project_id)
+    if proj is None:
+        return {}
+    proj.ui_prefs = prefs
+    s.commit()
+    return prefs
+
+
 def project_set_openrouter_key(s: Session, project_id: str, encrypted: str | None) -> bool:
     """Set (or, with `encrypted=None`, clear) this workspace's own OpenRouter key. Returns False
     if the project doesn't exist."""

@@ -8,6 +8,7 @@ import {
   payloadText, realMsAt, toPlayEvents,
   type PlayEvent, type ReplayActor, type ReplayEvent, type SpanDetail,
 } from "./timeline";
+import { useHiddenTypes } from "../../lib/typePrefs";
 
 /* The conversation, acted out: one character per agent, sub-agents pulled in under the agent
    that spawned them, every tool/llm call a beat on a shared clock you can scrub. */
@@ -42,9 +43,12 @@ export function ConversationStage({ threadId }: { threadId: string }) {
     return () => { alive = false; };
   }, [threadId]);
 
+  // Same "filter step types" preference as the table/timeline: hidden types never enter the
+  // replay. Asks are synthetic (type "") and can't be hidden.
+  const { hidden: hiddenTypes, reset: resetTypes } = useHiddenTypes();
   const { events, total } = useMemo(
-    () => toPlayEvents(data?.events ?? []),
-    [data],
+    () => toPlayEvents((data?.events ?? []).filter((e) => !e.type || !hiddenTypes.has(e.type))),
+    [data, hiddenTypes],
   );
   const actors = useMemo(() => orderActors(data?.actors ?? []), [data]);
   const durationMs = data?.durationMs ?? 0;
@@ -143,6 +147,13 @@ export function ConversationStage({ threadId }: { threadId: string }) {
             </button>
           ))}
         </div>
+        {hiddenTypes.size > 0 && (
+          <button onClick={resetTypes}
+            title={`Step types hidden by the table/timeline filter: ${[...hiddenTypes].join(", ")} — click to show all`}
+            className="rounded-md border border-warn/30 bg-warn/10 px-2 py-1 font-mono text-[10px] text-warn hover:brightness-125">
+            {hiddenTypes.size} type{hiddenTypes.size > 1 ? "s" : ""} hidden ✕
+          </button>
+        )}
         <span className="ml-auto font-mono text-[11px] text-fg-faint"
           title="Real trace time — the play clock squeezes pauses and long calls">
           {fmtMs(realMsAt(events, t))} / {fmtMs(durationMs)} · {played.length}/{events.length} steps
