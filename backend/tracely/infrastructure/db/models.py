@@ -71,6 +71,11 @@ class Organization(Base):
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     subscription_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # `created` of the newest Stripe event applied to this org (unix seconds). Stripe does NOT
+    # guarantee delivery order and retries for days, so an older event arriving after a newer one
+    # would re-apply a stale plan — a cancelled subscription quietly going back to Pro. NULL on
+    # every row that predates this, which just means the next event is the first one compared.
+    subscription_event_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     projects: Mapped[list["Project"]] = relationship(back_populates="organization")

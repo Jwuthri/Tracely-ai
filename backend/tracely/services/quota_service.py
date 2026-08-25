@@ -120,16 +120,26 @@ async def quota_gate(project_id: str, session: AsyncSession) -> None:
 
     limit = int(limit_raw) if limit_raw else None
     if limit is not None and used is not None and used >= limit:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"monthly trace quota reached ({limit:,} traces on the "
-                f"{'Pro' if limit == settings.pro_trace_limit else 'Free'} plan) — "
-                f"upgrade at {settings.app_base_url.rstrip('/')}/settings/billing"
-            ),
-            # Most OTLP exporters drop on 429; spec-compliant ones back off politely.
-            headers={"Retry-After": "3600"},
-        )
+        raise HTTPException(status_code=429, detail=_over_quota_detail(limit),
+                            # Most OTLP exporters drop on 429; spec-compliant ones back off.
+                            headers={"Retry-After": "3600"})
+
+
+def _over_quota_detail(limit: int) -> str:
+    """Why the trace was refused, and what to do about it.
+
+    The "upgrade" half is conditional on purpose: `BILLING_ENABLED` can be on while Stripe is
+    not configured (checkout answers 501), and telling someone to upgrade at a URL where they
+    physically cannot pay is a dead end at the worst possible moment. Without Stripe the quota is
+    still a real cap — it just has to be lifted by the operator, so say that instead.
+    """
+    from tracely.services.billing_service import stripe_configured
+
+    plan = "Pro" if limit == settings.pro_trace_limit else "Free"
+    reached = f"monthly trace quota reached ({limit:,} traces on the {plan} plan)"
+    if stripe_configured():
+        return f"{reached} — upgrade at {settings.app_base_url.rstrip('/')}/settings/billing"
+    return f"{reached} — contact the operator of this deployment to raise it"
 
 
 async def usage_snapshot(project_id: str, session: AsyncSession) -> dict:
