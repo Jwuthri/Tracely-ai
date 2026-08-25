@@ -29,6 +29,10 @@ _SPAN_COLS = [
     # handoff edge (DELEGATE spans): raw slugs as the SDK recorded them — the replay resolves
     # them to registry agents through its alias map.
     "caller_agent_id", "callee_agent_id",
+    # per-span spend, summed in ClickHouse (same idiom as the ops readers) — the replay's
+    # cost ticker reads these; harmless extras for every other _SPAN_COLS consumer.
+    "toUInt64(arraySum(mapValues(usage_details))) AS tokens",
+    "toFloat64(arraySum(mapValues(cost_details))) AS cost",
 ]
 
 

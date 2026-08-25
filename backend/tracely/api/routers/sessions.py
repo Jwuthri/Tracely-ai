@@ -381,6 +381,12 @@ async def get_session_replay(thread_id: str, project_id: str = Depends(get_proje
     slugs/display names double as the alias map, so DELEGATE callees and agent-named tool calls
     land on the right actor. `declared` is the user-sent agent-definition catalog for this
     conversation (name/description/tools) when one exists — the Fleet view's inspect card."""
+    return await replay_payload(project_id, thread_id)
+
+
+async def replay_payload(project_id: str, thread_id: str) -> dict:
+    """The replay body, shared by the authed endpoint above and the public share read
+    (`share.py`) — the share page's fleet replay must be the same script the authed one plays."""
     spans = await async_reader.thread_spans_full(project_id, thread_id)
     ids = sorted({str(s.get("agent_id")) for s in spans if s.get("agent_id")})
 

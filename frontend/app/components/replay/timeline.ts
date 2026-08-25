@@ -23,6 +23,9 @@ export type ReplayEvent = {
   /** Tools this beat REQUESTED — an llm that answered with a call instead of words. Indexed
    *  names when ingest caught them, else dug out of the payload (`_output_calls`). */
   calls?: string[];
+  /** Spend on this span (usage/cost maps summed server-side) — the wall ticker. */
+  tokens?: number;
+  cost?: number;
 };
 
 /** An event placed on the PLAY clock (gaps squeezed), keeping its real timestamp. */

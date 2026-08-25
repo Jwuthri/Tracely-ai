@@ -115,6 +115,26 @@ async def read_share(token: str) -> dict:
     return {**payload, "expires_at": claims["expires_at"]}
 
 
+@router.get("/share/{token}/replay")
+async def read_share_replay(token: str) -> dict:
+    """The shared conversation as the fleet replay script — same verification as `read_share`,
+    same payload as the authed `/sessions/{id}/replay`. No new exposure: the share page already
+    serves every turn's spans and I/O; this is the same data shaped for the office scene."""
+    try:
+        claims = verify_share(token)
+    except TokenError:
+        raise _NOT_FOUND from None
+    project_id, kind, subject_id = claims["project_id"], claims["kind"], claims["subject_id"]
+    if kind != "conversation":
+        raise _NOT_FOUND
+    revoked_at = await run_in_threadpool(_revoked_at, project_id, kind, subject_id)
+    if revoked_at is not None and claims["issued_at"] <= revoked_at:
+        raise _NOT_FOUND
+    from tracely.api.routers.sessions import replay_payload
+
+    return await replay_payload(project_id, subject_id)
+
+
 def _revoked_at(project_id: str, kind: str, subject_id: str) -> int | None:
     with SyncSessionLocal() as s:
         ts = repo.share_revoked_at(s, project_id, kind, subject_id)

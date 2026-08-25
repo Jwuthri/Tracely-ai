@@ -23,7 +23,7 @@ describe("landing fleet scene", () => {
     const handoff = events.find((e) => e.delegate_to)!;
     const p = pose("support", handoff.pt + 100);
     expect(p.at).toBe("desk"); // the handoff is a phone call, not a walk
-    expect(p.bubble).toEqual({ type: "speech", text: "☎ pull order #8412", faded: false });
+    expect(p.bubble).toMatchObject({ type: "speech", text: "☎ pull order #8412", faded: false });
     expect(pose("orders", handoff.pt + 100).at).toBe("desk"); // the callee mans their own desk
   });
 
@@ -40,7 +40,7 @@ describe("landing fleet scene", () => {
   it("ends on the reply that will be graded", () => {
     const reply = events[events.length - 1];
     // the reply is readable WHILE it is being written — an in-flight llm used to be a bare "…"
-    expect(pose("support", reply.pt + reply.pdur - 50).bubble).toEqual({ type: "speech", text: "Sure — your refund is on its way!", faded: false });
+    expect(pose("support", reply.pt + reply.pdur - 50).bubble).toMatchObject({ type: "speech", text: "Sure — your refund is on its way!", faded: false });
     expect(pose("support", total).bubble).toEqual({ type: "speech", text: "Sure — your refund is on its way!", faded: false });
   });
 });

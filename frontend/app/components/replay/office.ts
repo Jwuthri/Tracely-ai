@@ -16,8 +16,8 @@ export type OfficeLayout = {
   customer: Pt; // the customer's side of the reception counter
   greet: Pt;    // the staff side of the counter, where the supervisor takes the question
   coffee: Pt;
-  /** Stand points in the break room (bottom-left): the coffee corner and the two pong sides. */
-  breaks: { coffee: Pt; pongA: Pt; pongB: Pt };
+  /** Stand points in the break room (bottom-left): coffee corner, pong sides, watercooler, couch. */
+  breaks: { coffee: Pt; pongA: Pt; pongB: Pt; water: Pt; couch: Pt };
 };
 
 /** `faded`: a last word that has been up for a while — still readable, visually quieter.
@@ -27,7 +27,12 @@ export type Bubble = (
   | { type: "thought"; text: string }
   | { type: "chip"; icon: "tool" | "skill" | "call"; text: string; sub?: string }
   | { type: "error"; text: string }
-) & { faded?: boolean };
+) & {
+  faded?: boolean;
+  /** 0..1 — how much of the text is "typed" so far. Only set while the beat is in flight;
+   *  the renderer reveals `ceil(len·progress)` characters. Absent = fully written. */
+  progress?: number;
+};
 
 export type Pose = {
   x: number;
@@ -38,10 +43,16 @@ export type Pose = {
   facing: 1 | -1;
   entered: boolean;
   working: boolean;
+  /** The customer only: how this turn is going for them. */
+  mood?: "happy" | "grumpy" | null;
 };
 
 /** One idle agent's assignment in the break room (see `breakPlan`). */
-export type BreakSpot = Pt & { kind: "coffee" | "pong-a" | "pong-b"; facing: 1 | -1; line: string };
+export type BreakSpot = Pt & {
+  kind: "coffee" | "pong-a" | "pong-b" | "water" | "couch";
+  facing: 1 | -1;
+  line: string;
+};
 
 /** Seat roots in a row across the floor, sub-agents on a lower row clustered near their
  *  parent. Fixed furniture hugs the walls. All positions are % of the stage. */
@@ -89,7 +100,13 @@ export function layoutOffice(all: ReplayActor[]): OfficeLayout {
     customer: { x: 87, y: 31 },
     greet: { x: 78, y: 33 },
     coffee: { x: 8, y: 84 },
-    breaks: { coffee: { x: 9.5, y: 72 }, pongA: { x: 7, y: 90 }, pongB: { x: 22.5, y: 90 } },
+    breaks: {
+      coffee: { x: 9.5, y: 72 },
+      pongA: { x: 7, y: 90 },
+      pongB: { x: 22.5, y: 90 },
+      water: { x: 24, y: 72 },
+      couch: { x: 3.5, y: 85 },
+    },
   };
 }
 
@@ -258,6 +275,8 @@ const BREAK_MIN = 900;     // a window shorter than this isn't worth the walk
 
 const COFFEE_LINES = ["coffee break ☕", "refuel time ☕", "brb — espresso ☕"];
 const PONG_LINES = ["quick rally 🏓", "match point 🏓", "my serve 🏓"];
+const WATER_LINES = ["staying hydrated 💧", "have you tried turning it off and on?"];
+const COUCH_LINES = ["scrolling memes 📱", "five more minutes… 📱"];
 const lineHash = (id: string) => {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
@@ -285,18 +304,47 @@ export function breakPlan(
     if (t >= from && t < to && to - from >= BREAK_MIN) idle.push(a);
   }
   const out = new Map<string, BreakSpot>();
+  // spot ladder: a pair rallies at the pong table first, then coffee, the watercooler, the
+  // couch; overflow queues at the coffee machine. A LONE idle agent gets coffee — playing
+  // pong against nobody reads as a bug.
+  const ladder: { pt: Pt; kind: BreakSpot["kind"]; facing: 1 | -1; lines: string[] }[] = [
+    { pt: layout.breaks.pongA, kind: "pong-a", facing: 1, lines: PONG_LINES },
+    { pt: layout.breaks.pongB, kind: "pong-b", facing: -1, lines: PONG_LINES },
+    { pt: layout.breaks.coffee, kind: "coffee", facing: -1, lines: COFFEE_LINES },
+    { pt: layout.breaks.water, kind: "water", facing: 1, lines: WATER_LINES },
+    { pt: layout.breaks.couch, kind: "couch", facing: 1, lines: COUCH_LINES },
+  ];
   idle.forEach((a, i) => {
     const h = lineHash(a.id);
-    if (idle.length >= 2 && i < 2) {
-      const pt = i === 0 ? layout.breaks.pongA : layout.breaks.pongB;
-      out.set(a.id, { ...pt, kind: i === 0 ? "pong-a" : "pong-b", facing: i === 0 ? 1 : -1, line: PONG_LINES[h % PONG_LINES.length] });
-    } else {
-      const c = layout.breaks.coffee;
-      // later arrivals stand a step to the right of the machine instead of inside each other
-      out.set(a.id, { x: c.x + Math.max(0, i - 1) * 5, y: c.y, kind: "coffee", facing: -1, line: COFFEE_LINES[h % COFFEE_LINES.length] });
-    }
+    const slot = idle.length === 1 ? ladder[2] : ladder[Math.min(i, ladder.length - 1)];
+    const off = i >= ladder.length ? (i - ladder.length + 1) * 5 : 0;
+    out.set(a.id, {
+      x: slot.pt.x + off, y: slot.pt.y, kind: slot.kind, facing: slot.facing,
+      line: slot.lines[h % slot.lines.length],
+    });
   });
   return out;
+}
+
+/** What an actor's desk phone is doing at t — drives the phone sprite on the desk. */
+export function phoneStateAt(actorId: string, events: PlayEvent[], t: number): "idle" | "ringing" | "talking" {
+  if (delegationOf(actorId, events, t)) return "talking";
+  if (!inflightOf(actorId, events, t) && summonsOf(actorId, events, t)) return "ringing";
+  return "idle";
+}
+
+/** How long a failure keeps the office alarmed after the erroring beat ended. */
+const ALARM_LINGER = 1400;
+
+/** The error beat the office should be alarmed about at t (in flight or just ended). */
+export function alarmAt(events: PlayEvent[], t: number): PlayEvent | null {
+  let hot: PlayEvent | null = null;
+  for (const e of events) {
+    if (e.pt > t) break;
+    if (e.status !== "error" || isContainer(e)) continue;
+    if (t < e.pt + e.pdur + ALARM_LINGER) hot = e;
+  }
+  return hot;
 }
 
 /** A long station beat splits: walk over, GRAB the thing, bring it back to the desk and run
@@ -304,6 +352,11 @@ export function breakPlan(
  *  inside 900ms would be a teleport. */
 const GRAB_MS = 650;
 const GRAB_SPLIT_MIN = 1400;
+
+/** How far a beat's words have typed out at t (the typewriter effect). */
+const TYPE_MS = 900;
+const typeProgress = (e: PlayEvent, t: number) =>
+  Math.max(0, Math.min(1, (t - e.pt) / Math.min(e.pdur || TYPE_MS, TYPE_MS)));
 
 export function poseAt(
   actor: ReplayActor,
@@ -319,10 +372,31 @@ export function poseAt(
     let ask: PlayEvent | null = null;
     for (const e of events) { if (e.pt > t) break; if (e.actor === actor.id) ask = e; }
     const live = ask !== null && t < ask.pt + ask.pdur;
+    // mood: sour when the turn failed or drags on, pleased once the team's work is done
+    let mood: Pose["mood"] = null;
+    if (ask) {
+      let lastWorkEnd = -1;
+      let anyWork = false;
+      let stillWorking = false;
+      let failed = false;
+      let moreComing = false;
+      for (const e of events) {
+        if (e.trace_id !== ask.trace_id || isContainer(e) || e.actor === actor.id) continue;
+        if (e.pt > t) { moreComing = true; continue; }
+        anyWork = true;
+        lastWorkEnd = Math.max(lastWorkEnd, e.pt + e.pdur);
+        if (t < e.pt + e.pdur) stillWorking = true;
+        if (e.status === "error") failed = true;
+      }
+      mood = failed ? "grumpy"
+        : stillWorking && t - ask.pt > 3500 ? "grumpy"
+        : anyWork && !stillWorking && !moreComing && t >= lastWorkEnd ? "happy"
+        : null;
+    }
     return {
       x: layout.customer.x, y: layout.customer.y, at: "counter", action: live ? ask : null,
-      bubble: ask ? { ...(wordOf(ask) as Bubble), faded: !live } : null,
-      facing: -1, entered: true, working: live,
+      bubble: ask ? { ...(wordOf(ask) as Bubble), faded: !live, ...(live ? { progress: typeProgress(ask, t) } : {}) } : null,
+      facing: -1, entered: true, working: live, mood,
     };
   }
   const desk = layout.desks[actor.id] ?? { x: 50, y: 50 };
@@ -375,6 +449,10 @@ export function poseAt(
     if (held && word) {
       const ended = held.pt + held.pdur;
       bubble = { ...word, faded: t > ended && t - ended > LINGER };
+      // words TYPE OUT while the beat is in flight — a finished beat is fully written
+      if (t < ended && (word.type === "speech" || word.type === "thought")) {
+        bubble.progress = typeProgress(held, t);
+      }
     }
   }
 

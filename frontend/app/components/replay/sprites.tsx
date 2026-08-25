@@ -2,6 +2,8 @@
    Everything uses shape-rendering: crispEdges so rectangles stay pixel-sharp at any scale.
    Shared by the Fleet office (OfficeStage) and the marketing FleetPeek — keep the APIs stable. */
 
+import clsx from "clsx";
+
 const crisp = { shapeRendering: "crispEdges" as const };
 
 const SKIN = "hsl(28 56% 74%)";
@@ -17,6 +19,8 @@ export function PixelPerson({
   facing = 1,
   dim = false,
   hat = false,
+  mood = null,
+  sweat = false,
 }: {
   hue: number;
   size?: number;
@@ -26,6 +30,10 @@ export function PixelPerson({
   dim?: boolean;
   /** A cap: the customer, not staff. */
   hat?: boolean;
+  /** Mouth + posture: how this turn is going for them (the customer, mostly). */
+  mood?: "happy" | "grumpy" | null;
+  /** Sweat drops — something of theirs just failed. */
+  sweat?: boolean;
 }) {
   const shirt = `hsl(${hue} 62% 52%)`;
   const shirtShade = `hsl(${hue} 62% 40%)`;
@@ -36,7 +44,7 @@ export function PixelPerson({
   const style = Math.floor(hue / 90) % 4; // deterministic hairstyle per hue
   return (
     <div
-      className={walking ? "fleet-walk" : working ? "fleet-type" : "fleet-breathe"}
+      className={clsx(walking ? "fleet-walk" : working ? "fleet-type" : "fleet-breathe", mood === "grumpy" && !walking && "fleet-tap")}
       style={{ width: size, height: size * 1.18, transform: `scaleX(${facing})`, filter: dim ? "grayscale(0.9) brightness(0.7)" : undefined }}
     >
       <svg viewBox="0 0 36 43" width="100%" height="100%" style={crisp} aria-hidden>
@@ -96,8 +104,29 @@ export function PixelPerson({
         {!hat && <rect x="21" y="6" width="3" height="1" fill={hair} />}
         <rect className="fleet-lid fleet-blink" x="13" y="8" width="12" height="3" fill={SKIN}
           style={{ animationDelay: `${(hue % 23) / 6}s` }} />
-        {/* mouth */}
-        <rect x="17" y="12" width="3" height="1" fill={SKIN_SHADE} />
+        {/* mouth — flat by default, a smile when pleased, a frown when the turn drags */}
+        {mood === "happy" ? (
+          <g>
+            <rect x="16" y="12" width="1" height="1" fill={SKIN_SHADE} />
+            <rect x="17" y="13" width="3" height="1" fill={SKIN_SHADE} />
+            <rect x="20" y="12" width="1" height="1" fill={SKIN_SHADE} />
+          </g>
+        ) : mood === "grumpy" ? (
+          <g>
+            <rect x="16" y="13" width="1" height="1" fill={SKIN_SHADE} />
+            <rect x="17" y="12" width="3" height="1" fill={SKIN_SHADE} />
+            <rect x="20" y="13" width="1" height="1" fill={SKIN_SHADE} />
+          </g>
+        ) : (
+          <rect x="17" y="12" width="3" height="1" fill={SKIN_SHADE} />
+        )}
+        {/* sweat drops when something just failed */}
+        {sweat && (
+          <g className="fleet-sweat">
+            <rect x="6" y="5" width="2" height="3" fill="#7df0ff" opacity="0.9" />
+            <rect x="29" y="7" width="2" height="3" fill="#7df0ff" opacity="0.7" />
+          </g>
+        )}
         {/* ── body ── */}
         <rect x="8" y="15" width="20" height="13" rx="1" fill={shirt} />
         <rect x="8" y="15" width="20" height="2" fill={shirtLight} />
@@ -133,23 +162,47 @@ export function PixelPerson({
   );
 }
 
-/** A desk with a monitor whose screen lights up in the owner's hue while they work. */
-export function Desk({ hue, on, name }: { hue: number; on: boolean; name: string }) {
-  const glow = `hsl(${hue} 80% 62%)`;
+/** A desk with a monitor whose screen lights up in the owner's hue while they work, and a
+ *  phone that rings when the owner is being summoned / lifts while they hand off. `alarm`
+ *  glitches the screen red — this desk's beat just failed. */
+export function Desk({ hue, on, name, phone = "idle", alarm = false }: {
+  hue: number; on: boolean; name: string;
+  phone?: "idle" | "ringing" | "talking"; alarm?: boolean;
+}) {
+  const glow = alarm ? "hsl(350 85% 60%)" : `hsl(${hue} 80% 62%)`;
   return (
     <div className="flex flex-col items-center">
       <svg viewBox="0 0 92 50" width="100%" style={{ ...crisp, ["--glow" as string]: glow }} aria-hidden>
         {/* monitor */}
-        <g className={on ? "fleet-monitor-on" : undefined}>
+        <g className={on || alarm ? "fleet-monitor-on" : undefined}>
           <rect x="28" y="0" width="34" height="22" rx="2" fill="#10151f" stroke="#2a3348" strokeWidth="1.4" />
-          <rect x="31" y="3" width="28" height="16" fill={on ? `hsl(${hue} 80% 60% / 0.28)` : "#182031"} className={on ? "fleet-screen" : undefined} />
-          {/* code lines on the lit screen */}
-          {on && (
+          <rect x="31" y="3" width="28" height="16"
+            fill={alarm ? "hsl(350 85% 55% / 0.35)" : on ? `hsl(${hue} 80% 60% / 0.28)` : "#182031"}
+            className={alarm ? "fleet-glitch" : on ? "fleet-screen" : undefined} />
+          {alarm ? (
+            <g className="fleet-glitch">
+              <rect x="33" y="6" width="24" height="2" fill="#fb7185" opacity="0.9" />
+              <rect x="36" y="10" width="18" height="2" fill="#fb7185" opacity="0.6" />
+              <rect x="33" y="14" width="10" height="2" fill="#fb7185" opacity="0.8" />
+            </g>
+          ) : on && (
             <g className="fleet-screen">
               <rect x="33" y="5" width="14" height="2" fill={glow} opacity="0.9" />
               <rect x="33" y="9" width="22" height="2" fill={glow} opacity="0.55" />
               <rect x="36" y="13" width="12" height="2" fill={glow} opacity="0.7" />
               <rect x="33" y="17" width="8" height="1" fill={glow} opacity="0.4" />
+            </g>
+          )}
+        </g>
+        {/* desk phone — rings when the owner is summoned, lifts while they hand off */}
+        <g className={phone === "ringing" ? "fleet-ringing" : undefined}>
+          <rect x="14" y="22" width="10" height="5" rx="1" fill="#2a3348" />
+          <rect x={phone === "talking" ? 12 : 14} y={phone === "talking" ? 17 : 20.5}
+            width="10" height="2.5" rx="1" fill={phone === "ringing" ? "#7df0ff" : "#39435c"} />
+          {phone === "ringing" && (
+            <g className="fleet-ring-waves">
+              <rect x="11" y="16" width="2" height="2" fill="#7df0ff" opacity="0.9" />
+              <rect x="25" y="14" width="2" height="2" fill="#7df0ff" opacity="0.7" />
             </g>
           )}
         </g>
@@ -382,6 +435,39 @@ export function PingPongTable({ playing }: { playing: boolean }) {
       {/* legs */}
       <rect x="8" y="32" width="5" height="11" fill="#14532f" />
       <rect x="83" y="32" width="5" height="11" fill="#14532f" />
+    </svg>
+  );
+}
+
+/** The break-room watercooler — small talk happens here. */
+export function WaterCooler() {
+  return (
+    <svg viewBox="0 0 30 50" width="100%" style={crisp} aria-hidden>
+      {/* bottle */}
+      <rect x="7" y="2" width="16" height="14" rx="2" fill="#3d7fd9" opacity="0.85" />
+      <rect x="9" y="4" width="4" height="8" fill="#6aa5e8" opacity="0.8" />
+      {/* body */}
+      <rect x="5" y="16" width="20" height="30" rx="2" fill="#d8dce8" />
+      <rect x="5" y="16" width="20" height="3" fill="#eef1f7" />
+      <rect x="8" y="24" width="6" height="4" fill="#39435c" />
+      <rect x="17" y="24" width="5" height="4" fill="#3d7fd9" />
+      <rect x="5" y="43" width="20" height="3" fill="#b0b8ca" />
+    </svg>
+  );
+}
+
+/** The break-room couch, for professional meme-scrolling. */
+export function BreakCouch() {
+  return (
+    <svg viewBox="0 0 60 34" width="100%" style={crisp} aria-hidden>
+      <rect x="2" y="4" width="56" height="14" rx="3" fill="#7c5cd9" />
+      <rect x="2" y="4" width="56" height="3" fill="#9678e8" />
+      <rect x="0" y="12" width="8" height="16" rx="2" fill="#6a4dc4" />
+      <rect x="52" y="12" width="8" height="16" rx="2" fill="#6a4dc4" />
+      <rect x="6" y="16" width="48" height="10" fill="#8a6ce0" />
+      <rect x="6" y="16" width="48" height="2" fill="#9678e8" />
+      <rect x="4" y="28" width="6" height="5" fill="#3a2d52" />
+      <rect x="50" y="28" width="6" height="5" fill="#3a2d52" />
     </svg>
   );
 }

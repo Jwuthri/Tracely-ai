@@ -14,7 +14,7 @@ export default async function FleetPage({ params }: { params: Promise<{ threadId
         agentRef={agentRef} firstInput={turns[0]?.input ?? ""} />
       <ConversationTabs threadId={thread} active="fleet" spans={spans}
         right={<EvalsPill threadId={thread} verdict={verdict} />} />
-      <OfficeStage threadId={thread} />
+      <OfficeStage threadId={thread} verdict={verdict} />
     </div>
   );
 }

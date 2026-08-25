@@ -6,6 +6,7 @@ import { convUsage, fmtUsd } from "@/app/lib/usage";
 import { DOCS_URL } from "@/app/lib/site";
 import { Badge, verdictVariant } from "@/app/components/ui";
 import { SessionView } from "@/app/components/SessionView";
+import { OfficeStage } from "@/app/components/replay/OfficeStage";
 
 // Deliberately OUTSIDE the (app) route group: that layout calls requireSession() and renders the
 // sidebar/topbar. A share link has no session and no navigation — it is one read-only page.
@@ -29,7 +30,7 @@ export default async function SharedPage({ params }: { params: Promise<{ token: 
           data.kind === "gate" ? "max-w-[880px]" : "max-w-[1240px]",
         )}
       >
-        {data.kind === "gate" ? <GateVerdict gate={data} /> : <Conversation data={data} />}
+        {data.kind === "gate" ? <GateVerdict gate={data} /> : <Conversation data={data} token={token} />}
         <Footer expiresAt={data.expires_at} />
       </main>
     </div>
@@ -204,8 +205,13 @@ function relativeTime(iso: string | null): string | null {
 
 // ── conversation (unchanged behaviour, kept on the same route) ────────────────
 
-function Conversation({ data }: { data: SharedSession }) {
+function Conversation({ data, token }: { data: SharedSession; token: string }) {
   const { thread_id: threadId, turns, scores } = data;
+  const verdict = turns.some((t) => t.verdict === "FAIL" || t.failing === 1)
+    ? ("FAIL" as const)
+    : turns.some((t) => t.verdict === "PASS")
+      ? ("PASS" as const)
+      : null;
   const conv: ConvNode = {
     thread: threadId,
     turns: turns.length,
@@ -237,6 +243,13 @@ function Conversation({ data }: { data: SharedSession }) {
 
       <div className="mt-6">
         <SessionView conv={conv} turns={turns} shared />
+      </div>
+
+      {/* the conversation acted out — same fleet office as the authed app, autoplaying */}
+      <div className="mt-10">
+        <h2 className="mb-3 font-display text-[16px] font-bold tracking-tight">Watch it happen</h2>
+        <OfficeStage threadId={threadId} shared verdict={verdict}
+          src={`/api/share/${encodeURIComponent(token)}/replay`} />
       </div>
     </>
   );

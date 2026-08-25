@@ -461,6 +461,54 @@
   75% { transform: translate(46px, -2px); }
 }
 .fleet-pong-ball { animation: fleet-pong-kf 1.1s linear infinite; }
+/* impatient foot-tapping (grumpy customer) */
+@keyframes fleet-tap-kf { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-1.6deg); } 75% { transform: rotate(1.6deg); } }
+.fleet-tap { animation: fleet-tap-kf 0.5s ease-in-out infinite; transform-origin: 50% 100%; }
+/* sweat drops after a failure */
+@keyframes fleet-sweat-kf { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(5px); opacity: 0; } }
+.fleet-sweat { animation: fleet-sweat-kf 0.9s ease-in infinite; }
+/* red screen glitch on the desk whose beat failed */
+@keyframes fleet-glitch-kf {
+  0%, 100% { opacity: 1; transform: translateX(0); }
+  20% { opacity: 0.55; transform: translateX(1px); }
+  40% { opacity: 1; transform: translateX(-1px); }
+  60% { opacity: 0.4; transform: translateX(0); }
+}
+.fleet-glitch { animation: fleet-glitch-kf 0.5s steps(2) infinite; }
+/* the desk phone: shake + waves while ringing */
+@keyframes fleet-ringing-kf { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-1px); } 75% { transform: translateX(1px); } }
+.fleet-ringing { animation: fleet-ringing-kf 0.18s linear infinite; }
+@keyframes fleet-ringwave-kf { 0%, 100% { opacity: 0.9; } 50% { opacity: 0.1; } }
+.fleet-ring-waves { animation: fleet-ringwave-kf 0.5s linear infinite; }
+/* office-wide alarm while an error beat is hot */
+@keyframes fleet-alarm-kf { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
+.fleet-alarm {
+  background: radial-gradient(ellipse at 50% 0%, rgba(251, 113, 133, 0.16), transparent 60%);
+  animation: fleet-alarm-kf 0.8s ease-in-out infinite;
+}
+/* dust puffs at a walker's feet */
+@keyframes fleet-puff-kf { 0% { transform: translate(0, 0) scale(0.6); opacity: 0.7; } 100% { transform: translate(-7px, -4px) scale(1.4); opacity: 0; } }
+.fleet-puff { animation: fleet-puff-kf 0.5s ease-out infinite; }
+.fleet-puff2 { animation: fleet-puff-kf 0.5s ease-out 0.25s infinite; }
+/* verdict finale: confetti rain (PASS) and the regression stamp (FAIL) */
+@keyframes fleet-confetti-kf {
+  0% { transform: translateY(-30px) rotate(0); opacity: 1; }
+  100% { transform: translateY(460px) rotate(540deg); opacity: 0.4; }
+}
+.fleet-confetti { position: absolute; top: 0; width: 7px; height: 11px; animation: fleet-confetti-kf 2.6s linear infinite; }
+@keyframes fleet-stamp-kf {
+  0% { transform: rotate(-14deg) scale(2.4); opacity: 0; }
+  60% { transform: rotate(-14deg) scale(0.96); opacity: 1; }
+  75% { transform: rotate(-14deg) scale(1.06); }
+  100% { transform: rotate(-14deg) scale(1); opacity: 1; }
+}
+.fleet-stamp {
+  animation: fleet-stamp-kf 0.5s ease-out forwards;
+  border: 4px solid rgba(251, 113, 133, 0.9);
+  color: rgba(251, 113, 133, 0.95);
+  text-shadow: 0 0 12px rgba(251, 113, 133, 0.5);
+  box-shadow: 0 0 30px rgba(251, 113, 133, 0.25), inset 0 0 22px rgba(251, 113, 133, 0.12);
+}
 /* LED sign glow */
 .fleet-sign {
   box-shadow: 0 0 14px rgba(87, 227, 154, 0.12), inset 0 0 8px rgba(0, 0, 0, 0.7);
@@ -476,6 +524,8 @@
   .fleet-walk, .fleet-breathe, .fleet-type .fleet-arm-l, .fleet-type .fleet-arm-r,
   .fleet-blink, .fleet-screen, .fleet-led, .fleet-book, .fleet-steam, .fleet-drip,
   .fleet-sway, .fleet-twinkle, .fleet-hand-min, .fleet-hand-hr, .fleet-mote, .fleet-pong-ball,
+  .fleet-tap, .fleet-sweat, .fleet-glitch, .fleet-ringing, .fleet-ring-waves, .fleet-alarm,
+  .fleet-puff, .fleet-puff2, .fleet-confetti,
   .fleet-walk .fleet-leg-l, .fleet-walk .fleet-leg-r,
   .fleet-walk .fleet-arm-l, .fleet-walk .fleet-arm-r { animation: none; }
 }

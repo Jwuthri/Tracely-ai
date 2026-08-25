@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { breakPlan, bubbleAt, layoutOffice, librarySkills, narrate, poseAt, stationInfo, turnDigest, wallTools, wordOf } from "./office";
+import { alarmAt, breakPlan, bubbleAt, layoutOffice, librarySkills, narrate, phoneStateAt, poseAt, stationInfo, turnDigest, wallTools, wordOf } from "./office";
 import { OFFICE_PACING, toPlayEvents, type ReplayActor, type ReplayEvent } from "./timeline";
 
 const actor = (id: string, parent = "", depth = 0): ReplayActor =>
@@ -52,7 +52,7 @@ describe("poseAt", () => {
     const p = poseAt(actors[0], script, 700, layout);
     expect(p.at).toBe("desk");
     expect(p.x).toBe(layout.desks.sup.x);
-    expect(p.bubble).toEqual({ type: "speech", text: "☎ check the warranty", faded: false });
+    expect(p.bubble).toMatchObject({ type: "speech", text: "☎ check the warranty", faded: false });
     expect(p.working).toBe(true);
   });
   it("the summoned callee answers the phone at their desk", () => {
@@ -78,7 +78,7 @@ describe("poseAt", () => {
     const solo = [actor("sup")];
     const l = layoutOffice(solo);
     const s2 = toPlayEvents([ev(0, 2000, "sup", "llm", "chat", { detail: "Shipped yesterday." })]).events;
-    expect(poseAt(solo[0], s2, 500, l).bubble).toEqual({ type: "speech", text: "Shipped yesterday.", faded: false });
+    expect(poseAt(solo[0], s2, 500, l).bubble).toMatchObject({ type: "speech", text: "Shipped yesterday.", faded: false });
   });
   it("keeps naming the tool when a turn ENDS on a tool run, not on words", () => {
     // the computer tool runs 1200..1500 on the play clock — just after it, the character used
@@ -193,12 +193,12 @@ describe("the customer", () => {
     expect(after.at).toBe("desk");
   });
   it("speaks the turn's question and keeps it up (faded) until the next turn", () => {
-    expect(poseAt(customer, script, 100, layout).bubble).toEqual({ type: "speech", text: "Where is my order?", faded: false });
+    expect(poseAt(customer, script, 100, layout).bubble).toMatchObject({ type: "speech", text: "Where is my order?", faded: false });
     // office pacing: every beat is ≥900 and the 3s pause squeezes to 900, so turn 2 starts at
     // play 900 and its ask is live 900..1800 — long after that it is still up, just faded
     const ask2 = script.find((e) => e.trace_id === "t2")!;
     expect(ask2.pt).toBe(900);
-    expect(poseAt(customer, script, ask2.pt + 50, layout).bubble).toEqual({ type: "speech", text: "Refund it.", faded: false });
+    expect(poseAt(customer, script, ask2.pt + 50, layout).bubble).toMatchObject({ type: "speech", text: "Refund it.", faded: false });
     const later = poseAt(customer, script, 9000, layout);
     expect(later.bubble).toEqual({ type: "speech", text: "Refund it.", faded: true });
     expect(later.working).toBe(false);
@@ -281,6 +281,54 @@ it("a LONG station beat grabs the tool, then runs it back at the desk", () => {
   expect(back.at).toBe("desk");                                // running it at the desk
   expect(back.working).toBe(true);
   expect(back.bubble?.type).toBe("chip");
+});
+
+describe("phones and alarms", () => {
+  const actors = [actor("sup"), actor("faq", "sup", 1)];
+  const layout = layoutOffice(actors);
+  // delegation in flight play 0..600; faq's failing tool 400..700
+  const script = toPlayEvents([
+    ev(0, 600, "sup", "llm", "call", { delegate_to: "faq", say: "go" }),
+    ev(700, 300, "faq", "tool", "boom", { station: "computer", status: "error" }),
+  ]).events;
+
+  it("the delegator's phone is off the hook, the callee's rings until they pick up work", () => {
+    expect(phoneStateAt("sup", script, 300)).toBe("talking");
+    expect(phoneStateAt("faq", script, 300)).toBe("ringing");
+    expect(phoneStateAt("faq", script, 500)).toBe("idle"); // their own beat started
+    expect(phoneStateAt("sup", script, 5000)).toBe("idle");
+  });
+  it("a failure keeps the office alarmed while hot, then cools off", () => {
+    expect(alarmAt(script, 500)?.name).toBe("boom");
+    expect(alarmAt(script, 700 + 1300)?.name).toBe("boom"); // still lingering
+    expect(alarmAt(script, 5000)).toBeNull();
+  });
+  it("words type out while the beat is in flight", () => {
+    const solo = [actor("a")];
+    const l = layoutOffice(solo);
+    const s = toPlayEvents([ev(0, 2000, "a", "llm", "chat", { detail: "Hello there, friend." })]).events;
+    const p = poseAt(solo[0], s, 450, l).bubble?.progress;
+    expect(p).toBeGreaterThan(0.3);
+    expect(p).toBeLessThan(0.7);
+    expect(poseAt(solo[0], s, 3000, l).bubble?.progress).toBeUndefined(); // finished = fully written
+  });
+});
+
+describe("the customer's mood", () => {
+  const actors = [customer, actor("sup")];
+  const layout = layoutOffice(actors);
+  it("pleased once the team's work landed, sour when a step failed", () => {
+    const ok = toPlayEvents([
+      ev(0, 0, "__customer__", "ask", "asks", { detail: "Hi", trace_id: "t1" }),
+      ev(0, 400, "sup", "llm", "chat", { detail: "Done!", trace_id: "t1" }),
+    ], OFFICE_PACING).events;
+    expect(poseAt(customer, ok, 5000, layout).mood).toBe("happy");
+    const bad = toPlayEvents([
+      ev(0, 0, "__customer__", "ask", "asks", { detail: "Hi", trace_id: "t1" }),
+      ev(0, 400, "sup", "tool", "boom", { trace_id: "t1", status: "error" }),
+    ], OFFICE_PACING).events;
+    expect(poseAt(customer, bad, 5000, layout).mood).toBe("grumpy");
+  });
 });
 
 describe("the break room", () => {

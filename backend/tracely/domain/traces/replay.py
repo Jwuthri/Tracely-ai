@@ -442,6 +442,8 @@ def build_replay(
                 "span_id": sid,
                 "trace_id": str(span.get("trace_id") or ""),
                 "turn_id": str(span.get("turn_id") or ""),
+                "tokens": int(span.get("tokens") or 0),
+                "cost": float(span.get("cost") or 0.0),
             }
         )
 
