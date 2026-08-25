@@ -446,6 +446,21 @@
 @keyframes fleet-rotate-kf { to { transform: rotate(360deg); } }
 .fleet-hand-min { animation: fleet-rotate-kf 60s linear infinite; }
 .fleet-hand-hr { animation: fleet-rotate-kf 720s linear infinite; }
+/* break room: its own floor tint so the corner reads as a different room */
+.fleet-breakroom {
+  background:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.015) 0 8px, transparent 8px 16px),
+    linear-gradient(180deg, rgba(52, 211, 153, 0.05), rgba(52, 211, 153, 0.02));
+  border-top: 3px solid #181022;
+  border-right: 3px solid #181022;
+}
+@keyframes fleet-pong-kf {
+  0%, 100% { transform: translate(14px, 4px); }
+  25% { transform: translate(46px, -2px); }
+  50% { transform: translate(78px, 5px); }
+  75% { transform: translate(46px, -2px); }
+}
+.fleet-pong-ball { animation: fleet-pong-kf 1.1s linear infinite; }
 /* LED sign glow */
 .fleet-sign {
   box-shadow: 0 0 14px rgba(87, 227, 154, 0.12), inset 0 0 8px rgba(0, 0, 0, 0.7);
@@ -460,7 +475,7 @@
 @media (prefers-reduced-motion: reduce) {
   .fleet-walk, .fleet-breathe, .fleet-type .fleet-arm-l, .fleet-type .fleet-arm-r,
   .fleet-blink, .fleet-screen, .fleet-led, .fleet-book, .fleet-steam, .fleet-drip,
-  .fleet-sway, .fleet-twinkle, .fleet-hand-min, .fleet-hand-hr, .fleet-mote,
+  .fleet-sway, .fleet-twinkle, .fleet-hand-min, .fleet-hand-hr, .fleet-mote, .fleet-pong-ball,
   .fleet-walk .fleet-leg-l, .fleet-walk .fleet-leg-r,
   .fleet-walk .fleet-arm-l, .fleet-walk .fleet-arm-r { animation: none; }
 }

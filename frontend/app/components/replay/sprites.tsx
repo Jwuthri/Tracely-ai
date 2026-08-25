@@ -340,6 +340,52 @@ export function OfficeDoor() {
   );
 }
 
+/** The reception counter: the customer waits on the right side, the supervisor takes the
+ *  question from the left. Vertical bar with a service bell. */
+export function ReceptionCounter() {
+  return (
+    <div className="flex flex-col items-center">
+      <svg viewBox="0 0 24 80" width="100%" style={crisp} aria-hidden>
+        <rect x="4" y="0" width="16" height="76" rx="2" fill="#8a5a33" />
+        <rect x="4" y="0" width="16" height="3" fill="#9c6a3e" />
+        <rect x="6" y="4" width="12" height="70" fill="#6d4526" />
+        <rect x="6" y="4" width="2" height="70" fill="#5d3a1f" />
+        {/* service bell + papers on the counter top */}
+        <rect x="9" y="12" width="6" height="4" fill="#c9a227" />
+        <rect x="11" y="10" width="2" height="2" fill="#e8c96a" />
+        <rect x="8" y="30" width="8" height="6" fill="#d8dce8" />
+        <rect x="9" y="32" width="6" height="1" fill="#9aa3b6" />
+        <rect x="8" y="52" width="8" height="5" fill="#b0b8ca" />
+      </svg>
+      <span className="mt-0.5 font-mono text-[8px] uppercase tracking-[0.2em] text-fg-faint">reception</span>
+    </div>
+  );
+}
+
+/** The break-room pong table. `playing` rallies the ball between the paddles. */
+export function PingPongTable({ playing }: { playing: boolean }) {
+  return (
+    <svg viewBox="0 0 96 44" width="100%" style={crisp} aria-hidden>
+      {/* table top */}
+      <rect x="2" y="6" width="92" height="26" rx="2" fill="#1f7a4d" />
+      <rect x="2" y="6" width="92" height="3" fill="#279159" />
+      <rect x="4" y="8" width="88" height="22" fill="none" stroke="#d8f5e6" strokeWidth="1" opacity="0.7" />
+      {/* net */}
+      <rect x="46" y="2" width="4" height="32" fill="#d8dce8" />
+      <rect x="46" y="2" width="4" height="2" fill="#f4f6fb" />
+      {/* paddles resting at the ends */}
+      <rect x="6" y="15" width="4" height="8" fill="#c0392b" />
+      <rect x="86" y="15" width="4" height="8" fill="#2b6cc0" />
+      {/* the ball — rallies while two agents play, rests on the line otherwise */}
+      <circle cx={playing ? 0 : 48} cy="14" r="2.4" fill="#f4f6fb"
+        className={playing ? "fleet-pong-ball" : undefined} />
+      {/* legs */}
+      <rect x="8" y="32" width="5" height="11" fill="#14532f" />
+      <rect x="83" y="32" width="5" height="11" fill="#14532f" />
+    </svg>
+  );
+}
+
 /* ── wall dressing (Fleet office only) ────────────────────────────────────── */
 
 /** A night window: stars, moon, a sleeping city skyline. */

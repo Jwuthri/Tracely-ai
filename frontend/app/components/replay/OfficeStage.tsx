@@ -3,15 +3,17 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { layoutOffice, librarySkills, narrate, poseAt, stationInfo, turnDigest, wallTools, type Bubble, type DeclaredTool, type Pose, type StationInfo, type TurnDigest } from "./office";
-import { Bookshelf, CoffeeMachine, Desk, OfficeDoor, PixelPerson, Plant, ToolsRack, WallClock, WallPoster, WallWindow } from "./sprites";
+import { breakPlan, layoutOffice, librarySkills, narrate, poseAt, stationInfo, turnDigest, wallTools, type Bubble, type DeclaredTool, type Pose, type StationInfo, type TurnDigest } from "./office";
+import { Bookshelf, CoffeeMachine, Desk, OfficeDoor, PingPongTable, PixelPerson, Plant, ReceptionCounter, ToolsRack, WallClock, WallPoster, WallWindow } from "./sprites";
 import { fmtMs, isCustomer, OFFICE_PACING, orderActors, realMsAt, toPlayEvents, type PlayEvent, type ReplayActor, type ReplayEvent } from "./timeline";
 import { usePlayClock, useWalking } from "./useClock";
 
 /* The Fleet office: the conversation acted out as a scene. Every character is a real agent
-   from the trace; delegations are walks with speech bubbles, thinking is a thought cloud,
-   tools happen at the tool wall, skills at the library. The customer stands by the door and
-   asks each turn's question; everyone's last word stays over their head until they act again. */
+   from the trace. The customer asks at the reception counter and the supervisor takes the
+   question there; a delegation is a phone call ☎ that summons the sub-agent from the break
+   room (coffee + pong, bottom-left) to their desk. Long station beats walk over, GRAB the
+   tool/skill and run it back at the desk; thinking is a thought cloud; everyone's last word
+   stays over their head until they act again. */
 
 type Declared = { name: string; description: string; tools: DeclaredTool[] };
 type Payload = { actors: ReplayActor[]; events: ReplayEvent[]; declared: Declared[]; durationMs: number };
@@ -73,11 +75,16 @@ export function OfficeStage({ threadId }: { threadId: string }) {
     return (id: string) => m.get(id) ?? id;
   }, [actors]);
 
+  const breaks = useMemo(() => breakPlan(actors, events, t, layout), [actors, events, t, layout]);
   const poses = useMemo(() => {
     const out = new Map<string, Pose>();
-    actors.forEach((a, i) => out.set(a.id, poseAt(a, events, t, layout, i)));
+    actors.forEach((a, i) => out.set(a.id, poseAt(a, events, t, layout, i, breaks.get(a.id) ?? null)));
     return out;
-  }, [actors, events, t, layout]);
+  }, [actors, events, t, layout, breaks]);
+  const pongOn = useMemo(
+    () => [...breaks.values()].filter((b) => b.kind.startsWith("pong")).length >= 2,
+    [breaks],
+  );
 
   const activeSkill = [...poses.values()].find((p) => p.at === "library")?.action?.name ?? "";
   const activeTool = [...poses.values()].find((p) => p.at === "tools")?.action?.name ?? "";
@@ -172,16 +179,28 @@ export function OfficeStage({ threadId }: { threadId: string }) {
           <span className="fleet-mote left-[78%] top-[44%]" style={{ animationDelay: "1.2s" }} />
           <span className="fleet-mote left-[40%] top-[70%]" style={{ animationDelay: "5.6s" }} />
 
+          {/* break room: bottom-left corner, its own floor + coffee machine + pong table.
+              Idle sub-agents wander in; the pong ball rallies only while two of them play. */}
+          <div className="fleet-breakroom pointer-events-none absolute bottom-0 left-0 h-[38%] w-[27%]" />
+          <span className="pointer-events-none absolute bottom-[34%] left-[2%] font-mono text-[8px] uppercase tracking-[0.25em] text-fg-faint">
+            break room
+          </span>
+          <div className="absolute bottom-[26%] left-[1.5%] w-[5.5%]"><CoffeeMachine /></div>
+          <div className="pointer-events-none absolute bottom-[4%] left-[6%] w-[15%]"><PingPongTable playing={pongOn} /></div>
+          <div className="absolute bottom-[3%] left-[23%] w-[3%]"><Plant /></div>
+
+          {/* reception counter: the customer waits on its right, the supervisor greets from the left */}
+          <div className="pointer-events-none absolute left-[81.5%] top-[22%] w-[3%]"><ReceptionCounter /></div>
+
           {/* fixed furniture */}
-          <div className="absolute left-[2%] top-[30%] w-[10%]">
+          <div className="absolute left-[2%] top-[26%] w-[10%]">
             <Bookshelf skills={skills} active={activeSkill} onPick={(n) => pick("skill", n)} />
           </div>
           <div className="absolute right-[2%] top-[30%] w-[10%]">
             <ToolsRack tools={tools} active={activeTool} onPick={(n) => pick("tool", n)} />
           </div>
-          <div className="absolute bottom-[4%] left-[3%] w-[5.5%]"><CoffeeMachine /></div>
           <div className="absolute bottom-[6%] right-[8%] w-[3.5%]"><Plant /></div>
-          <div className="absolute left-[30%] top-[20%] w-[3.5%]"><Plant /></div>
+          <div className="absolute left-[32%] top-[20%] w-[3.5%]"><Plant /></div>
 
           {/* desks */}
           {staff.map((a) => {
@@ -236,9 +255,10 @@ export function OfficeStage({ threadId }: { threadId: string }) {
       <Transcript turns={turns} t={t} nameOf={nameOf} onSeek={clock.seek} />
 
       <p className="text-[12px] text-fg-muted">
-        Every character is a real agent from the trace — the customer at the door asks each turn's
-        question, delegations walk over, knowledge tools are read at the library, actions run at
-        the tool wall, and each agent's last word stays up until they act again. Long pauses are squeezed;{" "}
+        Every character is a real agent from the trace — the customer asks at the reception counter,
+        the supervisor takes the question and phones ☎ the right teammate, who leaves the break room
+        for their desk; knowledge is read at the library, actions run at the tool wall, and each
+        agent's last word stays up until they act again. Long pauses are squeezed;{" "}
         <Link href={`/sessions/${encodeURIComponent(threadId)}`} className="text-signal hover:underline">
           open the full conversation →
         </Link>
@@ -265,10 +285,10 @@ function Walker({ actor, pose, slot, selected, onClick }: {
       title={actor.name}
     >
       {pose.bubble && (
+        // the greeting supervisor stands high near the counter — their bubble drops below,
+        // like the customer's, so it can't clip the stage's top edge
         <BubbleView bubble={pose.bubble} x={pose.x} y={pose.y} beside={guest}
-          // a visitor stands right next to their host — hang the visitor's bubble BELOW so
-          // the two bubbles don't cover each other (unless too close to the floor to fit)
-          forceBelow={pose.at === "peer" && pose.y < 72} />
+          forceBelow={pose.at === "counter" && !guest} />
       )}
       <div className={clsx(selected && "rounded-lg ring-2 ring-signal/70")}>
         <PixelPerson hue={hue} size={size} walking={walking} working={pose.working && !walking} facing={pose.facing} hat={guest} />
@@ -290,8 +310,7 @@ function BubbleView({ bubble, x, y, beside = false, forceBelow = false }: {
   /** Hang the bubble to the LEFT of the character (the customer by the door, whose words
    *  must not drop onto the desks below). */
   beside?: boolean;
-  /** Hang the bubble BELOW the character (a visitor at a peer's desk, whose bubble would
-   *  otherwise cover the host's). */
+  /** Hang the bubble BELOW the character (the supervisor at the counter, near the top edge). */
   forceBelow?: boolean;
 }) {
   // Keep the bubble inside the office on BOTH axes: right-aligned near the right wall (left

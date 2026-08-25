@@ -13,8 +13,11 @@ export type OfficeLayout = {
   library: Pt; // stand point in front of the bookshelf
   tools: Pt;   // stand point at the tool wall
   door: Pt;    // where characters enter from
-  customer: Pt; // where the customer stands, just inside the door
+  customer: Pt; // the customer's side of the reception counter
+  greet: Pt;    // the staff side of the counter, where the supervisor takes the question
   coffee: Pt;
+  /** Stand points in the break room (bottom-left): the coffee corner and the two pong sides. */
+  breaks: { coffee: Pt; pongA: Pt; pongB: Pt };
 };
 
 /** `faded`: a last word that has been up for a while — still readable, visually quieter.
@@ -29,13 +32,16 @@ export type Bubble = (
 export type Pose = {
   x: number;
   y: number;
-  at: "desk" | "library" | "tools" | "peer" | "door";
+  at: "desk" | "library" | "tools" | "counter" | "break";
   action: PlayEvent | null;
   bubble: Bubble | null;
   facing: 1 | -1;
   entered: boolean;
   working: boolean;
 };
+
+/** One idle agent's assignment in the break room (see `breakPlan`). */
+export type BreakSpot = Pt & { kind: "coffee" | "pong-a" | "pong-b"; facing: 1 | -1; line: string };
 
 /** Seat roots in a row across the floor, sub-agents on a lower row clustered near their
  *  parent. Fixed furniture hugs the walls. All positions are % of the stage. */
@@ -59,28 +65,31 @@ export function layoutOffice(all: ReplayActor[]): OfficeLayout {
   for (const [pid, kids] of byParent) {
     const px = desks[pid]?.x ?? 50;
     // step shrinks with the sibling count so a big team fans out instead of clamping into a
-    // pile at the floor's edge; deeper generations drop a row.
+    // pile at the floor's edge; deeper generations drop a row. Lower rows start at x=30:
+    // the bottom-left corner is the break room now, and a desk in it reads as a bug.
     const step = Math.min(18, 60 / Math.max(1, kids.length - 1));
     kids.forEach((k, i) => {
       const spread = kids.length === 1 ? 0 : (i - (kids.length - 1) / 2) * step;
-      desks[k.id] = { x: clamp(px + spread, 14, 86), y: Math.min(subY + (k.depth - 1) * 11, 84) };
+      desks[k.id] = { x: clamp(px + spread, 30, 86), y: Math.min(subY + (k.depth - 1) * 11, 84) };
     });
   }
   // orphans (parent outside the window) get root seating at the end, wrapping to new rows
   let extra = 0;
   for (const a of actors) {
     if (!desks[a.id]) {
-      desks[a.id] = { x: 22 + (extra % 4) * 18, y: rootY + Math.floor(extra / 4) * 13 };
+      desks[a.id] = { x: 30 + (extra % 4) * 16, y: rootY + Math.floor(extra / 4) * 13 };
       extra++;
     }
   }
   return {
     desks,
-    library: { x: 8.5, y: 52 },
+    library: { x: 8.5, y: 48 },
     tools: { x: 91.5, y: 52 },
     door: { x: 88, y: 22 },
     customer: { x: 87, y: 31 },
+    greet: { x: 78, y: 33 },
     coffee: { x: 8, y: 84 },
+    breaks: { coffee: { x: 9.5, y: 72 }, pongA: { x: 7, y: 90 }, pongB: { x: 22.5, y: 90 } },
   };
 }
 
@@ -96,7 +105,8 @@ const LINGER = 1600;
  *  most of the conversation. Order: failure, handoff, words, the tools it called, the model. */
 export function wordOf(e: PlayEvent, events: PlayEvent[] = []): Bubble | null {
   if (e.status === "error") return { type: "error", text: e.name };
-  if (e.delegate_to || e.kind === "delegate") return { type: "speech", text: e.say || `→ ${e.name}` };
+  // a handoff is a phone call now — the ☎ marks it in the bubble AND the transcript
+  if (e.delegate_to || e.kind === "delegate") return { type: "speech", text: `☎ ${e.say || `→ ${e.name}`}` };
   if (e.kind === "ask") return { type: "speech", text: e.detail || "…" };
   if (e.kind === "tool" || e.kind === "skill")
     return { type: "chip", icon: e.kind === "skill" ? "skill" : "tool", text: e.name, sub: e.detail };
@@ -215,65 +225,157 @@ function delegationOf(actorId: string, events: PlayEvent[], t: number): PlayEven
   return found;
 }
 
+/** An active handoff TO this actor — their phone is ringing. */
+function summonsOf(actorId: string, events: PlayEvent[], t: number): PlayEvent | null {
+  let found: PlayEvent | null = null;
+  for (const e of events) {
+    if (e.pt > t) break;
+    if (e.delegate_to !== actorId) continue;
+    if (t < e.pt + e.pdur) found = e;
+  }
+  return found;
+}
+
+/** True while a root agent should be at the counter taking the customer's question: the
+ *  turn's ask is still in flight and this root does work in that turn. */
+function greetingAt(actor: ReplayActor, events: PlayEvent[], t: number): boolean {
+  if (isCustomer(actor) || actor.parent || actor.depth) return false;
+  let ask: PlayEvent | null = null;
+  for (const e of events) { if (e.pt > t) break; if (e.kind === "ask") ask = e; }
+  if (!ask || t >= ask.pt + ask.pdur) return false;
+  const trace = ask.trace_id;
+  return events.some((e) => e.trace_id === trace && e.actor === actor.id && !isContainer(e));
+}
+
+/* Break-room policy. A SUB-agent (never the customer, never a root — someone has to mind the
+ * counter) is off duty when nothing of theirs is in flight, their last beat settled a while
+ * ago (or the day hasn't reached their first task yet), their next beat is far enough away to
+ * make the walk worth it, and nobody is ringing their phone. Everything below is a pure
+ * function of (events, t) so scrubbing backwards replays identically. */
+const BREAK_SETTLE = 2200; // linger at the desk after the last beat before wandering off
+const BREAK_LEAD = 1100;   // head back this long before the next beat starts
+const BREAK_MIN = 900;     // a window shorter than this isn't worth the walk
+
+const COFFEE_LINES = ["coffee break ☕", "refuel time ☕", "brb — espresso ☕"];
+const PONG_LINES = ["quick rally 🏓", "match point 🏓", "my serve 🏓"];
+const lineHash = (id: string) => {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return h;
+};
+
+/** Who is in the break room at t, and where. Two idle agents take the pong table (facing
+ *  each other), everyone else queues at the coffee machine. Assignment order follows the
+ *  actor list, so it is stable frame to frame. */
+export function breakPlan(
+  actors: ReplayActor[], events: PlayEvent[], t: number, layout: OfficeLayout,
+): Map<string, BreakSpot> {
+  const idle: ReplayActor[] = [];
+  for (const a of actors) {
+    if (isCustomer(a) || !(a.parent || a.depth)) continue;
+    if (summonsOf(a.id, events, t)) continue;
+    let lastEnd = 0, next = Infinity, started = false;
+    for (const e of events) {
+      if (e.actor !== a.id || isContainer(e)) continue;
+      if (e.pt <= t) { started = true; lastEnd = Math.max(lastEnd, e.pt + e.pdur); }
+      else next = Math.min(next, e.pt);
+    }
+    const from = started ? lastEnd + BREAK_SETTLE : 0;
+    const to = next - BREAK_LEAD;
+    if (t >= from && t < to && to - from >= BREAK_MIN) idle.push(a);
+  }
+  const out = new Map<string, BreakSpot>();
+  idle.forEach((a, i) => {
+    const h = lineHash(a.id);
+    if (idle.length >= 2 && i < 2) {
+      const pt = i === 0 ? layout.breaks.pongA : layout.breaks.pongB;
+      out.set(a.id, { ...pt, kind: i === 0 ? "pong-a" : "pong-b", facing: i === 0 ? 1 : -1, line: PONG_LINES[h % PONG_LINES.length] });
+    } else {
+      const c = layout.breaks.coffee;
+      // later arrivals stand a step to the right of the machine instead of inside each other
+      out.set(a.id, { x: c.x + Math.max(0, i - 1) * 5, y: c.y, kind: "coffee", facing: -1, line: COFFEE_LINES[h % COFFEE_LINES.length] });
+    }
+  });
+  return out;
+}
+
+/** A long station beat splits: walk over, GRAB the thing, bring it back to the desk and run
+ *  it there. Short beats (most tools) play out entirely at the station — a there-and-back
+ *  inside 900ms would be a teleport. */
+const GRAB_MS = 650;
+const GRAB_SPLIT_MIN = 1400;
+
 export function poseAt(
   actor: ReplayActor,
   events: PlayEvent[],
   t: number,
   layout: OfficeLayout,
   slot = 0,
+  breakSpot: BreakSpot | null = null,
 ): Pose {
   if (isCustomer(actor)) {
-    // The customer is there the whole time, just inside the door, and holds this turn's
+    // The customer waits at the reception counter the whole time and holds this turn's
     // question up until the next one — the office works for THEM.
     let ask: PlayEvent | null = null;
     for (const e of events) { if (e.pt > t) break; if (e.actor === actor.id) ask = e; }
     const live = ask !== null && t < ask.pt + ask.pdur;
     return {
-      x: layout.customer.x, y: layout.customer.y, at: "door", action: live ? ask : null,
+      x: layout.customer.x, y: layout.customer.y, at: "counter", action: live ? ask : null,
       bubble: ask ? { ...(wordOf(ask) as Bubble), faded: !live } : null,
       facing: -1, entered: true, working: live,
     };
   }
   const desk = layout.desks[actor.id] ?? { x: 50, y: 50 };
-  // The whole team is seated from t=0 — a sub-agent idles at its desk until the main agent
-  // brings it work, rather than popping into existence at its first span.
+  // The whole team is on the floor from t=0 — idle sub-agents hang out in the break room
+  // until the phone rings, then take their own desk.
 
   const inflight = inflightOf(actor.id, events, t);
   const delegation = delegationOf(actor.id, events, t);
+  const summons = inflight ? null : summonsOf(actor.id, events, t);
   const jitter = (slot % 3) * 4 - 4; // stand-point offset so two actors never fully overlap
 
-  // where — a station beats the desk; an explicit handoff walks to the callee's desk
+  // where — the counter beats everything (the supervisor takes the question in person);
+  // then stations; a delegator STAYS at their desk and phones instead of walking over.
   let x = desk.x;
   let y = desk.y;
   let at: Pose["at"] = "desk";
-  const station = inflight?.station ?? (delegation ? "peer" : "desk");
-  if (station === "library") {
+  let flavor: Bubble | null = null; // a pose-level line (break room, "on my way") — not a beat
+  const station = inflight?.station ?? "desk";
+  const backAtDesk = inflight !== null && inflight.pdur >= GRAB_SPLIT_MIN && t >= inflight.pt + GRAB_MS;
+  if (greetingAt(actor, events, t)) {
+    x = layout.greet.x;
+    y = layout.greet.y;
+    at = "counter";
+  } else if (station === "library" && !backAtDesk) {
     x = layout.library.x + 3;
     y = layout.library.y + jitter;
     at = "library";
-  } else if (station === "computer") {
+  } else if (station === "computer" && !backAtDesk) {
     x = layout.tools.x - 3;
     y = layout.tools.y + jitter;
     at = "tools";
-  } else if (station === "peer" && (inflight?.delegate_to || delegation)) {
-    const target = layout.desks[(inflight?.delegate_to || delegation?.delegate_to) ?? ""];
-    if (target) {
-      x = target.x + 8;
-      y = target.y + 2;
-      at = "peer";
-    }
+  } else if (summons) {
+    flavor = { type: "thought", text: "☎ on my way!" };
+  } else if (!inflight && !delegation && breakSpot) {
+    x = breakSpot.x;
+    y = breakSpot.y;
+    at = "break";
+    flavor = { type: "thought", text: breakSpot.line };
   }
 
   // What floats above their head: ONE rule for the whole conversation. `bubbleAt` picks the
   // beat that owns the head right now — in flight or long finished, each beat guaranteed its
   // turn on screen — and `wordOf` renders it. The last beat holds until the actor acts again,
-  // fading once it is no longer fresh, so nobody ever stands there with an empty head.
-  let bubble: Bubble | null = null;
-  const held = delegation ?? bubbleAt(actor.id, events, t);
-  const word = held && wordOf(held, events);
-  if (held && word) {
-    const ended = held.pt + held.pdur;
-    bubble = { ...word, faded: t > ended && t - ended > LINGER };
+  // fading once it is no longer fresh, so nobody ever stands there with an empty head. A
+  // pose-level flavor line (break room, answering the phone) takes the head instead.
+  let bubble: Bubble | null = flavor;
+  if (!bubble) {
+    const held = delegation ?? bubbleAt(actor.id, events, t);
+    const word = held && wordOf(held, events);
+    if (held && word) {
+      const ended = held.pt + held.pdur;
+      bubble = { ...word, faded: t > ended && t - ended > LINGER };
+    }
   }
 
   return {
@@ -282,7 +384,7 @@ export function poseAt(
     at,
     action: inflight,
     bubble,
-    facing: x < desk.x - 1 ? -1 : 1,
+    facing: at === "break" && breakSpot ? breakSpot.facing : x < desk.x - 1 ? -1 : 1,
     entered: true,
     working: inflight !== null || delegation !== null,
   };
@@ -379,7 +481,7 @@ export function narrate(
   }
   if (current) {
     const who = nameOf(current.actor);
-    if (current.delegate_to) return `${who} → ${nameOf(current.delegate_to)}: ${current.say || "handoff"}`;
+    if (current.delegate_to) return `${who} ☎ ${nameOf(current.delegate_to)}: ${current.say || "handoff"}`;
     switch (current.kind) {
       case "ask":
         return `customer asks: ${current.detail || "…"}`;

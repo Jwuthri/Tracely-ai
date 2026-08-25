@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bubbleAt, layoutOffice, librarySkills, narrate, poseAt, stationInfo, turnDigest, wallTools, wordOf } from "./office";
+import { breakPlan, bubbleAt, layoutOffice, librarySkills, narrate, poseAt, stationInfo, turnDigest, wallTools, wordOf } from "./office";
 import { OFFICE_PACING, toPlayEvents, type ReplayActor, type ReplayEvent } from "./timeline";
 
 const actor = (id: string, parent = "", depth = 0): ReplayActor =>
@@ -48,11 +48,18 @@ describe("poseAt", () => {
     expect(p.working).toBe(false);
     expect(p.bubble).toBeNull();
   });
-  it("walks to the callee's desk on a handoff and says the task", () => {
+  it("phones the callee on a handoff instead of walking over", () => {
     const p = poseAt(actors[0], script, 700, layout);
-    expect(p.at).toBe("peer");
-    expect(Math.abs(p.x - layout.desks.faq.x)).toBeLessThan(12);
-    expect(p.bubble).toEqual({ type: "speech", text: "check the warranty", faded: false });
+    expect(p.at).toBe("desk");
+    expect(p.x).toBe(layout.desks.sup.x);
+    expect(p.bubble).toEqual({ type: "speech", text: "☎ check the warranty", faded: false });
+    expect(p.working).toBe(true);
+  });
+  it("the summoned callee answers the phone at their desk", () => {
+    // the delegation is in flight 400..1000 on the play clock; faq's own first beat is at 800
+    const p = poseAt(actors[1], script, 700, layout);
+    expect(p.at).toBe("desk");
+    expect(p.bubble).toEqual({ type: "thought", text: "☎ on my way!" });
   });
   it("reads knowledge at the library, runs actions at the tool wall", () => {
     // play clock: gaps over 400ms are squeezed — library is in flight at pt 800..1100,
@@ -133,7 +140,7 @@ it("narrate describes the current beat", () => {
     ev(400, 300, "faq", "tool", "lookup_kb", { station: "library" }),
   ]).events;
   const name = (id: string) => id.toUpperCase();
-  expect(narrate(script, 100, name)).toBe("SUP → FAQ: go");
+  expect(narrate(script, 100, name)).toBe("SUP ☎ FAQ: go");
   expect(narrate(script, 500, name)).toBe("FAQ runs lookup_kb");
   // an llm that answered with a call names the tool instead of "drafts a reply"
   const calling = toPlayEvents([ev(0, 300, "sup", "llm", "chat", { calls: ["transfer_to_billing"], model: "gpt-4o" })]).events;
@@ -167,14 +174,23 @@ describe("the customer", () => {
     ev(3000, 300, "sup", "tool", "issue_refund", { detail: '{"refund_id":"rf_1"}', trace_id: "t2", station: "computer" }),
   ], OFFICE_PACING).events;
 
-  it("has no desk and stands by the door the whole time", () => {
+  it("has no desk and waits at the reception counter the whole time", () => {
     expect(layout.desks.__customer__).toBeUndefined();
     expect(layout.desks.sup).toBeDefined();
     for (const t of [0, 500, 9000]) {
       const p = poseAt(customer, script, t, layout);
-      expect(p.at).toBe("door");
+      expect(p.at).toBe("counter");
       expect(p.x).toBe(layout.customer.x);
     }
+  });
+  it("the supervisor takes the question at the counter, then goes back to work", () => {
+    // t1's ask is live 0..900 (office pacing) — sup greets at the counter while it is
+    const during = poseAt(actors[1], script, 100, layout);
+    expect(during.at).toBe("counter");
+    expect(during.x).toBe(layout.greet.x);
+    // long after the last ask ended, sup is back at their desk
+    const after = poseAt(actors[1], script, 5000, layout);
+    expect(after.at).toBe("desk");
   });
   it("speaks the turn's question and keeps it up (faded) until the next turn", () => {
     expect(poseAt(customer, script, 100, layout).bubble).toEqual({ type: "speech", text: "Where is my order?", faded: false });
@@ -253,6 +269,65 @@ it("only the turn's LAST silent llm borrows the turn envelope's answer", () => {
   // a different turn's envelope is never borrowed
   const other = { ...last, trace_id: "other" };
   expect(wordOf(other, script)).toBeNull();
+});
+
+it("a LONG station beat grabs the tool, then runs it back at the desk", () => {
+  const solo = [actor("a", "root", 1)];
+  const l = layoutOffice(solo);
+  const script = toPlayEvents([ev(0, 2000, "a", "tool", "big_export", { station: "computer" })]).events;
+  expect(script[0].pdur).toBeGreaterThanOrEqual(1400);
+  expect(poseAt(solo[0], script, 300, l).at).toBe("tools");   // walking over / grabbing
+  const back = poseAt(solo[0], script, 1000, l);
+  expect(back.at).toBe("desk");                                // running it at the desk
+  expect(back.working).toBe(true);
+  expect(back.bubble?.type).toBe("chip");
+});
+
+describe("the break room", () => {
+  const actors = [actor("sup"), actor("faq", "sup", 1), actor("audit", "sup", 1)];
+  const layout = layoutOffice(actors);
+  // faq works 0..400; audit's only beat is far in the future; sup (root) is always on duty
+  const script = toPlayEvents([
+    ev(0, 400, "faq", "tool", "lookup", { station: "computer" }),
+    ev(0, 400, "sup", "llm", "chat"),
+    ev(9000, 400, "audit", "tool", "audit_log", { station: "computer" }),
+  ], { maxGapMs: 100000 }).events; // keep the real gap so the idle window exists
+
+  it("subs with nothing to do wander off; roots and the customer never do", () => {
+    const plan = breakPlan([...actors, customer], script, 5000, layout);
+    expect(plan.has("sup")).toBe(false);
+    expect(plan.has("__customer__")).toBe(false);
+    expect(plan.get("faq")).toBeDefined();   // done since 400 + settle
+    expect(plan.get("audit")).toBeDefined(); // day hasn't reached their first task
+  });
+  it("two idle agents take the pong table, facing each other", () => {
+    const plan = breakPlan(actors, script, 5000, layout);
+    const kinds = [plan.get("faq")!.kind, plan.get("audit")!.kind].sort();
+    expect(kinds).toEqual(["pong-a", "pong-b"]);
+    expect(plan.get("faq")!.facing).not.toBe(plan.get("audit")!.facing);
+  });
+  it("a lone idle agent takes a coffee instead", () => {
+    // at t=300 faq still works — only audit is idle
+    const plan = breakPlan(actors, script, 300, layout);
+    expect(plan.get("faq")).toBeUndefined();
+    expect(plan.get("audit")).toMatchObject({ kind: "coffee" });
+  });
+  it("poseAt places a break-taker at the spot with a flavor line", () => {
+    const plan = breakPlan(actors, script, 5000, layout);
+    const p = poseAt(actors[1], script, 5000, layout, 0, plan.get("faq") ?? null);
+    expect(p.at).toBe("break");
+    expect(p.bubble?.type).toBe("thought");
+    expect(p.working).toBe(false);
+  });
+  it("heads back to the desk before the next beat starts", () => {
+    // audit's beat starts at play 9000·— within the walk lead nobody is on break anymore
+    const start = script.find((e) => e.actor === "audit")!.pt;
+    expect(breakPlan(actors, script, start - 200, layout).has("audit")).toBe(false);
+  });
+  it("without a break assignment poseAt stays exactly as before (desk)", () => {
+    const p = poseAt(actors[1], script, 5000, layout);
+    expect(p.at).toBe("desk");
+  });
 });
 
 describe("bubble dwell", () => {

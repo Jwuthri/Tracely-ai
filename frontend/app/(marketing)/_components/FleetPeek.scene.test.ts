@@ -17,11 +17,14 @@ describe("landing fleet scene", () => {
     for (const a of ACTORS) expect(layout.desks[a.id]).toBeDefined();
   });
 
-  it("sends the support agent to the library, then to a peer's desk", () => {
+  it("sends the support agent to the library, then phones the sub-agent", () => {
     const skill = events.find((e) => e.kind === "skill")!;
     expect(pose("support", skill.pt + 100).at).toBe("library");
     const handoff = events.find((e) => e.delegate_to)!;
-    expect(pose("support", handoff.pt + 100).at).toBe("peer");
+    const p = pose("support", handoff.pt + 100);
+    expect(p.at).toBe("desk"); // the handoff is a phone call, not a walk
+    expect(p.bubble).toEqual({ type: "speech", text: "☎ pull order #8412", faded: false });
+    expect(pose("orders", handoff.pt + 100).at).toBe("desk"); // the callee mans their own desk
   });
 
   it("runs the sub-agent's tool at the tool wall", () => {
