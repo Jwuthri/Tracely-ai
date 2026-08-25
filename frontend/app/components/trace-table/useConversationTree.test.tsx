@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useConversationTree } from "./useConversationTree";
-import type { ConvNode } from "../../lib/api";
+import type { ConvNode, FullTurn } from "../../lib/api";
 
 /* The lazy tree: list mode knows only conversation summaries and fetches a level at a time.
    What matters is WHEN it fetches — never twice for the same row, never on collapse, and never
@@ -10,7 +10,13 @@ import type { ConvNode } from "../../lib/api";
 const conv = (thread: string, extra: Partial<ConvNode> = {}): ConvNode =>
   ({ thread, turns: 1, tokens: 0, cost: 0, failing: 0, scores: [], ...extra }) as unknown as ConvNode;
 
-const turn = (trace_id: string) => ({ trace_id, ts: "", input: "", output: "", scores: [], spans: [] });
+// A complete FullTurn, so a fixture can be handed to ConvNode without a cast. The five numeric
+// fields are never read by this hook — they are here because the type has them, and leaving them
+// out is what made the `Partial<ConvNode>` cast below fail to compile.
+const turn = (trace_id: string): FullTurn => ({
+  trace_id, ts: "", input: "", output: "", scores: [], spans: [],
+  tokens: 0, cost: 0, latency_ms: 0, failing: 0, verdict: null,
+});
 
 function mockFetch() {
   const calls: string[] = [];
