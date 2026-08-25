@@ -33,6 +33,18 @@ os.environ["LLM_JUDGE_API_KEY"] = ""
 # checkpoint rows, and behaved differently there than in CI (where nothing is listening). Tests
 # that want the chat path turn it on with a fake checkpointer.
 os.environ["EVAL_CHAT_ENABLED"] = "false"
+# Fifth time, same class of bug, and this one is the expensive version: `Settings` reads `.env`,
+# and a developer's `.env` can hold a REAL Stripe secret key (a live one, at that). So the billing
+# suite ran with live credentials loaded — a different code path from CI's (`stripe_configured()`
+# answers True on a laptop and False on GitHub), and one careless test away from creating a real
+# customer or subscription against a real account. Hard-off, so "Stripe not configured" is the
+# tested default everywhere; the tests that want it configured set it on `settings` themselves.
+os.environ["STRIPE_SECRET_KEY"] = ""
+os.environ["STRIPE_WEBHOOK_SECRET"] = ""
+os.environ["STRIPE_PRICE_PRO"] = ""
+# Same reasoning, one level up: billing must be OFF unless a test turns it on. A `.env` with
+# BILLING_ENABLED=true would silently quota-gate every ingest test.
+os.environ["BILLING_ENABLED"] = "false"
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402

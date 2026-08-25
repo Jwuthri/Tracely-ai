@@ -217,6 +217,8 @@ async def test_over_quota_returns_429_with_retry_after(
     monkeypatch.setattr(settings, "billing_enabled", True)
     monkeypatch.setattr(settings, "free_trace_limit", 10)
     monkeypatch.setattr(quota_service, "async_redis", lambda: _BoomAsyncRedis())  # PG fallback
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_x")
+    monkeypatch.setattr(settings, "stripe_price_pro", "price_x")
     import tracely.api.routers.otlp as otlp_router
 
     monkeypatch.setattr(
@@ -231,6 +233,55 @@ async def test_over_quota_returns_429_with_retry_after(
     assert r.status_code == 429
     assert r.headers.get("retry-after") == "3600"
     assert "quota" in r.json()["detail"] and "/settings/billing" in r.json()["detail"]
+
+
+async def test_over_quota_without_stripe_does_not_send_anyone_to_a_dead_upgrade_page(
+    client, make_workspace, session, monkeypatch
+):
+    """BILLING_ENABLED can be on while Stripe is not configured — checkout answers 501 there. The
+    cap is still real, so the 429 has to say who can lift it instead of linking to a page where
+    the customer physically cannot pay."""
+    monkeypatch.setattr(settings, "billing_enabled", True)
+    monkeypatch.setattr(settings, "free_trace_limit", 10)
+    monkeypatch.setattr(settings, "stripe_secret_key", "")
+    monkeypatch.setattr(settings, "stripe_price_pro", "")
+    monkeypatch.setattr(quota_service, "async_redis", lambda: _BoomAsyncRedis())
+    _, key = await _workspace_over_quota(client, make_workspace, session, traces=10)
+
+    r = await client.post(
+        "/v1/traces", content=b"{}", headers={"Authorization": f"Bearer {key.key}"}
+    )
+    assert r.status_code == 429
+    detail = r.json()["detail"]
+    assert "quota" in detail
+    assert "/settings/billing" not in detail
+    assert "operator" in detail
+
+
+async def test_the_gate_fails_open_when_postgres_is_down(
+    client, make_workspace, session, monkeypatch
+):
+    """Deliberate, and the reason it is deliberate is worth a test: a quota is a product limit,
+    not a security boundary. If our DB blinks we let the customer's traces through and undercount
+    — never the reverse. This is the ONLY fail-open on the enforcement path."""
+    monkeypatch.setattr(settings, "billing_enabled", True)
+    monkeypatch.setattr(settings, "free_trace_limit", 1)
+    monkeypatch.setattr(quota_service, "async_redis", lambda: _BoomAsyncRedis())
+    monkeypatch.setattr(
+        quota_service, "_snapshot_from_pg",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("pg down")),
+    )
+    ingested = []
+    import tracely.api.routers.otlp as otlp_router
+
+    monkeypatch.setattr(otlp_router, "ingest_otlp", lambda *a, **kw: ingested.append(a) or "b1")
+    _, key = await _workspace_over_quota(client, make_workspace, session, traces=10**9)
+
+    r = await client.post(
+        "/v1/traces", content=b"{}", headers={"Authorization": f"Bearer {key.key}"}
+    )
+    assert r.status_code == 200, "a DB outage must not drop a paying customer's traces"
+    assert ingested, "the trace was accepted, not silently discarded"
 
 
 async def test_under_quota_ingests_normally(client, make_workspace, session, monkeypatch):
