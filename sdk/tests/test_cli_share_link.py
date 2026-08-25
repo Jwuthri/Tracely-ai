@@ -61,3 +61,50 @@ def test_markdown_links_to_the_public_page():
     )
     assert "https://app.tracely.dev/share/tok" in md
     assert "/gates/g1" not in md
+
+
+# ── no second login wall ─────────────────────────────────────────────────────
+# The whole point of the public verdict page is that a reviewer without a Tracely account can
+# read the result. A per-case link into the authed app puts the wall back one level down.
+
+
+def _gate(**over) -> dict:
+    d = {
+        "id": "g1", "status": "FAIL", "agent": "planner", "env": "ci",
+        "passed": 1, "failed": 1, "skipped": 0,
+        "cases": [
+            {
+                "title": "refund beyond the window", "verdict": "FAIL", "detail": {},
+                "scenario_id": "sc-1", "candidate_trace_id": "thread-9",
+            }
+        ],
+    }
+    return {**d, **over}
+
+
+def test_a_public_comment_never_links_a_case_into_the_authed_app():
+    md = cli.render_markdown(
+        _gate(share_url="https://app.tracely.dev/share/tok"), "https://app.tracely.dev", "abc1234"
+    )
+    assert "/sessions/thread-9" not in md, "a stranger would follow this into a sign-in form"
+    assert "refund beyond the window" in md  # the case is still named, just not linked
+    assert "https://app.tracely.dev/share/tok" in md  # …and there IS a public way in
+
+
+def test_without_a_public_link_the_case_still_links_to_the_thread():
+    """An authed-only deployment (self-hosted, no share link minted) loses nothing: everyone
+    reading that comment has a login, and the thread is the useful destination."""
+    md = cli.render_markdown(_gate(), "https://app.tracely.dev", "abc1234")
+    assert "https://app.tracely.dev/sessions/thread-9" in md
+
+
+def test_multi_agent_comments_follow_the_same_rule():
+    """`render_markdown_all` reuses the single-agent renderer per agent, so the guard has to hold
+    through the details-block path too."""
+    md = cli.render_markdown_all(
+        [_gate(share_url="https://app.tracely.dev/share/a"),
+         _gate(id="g2", agent="writer", share_url="https://app.tracely.dev/share/b")],
+        "https://app.tracely.dev",
+        "abc1234",
+    )
+    assert "/sessions/" not in md
