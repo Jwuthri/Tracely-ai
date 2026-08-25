@@ -24,8 +24,50 @@ from tracely.config import settings
 
 
 def test_round_trip_returns_the_scope_it_was_minted_with():
-    token = issue_share("proj-1", "thread-abc")
-    assert verify_share(token) == ("proj-1", "thread-abc")
+    claims = verify_share(issue_share("proj-1", "thread-abc"))
+    assert (claims["project_id"], claims["kind"], claims["subject_id"]) == (
+        "proj-1",
+        "conversation",
+        "thread-abc",
+    )
+
+
+def test_a_link_names_its_kind():
+    """A gate link and a conversation link are different capabilities. If the kind were ignored,
+    a conversation token would read a gate with the same id — and vice versa."""
+    claims = verify_share(issue_share("proj-1", "gate-1", kind="gate"))
+    assert claims["kind"] == "gate"
+    assert claims["subject_id"] == "gate-1"
+
+
+def test_legacy_conversation_tokens_still_resolve():
+    """Links minted before kinds existed carry `tid` and no `kind` — they are in Slack threads and
+    PR comments already, and must not start 404ing on deploy."""
+    legacy = jwt.encode(
+        {
+            "pid": "proj-1",
+            "tid": "thread-abc",
+            "iss": SHARE_ISSUER,
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 60,
+        },
+        settings.session_secret,
+        algorithm="HS256",
+    )
+    claims = verify_share(legacy)
+    assert claims["kind"] == "conversation"
+    assert claims["subject_id"] == "thread-abc"
+
+
+def test_a_token_with_no_issued_at_reads_as_epoch_zero():
+    """`issued_at` is what revocation compares against, so a token that omits it must sort BEFORE
+    every possible revocation — fail closed, not open."""
+    old = jwt.encode(
+        {"pid": "p", "sid": "s", "iss": SHARE_ISSUER, "exp": int(time.time()) + 60},
+        settings.session_secret,
+        algorithm="HS256",
+    )
+    assert verify_share(old)["issued_at"] == 0
 
 
 def test_share_token_is_not_a_session_token():
@@ -78,7 +120,7 @@ def test_alg_none_forgery_is_rejected():
 
 
 def test_missing_scope_claims_are_rejected():
-    """A validly signed token that omits `tid` must not fall through to "the whole project"."""
+    """A validly signed token that names no subject must not fall through to "the whole project"."""
     partial = jwt.encode(
         {"pid": "proj-1", "iss": SHARE_ISSUER, "exp": int(time.time()) + 60},
         settings.session_secret,

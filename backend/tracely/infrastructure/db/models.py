@@ -809,3 +809,21 @@ class MonitorExecution(Base):
     step_results: Mapped[list | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_test: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ShareRevocation(Base):
+    """The kill switch for public share links.
+
+    Share tokens are stateless signed capabilities, so there is nothing to delete — revoking means
+    recording *when* an owner said stop, and refusing every token issued before that. One row per
+    shared subject (not per token): "stop sharing this gate" has to kill every link ever minted for
+    it, including ones the owner no longer has a copy of. Re-sharing afterwards just mints a token
+    with a later `iat`, which passes again.
+    """
+
+    __tablename__ = "share_revocations"
+
+    project_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
