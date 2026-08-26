@@ -243,13 +243,13 @@ class Settings(BaseSettings):
     # to red-team and the suite quietly finds nothing — so it is worth pinning separately from the
     # judge, which only needs to read a transcript honestly.
     attacker_model: str = ""
-    # How many of the agent's known production failure clusters to hand the attacker as leverage.
-    # 0 disables it. This is the Tracely-native part: the attacker probes where this agent has
-    # actually broken before, which needs the failure history no other red-team tool has.
     # The judge that decides whether the attack worked. Blank = default judge model. Kept separate
     # from `attacker_model`: the attacker needs a model willing to role-play, the judge needs one
     # that reads a transcript strictly.
     attacker_judge_model: str = ""
+    # How many of the agent's known production failure clusters to hand the attacker as leverage.
+    # 0 disables it. This is the Tracely-native part: the attacker probes where this agent has
+    # actually broken before, which needs the failure history no other red-team tool has.
     attacker_weakness_hints: int = 5
 
     # ── Internal-run recording ────────────────────────────────────────────────────
