@@ -83,6 +83,21 @@ async def promote(trace_id: str, project_id: str = Depends(get_project_id)) -> d
     return payload
 
 
+@router.get("/traces/{trace_id}/case")
+async def case_for_trace(trace_id: str, project_id: str = Depends(get_project_id)) -> dict:
+    """The regression case this trace was promoted into, or 404 if it never was."""
+
+    def work():
+        with SyncSessionLocal() as s:
+            c = repo.case_for_trace(s, project_id, trace_id)
+            return _case_dict(c) if c else None
+
+    res = await run_in_threadpool(work)
+    if res is None:
+        raise HTTPException(status_code=404, detail="no case for this trace")
+    return res
+
+
 @router.get("/cases")
 async def list_cases(
     limit: int = 50, offset: int = 0, project_id: str = Depends(get_project_id)

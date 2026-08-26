@@ -146,6 +146,26 @@ async def test_delete_case_is_project_scoped_and_404s_when_unknown(client, sync_
         assert s.get(models.EvaluationCase, other) is not None
 
 
+# ── GET /api/traces/{trace_id}/case ───────────────────────────────────────────
+
+
+async def test_case_for_trace_lookup_is_scoped_and_tracks_delete(client, sync_db):
+    tok, project_id = await _owner(client)
+    case_id = _seed_case(sync_db, project_id, with_gate=False)  # source_trace_id="tr-1"
+    _seed_case(sync_db, "some-other-project", with_gate=False)  # same trace id, other tenant
+    h = {"Authorization": f"Bearer {tok}"}
+
+    r = await client.get("/api/traces/tr-1/case", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == case_id
+
+    assert (await client.get("/api/traces/tr-unknown/case", headers=h)).status_code == 404
+
+    # removing the case flips the trace page back to "promote"
+    assert (await client.delete(f"/api/cases/{case_id}", headers=h)).status_code == 200
+    assert (await client.get("/api/traces/tr-1/case", headers=h)).status_code == 404
+
+
 # ── DELETE /api/project/data ──────────────────────────────────────────────────
 
 

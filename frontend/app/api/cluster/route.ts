@@ -5,7 +5,7 @@ const API = process.env.TRACELY_API ?? "http://localhost:8000";
 
 export async function POST(req: NextRequest) {
   const { clusterId, action } = await req.json();
-  const act = action === "ignore" ? "ignore" : "promote";
+  const act = ["ignore", "unpromote"].includes(action) ? action : "promote";
   const r = await fetch(`${API}/api/clusters/${clusterId}/${act}`, {
     method: "POST",
     headers: await authHeaders(),

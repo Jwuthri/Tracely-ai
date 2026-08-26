@@ -9,7 +9,14 @@ export function ClusterActions({ clusterId, status }: { clusterId: string; statu
   const [error, setError] = useState("");
   const router = useRouter();
 
-  async function act(action: "promote" | "ignore") {
+  async function act(action: "promote" | "ignore" | "unpromote") {
+    if (
+      action === "unpromote" &&
+      !window.confirm(
+        "Remove from regression? The case and its replay history are deleted and the cluster reopens. Promote again to recreate it.",
+      )
+    )
+      return;
     setBusy(action);
     setError("");
     try {
@@ -32,7 +39,25 @@ export function ClusterActions({ clusterId, status }: { clusterId: string; statu
   }
 
   if (status === "PROMOTED")
-    return <span className="font-mono text-[12px] text-ok">promoted → case ✓</span>;
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[12px] text-ok">promoted → case ✓</span>
+          <button
+            onClick={() => act("unpromote")}
+            disabled={!!busy}
+            className="rounded-lg border border-line bg-ink-700 px-3.5 py-2 text-[13px] text-fg-muted transition-colors hover:border-fail/50 hover:text-fail disabled:opacity-40"
+          >
+            {busy === "unpromote" ? "Removing…" : "Remove from regression"}
+          </button>
+        </div>
+        {error && (
+          <p role="alert" className="text-[12.5px] text-fail">
+            {error}
+          </p>
+        )}
+      </div>
+    );
   if (status === "IGNORED") return <span className="font-mono text-[12px] text-fg-faint">ignored</span>;
 
   return (

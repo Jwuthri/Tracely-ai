@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -34,6 +34,13 @@ _TABLES = [
     models.Agent.__table__,
     models.FailureCluster.__table__,
     models.ClusterMember.__table__,
+    # unpromote deletes the promoted case — everything case_delete touches must exist
+    models.EvaluationCase.__table__,
+    models.CaseReplay.__table__,
+    models.EvaluationSuite.__table__,
+    models.EvaluationSuiteCase.__table__,
+    models.GateRun.__table__,
+    models.GateCase.__table__,
 ]
 
 
@@ -155,3 +162,48 @@ async def test_all_traces_gone_explains_why(client, sync_db, promotable):
     assert "2 traces are still stored" in detail and "TTL" in detail
     with sync_db() as s:
         assert s.get(models.FailureCluster, cid).status == "OPEN"  # not half-promoted
+
+
+async def test_unpromote_deletes_the_case_and_reopens_the_cluster(client, sync_db):
+    tok, pid = await _owner(client)
+    cid = _seed(sync_db, pid, ["t-1"])
+    with sync_db() as s:
+        cl = s.get(models.FailureCluster, cid)
+        case = models.EvaluationCase(
+            id=str(uuid4()),
+            project_id=pid,
+            agent_id=cl.agent_id,
+            title=cl.label,
+            source_trace_id="t-1",
+            input_digest="d1",
+        )
+        s.add(case)
+        s.flush()
+        s.add(
+            models.CaseReplay(
+                id=str(uuid4()), case_id=case.id, candidate_trace_id="t-1", verdict="FAIL"
+            )
+        )
+        cl.status, cl.candidate_case_id = "PROMOTED", case.id
+        s.commit()
+        case_id = case.id
+
+    h = {"Authorization": f"Bearer {tok}"}
+    r = await client.post(f"/api/clusters/{cid}/unpromote", headers=h)
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "OPEN"}
+    with sync_db() as s:
+        cl = s.get(models.FailureCluster, cid)
+        assert (cl.status, cl.candidate_case_id) == ("OPEN", None)
+        assert s.get(models.EvaluationCase, case_id) is None
+        assert list(s.execute(select(models.CaseReplay)).scalars()) == []
+
+    # already-gone case (deleted from the cases page first) is a no-op, not an error
+    with sync_db() as s:
+        cl = s.get(models.FailureCluster, cid)
+        cl.status, cl.candidate_case_id = "PROMOTED", "case-already-deleted"
+        s.commit()
+    assert (await client.post(f"/api/clusters/{cid}/unpromote", headers=h)).status_code == 200
+
+    assert (await client.post(f"/api/clusters/{uuid4()}/unpromote", headers=h)).status_code == 404

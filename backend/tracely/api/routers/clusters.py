@@ -1,4 +1,4 @@
-"""Failure cluster endpoints: list, detail, rebuild, promote, ignore.
+"""Failure cluster endpoints: list, detail, rebuild, promote, unpromote, ignore.
 
 Slim wrapper: HTTP shaping only. Business logic lives in:
 - `domain/evaluation/evaluator_suggestion.py` (suggested evaluator generation)
@@ -206,6 +206,31 @@ async def promote_cluster(cluster_id: str, project_id: str = Depends(get_project
     if status == "err":
         raise HTTPException(status_code=404, detail=payload)
     return payload
+
+
+@router.post("/clusters/{cluster_id}/unpromote", dependencies=[Depends(require_user)])
+async def unpromote_cluster(cluster_id: str, project_id: str = Depends(get_project_id)) -> dict:
+    """Undo a promote: delete the case it created (replay history included) and reopen the
+    cluster. `require_user` because it destroys what someone built — the same bar as deleting
+    the case directly."""
+
+    def work():
+        with SyncSessionLocal() as s:
+            cl = repo.cluster_get(s, project_id, cluster_id)
+            if not cl:
+                return None
+            if cl.candidate_case_id:
+                # no-op if the case was already deleted from the cases page
+                repo.case_delete(s, project_id, cl.candidate_case_id)
+            cl.status = "OPEN"
+            cl.candidate_case_id = None
+            s.commit()
+            return {"status": cl.status}
+
+    res = await run_in_threadpool(work)
+    if res is None:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    return res
 
 
 class DeleteClustersBody(BaseModel):

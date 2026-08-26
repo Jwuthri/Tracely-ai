@@ -1,6 +1,7 @@
-import { getTrace, type ConvNode, type FullTurn } from "@/app/lib/api";
+import { getCaseForTrace, getTrace, type ConvNode, type FullTurn } from "@/app/lib/api";
 import { convUsage, fmtUsd } from "@/app/lib/usage";
 import { PromoteButton } from "@/app/components/PromoteButton";
+import { DeleteCaseButton } from "@/app/components/DeleteCaseButton";
 import { SingleTraceView } from "@/app/components/SingleTraceView";
 import { CopyId } from "@/app/components/CopyId";
 import { Badge } from "@/app/components/ui";
@@ -8,7 +9,10 @@ import { IconArrowLeft } from "@/app/components/icons";
 
 export default async function TracePage({ params }: { params: Promise<{ traceId: string }> }) {
   const { traceId } = await params;
-  const { spans, scores, eval_verdict, thread_id } = await getTrace(traceId);
+  const [{ spans, scores, eval_verdict, thread_id }, promotedCase] = await Promise.all([
+    getTrace(traceId),
+    getCaseForTrace(traceId),
+  ]);
   const hasError = spans.some((s) => s.level === "ERROR");
   const failing = hasError || eval_verdict === "FAIL";
   const root = spans.find((s) => s.parent_span_id === "") ?? spans[0];
@@ -99,13 +103,33 @@ export default async function TracePage({ params }: { params: Promise<{ traceId:
             {/* Watch this run act itself out. `thread_spans_full` accepts a TRACE id as well as a
                 conversation id, so a one-turn run replays fine — but prefer the thread when the
                 run belongs to a conversation, so the replay covers every turn. */}
+            {/* only when the turn belongs to a real conversation thread */}
+            {thread_id && (
+              <a href={`/sessions/${encodeURIComponent(thread_id)}`} className="btn-ghost">
+                ← Conversation
+              </a>
+            )}
             <a href={`/sessions/${encodeURIComponent(thread_id || traceId)}/replay`} className="btn-ghost">
               ▶ Replay
             </a>
             <a href={`/sessions/${encodeURIComponent(thread_id || traceId)}/fleet`} className="btn-ghost">
               ⌂ Fleet
             </a>
-            {failing && <PromoteButton traceId={traceId} />}
+            {promotedCase ? (
+              <>
+                <a href={`/cases/${promotedCase.id}`} className="btn-ghost">
+                  ⚑ Case
+                </a>
+                <DeleteCaseButton
+                  caseId={promotedCase.id}
+                  title={promotedCase.title}
+                  label="Remove from regression"
+                  redirectTo={null}
+                />
+              </>
+            ) : (
+              failing && <PromoteButton traceId={traceId} />
+            )}
           </div>
         </div>
       </header>

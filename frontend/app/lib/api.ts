@@ -261,6 +261,11 @@ export async function getCase(caseId: string): Promise<EvalCase | null> {
   return getJsonOrNull<EvalCase>(`/api/cases/${caseId}`);
 }
 
+/** The case this trace was promoted into, or null — drives promote vs. remove on the trace page. */
+export async function getCaseForTrace(traceId: string): Promise<EvalCase | null> {
+  return getJsonOrNull<EvalCase>(`/api/traces/${traceId}/case`);
+}
+
 /** One user turn, plus what the agent is optionally expected to do with it. Both expectation
  *  fields default to empty: a turn with neither is graded only by the project's own evaluators,
  *  exactly as production traffic is. `tools` is checked deterministically and needs the agent's

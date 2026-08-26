@@ -551,6 +551,24 @@ def case_get(s: Session, project_id: str, case_id: str) -> EvaluationCase | None
     return c if c and c.project_id == project_id else None
 
 
+def case_for_trace(s: Session, project_id: str, trace_id: str) -> EvaluationCase | None:
+    """The case promoted FROM this trace, if any — what lets the trace page offer
+    "remove from regression" instead of a second promote."""
+    return (
+        s.execute(
+            select(EvaluationCase)
+            .where(
+                EvaluationCase.project_id == project_id,
+                EvaluationCase.source_trace_id == trace_id,
+            )
+            .order_by(desc(EvaluationCase.created_at))
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
 def case_last_replay(s: Session, case_id: str) -> CaseReplay | None:
     return (
         s.execute(

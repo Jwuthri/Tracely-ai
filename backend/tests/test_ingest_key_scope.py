@@ -18,6 +18,7 @@ DESTRUCTIVE = [
     ("DELETE", "/api/sessions", {"threads": ["t1"]}),
     ("DELETE", "/api/clusters", {"cluster_ids": ["c1"]}),
     ("DELETE", "/api/cases/c1", None),
+    ("POST", "/api/clusters/c1/unpromote", None),
     ("DELETE", "/api/evaluators/e1", None),
     ("DELETE", "/api/scenarios/s1", None),
     ("DELETE", "/api/meta-analyses/m1", None),
