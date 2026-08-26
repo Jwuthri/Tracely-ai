@@ -54,6 +54,11 @@ x-app-env: &app-env
   ASSISTANT_MAX_MODEL_CALLS: ${ASSISTANT_MAX_MODEL_CALLS:-12}
   # USD one conversation may spend of OUR credit, cumulative across its turns.
   ASSISTANT_BUDGET_USD: ${ASSISTANT_BUDGET_USD:-1.0}
+  # Assistant speech mode: realtime voice, browser-direct via ephemeral tokens the backend
+  # mints. OpenAI rides OPENAI_API_KEY above; Grok needs its own. Blank = provider hidden.
+  XAI_API_KEY: ${XAI_API_KEY:-}
+  VOICE_OPENAI_MODEL: ${VOICE_OPENAI_MODEL:-gpt-realtime}
+  VOICE_XAI_MODEL: ${VOICE_XAI_MODEL:-grok-voice-latest}
   # AI Observability: attaches a PostHog CallbackHandler to every judge/assistant/simulation LLM
   # call (infrastructure/llm/provider.py). Blank = no capture, like every other optional key here.
   POSTHOG_API_KEY: ${POSTHOG_API_KEY:-}

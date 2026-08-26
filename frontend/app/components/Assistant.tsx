@@ -8,12 +8,14 @@ import {
   IconArrowLeft,
   IconChat,
   IconClip,
+  IconMic,
   IconPlus,
   IconSend,
   IconStack,
   IconTrash,
   IconX,
 } from "./icons";
+import { VoiceMode } from "./VoiceMode";
 import { Markdown } from "./Markdown";
 import { TimeAgo } from "./TimeAgo";
 import { streamAssistantTurn } from "@/app/lib/assistant";
@@ -196,7 +198,7 @@ const ctrl =
 export function Assistant() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<"chat" | "history">("chat");
+  const [view, setView] = useState<"chat" | "history" | "voice">("chat");
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chats, setChats] = useState<ChatSummary[]>([]);
@@ -414,6 +416,43 @@ export function Assistant() {
     inflight.current = null;
   }
 
+  // What the voice model's one tool runs: a regular text-assistant turn into the CURRENT
+  // conversation, so spoken questions and their answers land in the same saved transcript the
+  // chat view shows. Returns the reply for the voice model to speak.
+  const askTracely = useCallback(
+    async (question: string): Promise<string> => {
+      let reply = "";
+      let failed = "";
+      await streamAssistantTurn(
+        {
+          message: question,
+          chat_id: chatId,
+          attachments: [],
+          path: pathname ?? "",
+          context: readPageContext(),
+        },
+        (e) => {
+          if (e.type === "error") failed = e.detail || "the assistant failed";
+          if (e.type === "over_budget") failed = "this conversation is over its assistant budget";
+          if (e.type === "disabled") failed = "no model is configured on this deployment";
+          if (e.type === "done") {
+            reply = e.reply;
+            setChatId(e.chat_id);
+            setMessages((m) => [
+              ...m,
+              { role: "user", content: question },
+              { role: "assistant", content: e.reply },
+            ]);
+            void loadChats();
+          }
+        },
+      );
+      if (!reply) throw new Error(failed || "the assistant gave no answer");
+      return reply;
+    },
+    [chatId, pathname, loadChats],
+  );
+
   // Closing the panel cancels whatever is streaming. There are four ways to close it (button,
   // Escape, launcher, navigation) and a turn kept running costs us money nobody is reading.
   useEffect(() => {
@@ -478,11 +517,22 @@ export function Assistant() {
                 </button>
               )}
               <h2 className="truncate text-[13.5px] font-semibold text-fg">
-                {view === "history" ? "Conversations" : "Assistant"}
+                {view === "history" ? "Conversations" : view === "voice" ? "Speech" : "Assistant"}
               </h2>
               {view === "chat" && <DocLink path="/product/assistant" />}
             </div>
             <div className="flex items-center gap-1.5">
+              {view === "chat" && (
+                <button
+                  type="button"
+                  onClick={() => setView("voice")}
+                  title="Speech mode"
+                  aria-label="Speech mode"
+                  className={ctrl}
+                >
+                  <IconMic className="h-3.5 w-3.5" />
+                </button>
+              )}
               {view === "chat" && !empty && (
                 <button
                   type="button"
@@ -507,7 +557,9 @@ export function Assistant() {
             </div>
           </div>
 
-          {view === "history" ? (
+          {view === "voice" ? (
+            <VoiceMode askTracely={askTracely} />
+          ) : view === "history" ? (
             <div className="flex-1 overflow-y-auto py-1">
               {chats.length === 0 ? (
                 <p className="px-4 py-8 text-center text-[12px] text-fg-muted">

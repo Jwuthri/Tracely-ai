@@ -27,8 +27,12 @@ import asyncio
 import contextlib
 import json
 import re
+import time
 import uuid
+from collections import deque
 from typing import Literal
+
+import httpx
 
 import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -37,6 +41,7 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_principal
+from tracely.config import settings
 from tracely.api.internal_client import auth_headers_from
 from tracely.auth import Principal
 from tracely.infrastructure.blob import s3
@@ -87,7 +92,8 @@ def _summary(row) -> dict:
     msgs = row.messages or []
     return {
         "id": row.id,
-        "title": row.title or assistant_service.title_for(
+        "title": row.title
+        or assistant_service.title_for(
             next((m.get("content", "") for m in msgs if m.get("role") == "user"), "")
         ),
         "messages": len(msgs),
@@ -264,3 +270,270 @@ async def get_file(attachment_id: str, principal: Principal = Depends(get_princi
             "Cache-Control": "private, max-age=3600",
         },
     )
+
+
+# ── Voice mode ────────────────────────────────────────────────────────────────
+# Speech-to-speech for the same widget: the browser talks to the voice provider DIRECTLY
+# (WebRTC for OpenAI, WebSocket for xAI/Grok) using a short-lived ephemeral token minted here,
+# so the real keys never leave the server. Like the text assistant, voice runs on OUR keys —
+# the same CLAUDE.md server-key seam, spoken instead of typed. These calls don't go through
+# `infrastructure/llm/provider.py` on purpose: a realtime session is not a chat completion, and
+# routing it through LangChain has nothing to route.
+#
+# The voice model gets ONE tool, `ask_tracely(question)`. The browser forwards it to
+# POST /assistant/chat — the regular assistant agent, running as the caller — and speaks the
+# reply. So voice grants no new reach into the workspace; it is a microphone on the agent above.
+
+VOICE_INSTRUCTIONS = (
+    "You are the Tracely assistant, speaking out loud inside the Tracely dashboard. "
+    "Tracely is trace-native CI/CD for AI agents: production traces are graded by evaluators, "
+    "failures are clustered, clusters become regression cases, and cases gate pull requests. "
+    "For ANY question about this workspace's data — traces, failures, evaluators, clusters, "
+    "cases, gates, trends, alerts — call the ask_tracely tool and summarize its answer aloud; "
+    "never guess at numbers or verdicts yourself. Keep replies short and conversational: one or "
+    "two spoken sentences, no markdown, no lists, and never read ids or URLs out loud."
+)
+
+ASK_TRACELY_TOOL = {
+    "type": "function",
+    "name": "ask_tracely",
+    "description": (
+        "Ask the Tracely workspace agent anything about this workspace: traces, conversations, "
+        "failures, evaluators, clusters, regression cases, CI gates, trends, alerts. It can also "
+        "create and change things (evaluators, scenarios, alerts) when asked to. Returns a text "
+        "answer to summarize aloud."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The user's request, in full."}
+        },
+        "required": ["question"],
+    },
+}
+
+# OpenAI's realtime voices are a fixed set (the API error enumerates them); xAI's grow with
+# releases, so those are fetched live below and this is only the fallback.
+OPENAI_VOICES = [
+    "marin",
+    "cedar",
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "verse",
+]
+XAI_VOICES_FALLBACK = [
+    "ara",
+    "eve",
+    "leo",
+    "rex",
+    "sal",
+    "altair",
+    "atlas",
+    "aurora",
+    "carina",
+    "castor",
+    "celeste",
+    "cosmo",
+    "helios",
+    "helix",
+    "iris",
+    "kepler",
+    "liora",
+    "lumen",
+    "luna",
+    "lux",
+    "naksh",
+    "orion",
+    "perseus",
+    "rigel",
+    "sirius",
+    "ursa",
+    "zagan",
+    "zenith",
+]
+_XAI_VOICES_TTL_S = 3600.0
+_xai_voices_cache: tuple[float, list[str]] = (0.0, [])
+
+# ponytail: in-process fixed-window limiter, per project. Multi-replica prod rate-limits per
+# replica; move to Redis if minted-session abuse ever shows up on the invoice.
+_session_mints: dict[str, deque] = {}
+
+
+def _rate_limited(project_id: str) -> bool:
+    now = time.monotonic()
+    q = _session_mints.setdefault(project_id, deque())
+    while q and now - q[0] > 60.0:
+        q.popleft()
+    if len(q) >= max(1, settings.voice_sessions_per_minute):
+        return True
+    q.append(now)
+    return False
+
+
+async def _xai_voices() -> list[str]:
+    """xAI's current voice roster (28 at last count, and growing) — cached for an hour."""
+    global _xai_voices_cache
+    ts, voices = _xai_voices_cache
+    if voices and time.monotonic() - ts < _XAI_VOICES_TTL_S:
+        return voices
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.x.ai/v1/tts/voices",
+                headers={"Authorization": f"Bearer {settings.xai_api_key}"},
+            )
+            r.raise_for_status()
+            voices = [v["voice_id"] for v in r.json().get("voices", []) if v.get("voice_id")]
+    except Exception as exc:
+        log.warning("xai_voices_fetch_failed", error=str(exc))
+        voices = []
+    if voices:
+        _xai_voices_cache = (time.monotonic(), voices)
+        return voices
+    return XAI_VOICES_FALLBACK
+
+
+class VoiceSessionBody(BaseModel):
+    provider: Literal["openai", "xai"]
+    voice: str = Field(default="", max_length=64)
+
+
+@router.get("/assistant/voice/config")
+async def voice_config(principal: Principal = Depends(get_principal)) -> dict:
+    """Which speech providers this deployment can offer, and every voice each one has.
+    A provider with no key configured is simply absent — the widget hides the mode entirely
+    when the list is empty."""
+    providers = []
+    if settings.openai_api_key:
+        providers.append(
+            {
+                "id": "openai",
+                "label": "OpenAI",
+                "model": settings.voice_openai_model,
+                "voices": OPENAI_VOICES,
+                "default_voice": "marin",
+            }
+        )
+    if settings.xai_api_key:
+        providers.append(
+            {
+                "id": "xai",
+                "label": "Grok",
+                "model": settings.voice_xai_model,
+                "voices": await _xai_voices(),
+                "default_voice": "ara",
+            }
+        )
+    return {"providers": providers}
+
+
+@router.post("/assistant/voice/session")
+async def voice_session(
+    body: VoiceSessionBody, principal: Principal = Depends(get_principal)
+) -> dict:
+    """Mint an ephemeral client token for one voice session and hand back everything the
+    browser needs to connect on its own. The reply's `connection.type` tells it which
+    transport: `webrtc` (OpenAI — POST the SDP offer to `connection.url`) or `websocket`
+    (xAI — connect to `connection.url` and send `connection.session_update` first)."""
+    if _rate_limited(principal.project_id):
+        raise HTTPException(status_code=429, detail="too many voice sessions — wait a minute")
+    ttl = settings.voice_token_ttl_seconds
+
+    if body.provider == "openai":
+        if not settings.openai_api_key:
+            raise HTTPException(status_code=400, detail="OpenAI voice is not configured")
+        voice = body.voice or "marin"
+        if voice not in OPENAI_VOICES:
+            raise HTTPException(status_code=400, detail=f"unknown OpenAI voice: {voice}")
+        # The whole session config is baked into the minted secret server-side — instructions,
+        # tools, VAD — so the browser only ever exchanges SDP.
+        payload = {
+            "expires_after": {"anchor": "created_at", "seconds": ttl},
+            "session": {
+                "type": "realtime",
+                "model": settings.voice_openai_model,
+                "instructions": VOICE_INSTRUCTIONS,
+                "output_modalities": ["audio"],
+                "audio": {
+                    "input": {
+                        "transcription": {"model": "gpt-4o-mini-transcribe"},
+                        "turn_detection": {"type": "semantic_vad"},
+                    },
+                    "output": {"voice": voice},
+                },
+                "tools": [ASK_TRACELY_TOOL],
+            },
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/realtime/client_secrets",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json=payload,
+            )
+        if r.status_code != 200:
+            log.warning(
+                "voice_session_mint_failed",
+                provider="openai",
+                status=r.status_code,
+                body=r.text[:300],
+            )
+            raise HTTPException(status_code=502, detail="couldn't start an OpenAI voice session")
+        data = r.json()
+        return {
+            "provider": "openai",
+            "token": data["value"],
+            "expires_at": data.get("expires_at"),
+            "voice": voice,
+            "connection": {"type": "webrtc", "url": "https://api.openai.com/v1/realtime/calls"},
+        }
+
+    if not settings.xai_api_key:
+        raise HTTPException(status_code=400, detail="Grok voice is not configured")
+    voices = await _xai_voices()
+    voice = body.voice or ("ara" if "ara" in voices else voices[0])
+    # Validated here because xAI doesn't reject a bad voice — it silently drops the whole
+    # audio config from session.update, and the session runs on the default voice.
+    if voice not in voices:
+        raise HTTPException(status_code=400, detail=f"unknown Grok voice: {voice}")
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            "https://api.x.ai/v1/realtime/client_secrets",
+            headers={"Authorization": f"Bearer {settings.xai_api_key}"},
+            json={"expires_after": {"seconds": ttl}},
+        )
+    if r.status_code != 200:
+        log.warning(
+            "voice_session_mint_failed", provider="xai", status=r.status_code, body=r.text[:300]
+        )
+        raise HTTPException(status_code=502, detail="couldn't start a Grok voice session")
+    data = r.json()
+    # xAI configures the session over the socket, so the client is handed the exact
+    # `session.update` to send — it fills in the sample rate its AudioContext actually got.
+    return {
+        "provider": "xai",
+        "token": data["value"],
+        "expires_at": data.get("expires_at"),
+        "voice": voice,
+        "connection": {
+            "type": "websocket",
+            "url": "wss://api.x.ai/v1/realtime",
+            "session_update": {
+                "instructions": VOICE_INSTRUCTIONS,
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": {"model": "grok-stt-latest"},
+                    },
+                    "output": {"voice": voice, "format": {"type": "audio/pcm", "rate": 24000}},
+                },
+                "turn_detection": {"type": "server_vad"},
+                "tools": [ASK_TRACELY_TOOL],
+                "tool_choice": "auto",
+            },
+        },
+    }

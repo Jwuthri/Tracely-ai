@@ -107,11 +107,17 @@ export function useHiddenTypes(): {
 
   const saveAsWorkspaceDefault = useCallback(() => {
     const current = [...(readLocal() ?? workspace)];
-    fetch("/api/project/ui-prefs", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prefs: { hiddenTypes: current } }),
-    })
+    // Read-merge-write: ui_prefs holds other keys too (the assistant's voice choice), and the
+    // backend PUT replaces the whole dict.
+    fetch("/api/project/ui-prefs", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { prefs: {} }))
+      .then((d) =>
+        fetch("/api/project/ui-prefs", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prefs: { ...(d?.prefs ?? {}), hiddenTypes: current } }),
+        }),
+      )
       .then((r) => { if (r.ok) setWorkspace(new Set(current)); })
       .catch(() => {});
     writeLocal(null);

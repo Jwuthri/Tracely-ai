@@ -171,6 +171,20 @@ class Settings(BaseSettings):
     # on its own. Must be float dollars: `estimate_cost_usd_cents` rounds a normal turn to 0.
     assistant_budget_usd: float = 1.0
 
+    # ── assistant voice mode (speech-to-speech) ──
+    # The chat widget's "speech" mode talks to a realtime voice model directly from the browser,
+    # authenticated with a short-lived ephemeral token this server mints. Like the assistant's
+    # text model, voice runs on OUR keys (it explains our product) — CLAUDE.md's sanctioned
+    # server-key seam. A provider with no key configured simply doesn't appear in the picker.
+    # OpenAI rides the existing `openai_api_key`; xAI (Grok) needs its own:
+    xai_api_key: str = ""
+    voice_openai_model: str = "gpt-realtime"  # WebRTC, api.openai.com/v1/realtime/calls
+    voice_xai_model: str = "grok-voice-latest"  # WebSocket, wss://api.x.ai/v1/realtime
+    # How long a minted ephemeral token may be used to START a session (not session length).
+    voice_token_ttl_seconds: int = 300
+    # Sessions minted per project per minute — voice is the most expensive thing we sell.
+    voice_sessions_per_minute: int = 10
+
     # failure intelligence (embeddings + agents) — embeddings ride the OpenRouter key too
     # (OpenAI-compatible /embeddings); this key is only the direct-OpenAI fallback.
     openai_api_key: str = ""
