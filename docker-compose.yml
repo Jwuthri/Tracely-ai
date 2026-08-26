@@ -42,9 +42,6 @@ x-app-env: &app-env
   # front, so leaving this unset makes calls fail with "requires more credits" long before the
   # balance is spent. Raise only if a reasoning-heavy judge model gets truncated.
   LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-4096}
-  # Meta-analysis ("Analyze") synthesis model + rolling-summary compression model. The heavy
-  # lifting (correlations/outliers; verbatim short steps) is deterministic; these only set the
-  # model for the prose/compression LLM calls (both via the OpenRouter provider).
   # The dashboard's chat widget. Runs on OUR OpenRouter key (it explains the product, so it has
   # to answer in a workspace that brought no key of its own) — the one LLM call customers don't
   # pay for. ASSISTANT_REASONING_EFFORT: ""|minimal|low|medium|high.
@@ -61,9 +58,13 @@ x-app-env: &app-env
   # call (infrastructure/llm/provider.py). Blank = no capture, like every other optional key here.
   POSTHOG_API_KEY: ${POSTHOG_API_KEY:-}
   POSTHOG_HOST: ${POSTHOG_HOST:-https://us.i.posthog.com}
+  # Meta-analysis ("Analyze") synthesis model + rolling-summary compression model. The heavy
+  # lifting (correlations/outliers; verbatim short steps) is deterministic; these only set the
+  # model for the prose/compression LLM calls (both via the OpenRouter provider).
   META_ANALYSIS_MODEL: ${META_ANALYSIS_MODEL:-openai/gpt-5-mini}
   ROLLING_SUMMARY_MODEL: ${ROLLING_SUMMARY_MODEL:-openai/gpt-5.4-nano}
   ROLLING_SUMMARY_STEP_MAX_TOKENS: ${ROLLING_SUMMARY_STEP_MAX_TOKENS:-512}
+  ROLLING_SUMMARY_MAX_TOKENS: ${ROLLING_SUMMARY_MAX_TOKENS:-20000}
   # Record what Tracely itself did — the judge's prompt and reply, the attacker's move, the call
   # to the customer's endpoint — as a trace, behind the "Show eval" toggle. Costs one small extra
   # trace per evaluation; set false on a high-volume project that doesn't need the audit trail.
@@ -72,7 +73,6 @@ x-app-env: &app-env
   EVAL_CHAT_POOL_SIZE: ${EVAL_CHAT_POOL_SIZE:-8}
   # Where the worker reaches this API (the Data page's "Seed demo data" runs the seeder there).
   INTERNAL_API_URL: ${INTERNAL_API_URL:-http://backend:8000}
-  ROLLING_SUMMARY_MAX_TOKENS: ${ROLLING_SUMMARY_MAX_TOKENS:-20000}
   # Failure clustering. CLUSTER_MERGE_SIMILARITY: token overlap at which a new failure joins an
   # existing cluster instead of starting one (higher = tighter/more clusters, >1 = exact-signature
   # only). CLUSTER_MIN_SIZE: default floor for the clusters list (>=2).
