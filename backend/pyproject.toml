@@ -44,7 +44,7 @@ dependencies = [
   # Fernet symmetric encryption for workspace-supplied secrets at rest (e.g. a project's own
   # OpenRouter key) — already pulled in transitively by pyjwt[crypto]; declared directly since we
   # import it ourselves now.
-  "cryptography>=43",
+  "cryptography>=50.0.0",
   "httpx>=0.27",
   # MCP server mounted at /mcp (api/mcp_server.py) — lets an agent drive the workspace with
   # the same ingest key the SDK uses. Small, pure-Python, and already in the lock file.
