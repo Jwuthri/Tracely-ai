@@ -10,7 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@clerk/nextjs": "^7.7.8",
+    "@clerk/nextjs": "^7.8.0",
     "@gsap/react": "^2.1.2",
     "@xyflow/react": "^12.11.3",
     "clsx": "^2.1.1",
@@ -28,7 +28,7 @@
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.5",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
