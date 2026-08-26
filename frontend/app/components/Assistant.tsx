@@ -3,7 +3,7 @@
 import { DocLink } from "@/app/components/DocLink";
 import clsx from "clsx";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   IconArrowLeft,
   IconChat,
@@ -16,6 +16,12 @@ import {
   IconX,
 } from "./icons";
 import { VoiceMode } from "./VoiceMode";
+import {
+  getVoiceCall,
+  getVoiceCallServerSnapshot,
+  isCallActive,
+  subscribeVoiceCall,
+} from "@/app/lib/voiceCall";
 import { Markdown } from "./Markdown";
 import { TimeAgo } from "./TimeAgo";
 import { streamAssistantTurn } from "@/app/lib/assistant";
@@ -210,6 +216,10 @@ export function Assistant() {
   const [notice, setNotice] = useState("");
   const [noKey, setNoKey] = useState(false);
   const booted = useRef(false);
+  // A call runs outside this component (see `voiceCall.ts`), so the launcher can show it is
+  // still live after the panel is closed.
+  const call = useSyncExternalStore(subscribeVoiceCall, getVoiceCall, getVoiceCallServerSnapshot);
+  const onCall = isCallActive(call);
   // The in-flight turn, so it can be cancelled: a tool loop runs for tens of seconds and keeps
   // spending after the user has stopped caring (closing the panel, switching chats, or saying so).
   const inflight = useRef<AbortController | null>(null);
@@ -419,6 +429,12 @@ export function Assistant() {
   // What the voice model's one tool runs: a regular text-assistant turn into the CURRENT
   // conversation, so spoken questions and their answers land in the same saved transcript the
   // chat view shows. Returns the reply for the voice model to speak.
+  // A call captures `askTracely` once, at connect time, but `chatId` changes underneath it as
+  // the conversation is saved. The ref keeps the running call pointed at the CURRENT turn
+  // handler, so a spoken answer never lands in the conversation we were in ten minutes ago.
+  const askRef = useRef<(q: string) => Promise<string>>(async () => "");
+  const askStable = useCallback((q: string) => askRef.current(q), []);
+
   const askTracely = useCallback(
     async (question: string): Promise<string> => {
       let reply = "";
@@ -452,6 +468,7 @@ export function Assistant() {
     },
     [chatId, pathname, loadChats],
   );
+  askRef.current = askTracely;
 
   // Closing the panel cancels whatever is streaming. There are four ways to close it (button,
   // Escape, launcher, navigation) and a turn kept running costs us money nobody is reading.
@@ -558,7 +575,7 @@ export function Assistant() {
           </div>
 
           {view === "voice" ? (
-            <VoiceMode askTracely={askTracely} />
+            <VoiceMode askTracely={askStable} />
           ) : view === "history" ? (
             <div className="flex-1 overflow-y-auto py-1">
               {chats.length === 0 ? (
@@ -733,12 +750,39 @@ export function Assistant() {
 
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-label={open ? "Close assistant" : "Open assistant (⌘J)"}
-        title="Assistant — ⌘J"
-        className="group fixed bottom-5 right-5 z-40 grid h-[52px] w-[52px] place-items-center rounded-full border border-line bg-ink-800/90 text-signal shadow-lg backdrop-blur-md transition-transform hover:scale-105"
+        onClick={() => {
+          // Mid-call the launcher is the way BACK to the call, not a toggle that hides it.
+          if (onCall && !open) setView("voice");
+          setOpen((o) => !o);
+        }}
+        aria-label={
+          onCall
+            ? "Voice call in progress — open the assistant"
+            : open
+              ? "Close assistant"
+              : "Open assistant (⌘J)"
+        }
+        title={onCall ? "Voice call in progress — ⌘J" : "Assistant — ⌘J"}
+        className={clsx(
+          "group fixed bottom-5 right-5 z-40 grid h-[52px] w-[52px] place-items-center rounded-full border bg-ink-800/90 shadow-lg backdrop-blur-md transition-transform hover:scale-105",
+          onCall ? "border-signal/60 text-signal" : "border-line text-signal",
+        )}
       >
-        {open ? <IconX className="h-5 w-5" /> : <IconChat className="h-5 w-5" />}
+        {/* A call keeps running with the panel shut, so the launcher has to say so — otherwise
+            the only evidence you are still on a live mic is the browser's own tab indicator. */}
+        {onCall && (
+          <span
+            aria-hidden
+            className="absolute inset-0 animate-ping rounded-full border border-signal/40"
+          />
+        )}
+        {open ? (
+          <IconX className="h-5 w-5" />
+        ) : onCall ? (
+          <IconMic className="h-5 w-5" />
+        ) : (
+          <IconChat className="h-5 w-5" />
+        )}
       </button>
     </>
   );

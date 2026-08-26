@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { Me } from "@/app/lib/auth/types";
 import { AccountMenu } from "./AccountMenu";
@@ -87,8 +88,12 @@ export function Sidebar({ me }: { me: Me | null }) {
             <div className="space-y-0.5">
               {sec.items.map(({ href, label, Icon, exact, external }) => {
                 const active = !external && (exact ? path === href : path === href || path.startsWith(href + "/"));
+                // A plain <a> for an in-app route is a full document reload: it throws away the
+                // layout, the JS bundle and everything holding client state — including a live
+                // assistant voice call. `Link` navigates in-place; external links keep the <a>.
+                const Tag = external ? "a" : Link;
                 return (
-                  <a
+                  <Tag
                     key={href}
                     href={href}
                     target={external ? "_blank" : undefined}
@@ -109,7 +114,7 @@ export function Sidebar({ me }: { me: Me | null }) {
                     />
                     {label}
                     {external && <span className="ml-auto text-fg-faint" aria-hidden>↗</span>}
-                  </a>
+                  </Tag>
                 );
               })}
             </div>

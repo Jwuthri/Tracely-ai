@@ -1,15 +1,17 @@
 "use client";
 
 import clsx from "clsx";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { IconMic } from "./icons";
+import { fetchVoiceProviders, type VoiceProviderInfo, type VoiceStatus } from "@/app/lib/voice";
 import {
-  fetchVoiceProviders,
-  startVoiceSession,
-  type VoiceHandle,
-  type VoiceProviderInfo,
-  type VoiceStatus,
-} from "@/app/lib/voice";
+  endCall,
+  getVoiceCall,
+  getVoiceCallServerSnapshot,
+  isCallActive,
+  startCall,
+  subscribeVoiceCall,
+} from "@/app/lib/voiceCall";
 
 /* The assistant's speech mode — lives inside the chat panel, swapped in for the transcript
    view. Pick a provider (whichever of OpenAI / Grok this deployment has keys for) and any of
@@ -17,10 +19,12 @@ import {
    workspace through the same text agent as the chat (`askTracely`), so anything it asserts
    about traces went through the regular tools as the regular caller.
 
+   The call itself is NOT this component's state — it lives in `voiceCall.ts`, outside React, so
+   closing the panel or walking to another page doesn't hang up. This is only the window onto it.
+
    The provider + voice choice is a workspace default (`ui_prefs.voice`) — "set once, whole
    team gets it" — the same mechanism as the hidden-span-type defaults. */
 
-type Line = { role: "user" | "assistant"; text: string };
 type VoicePref = { provider?: string; voice?: string };
 
 const STATUS_LABEL: Record<VoiceStatus, string> = {
@@ -35,15 +39,13 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
   const [providers, setProviders] = useState<VoiceProviderInfo[] | null>(null);
   const [providerId, setProviderId] = useState<string>("");
   const [voice, setVoice] = useState<string>("");
-  const [status, setStatus] = useState<VoiceStatus>("closed");
-  const [lines, setLines] = useState<Line[]>([]);
-  const [error, setError] = useState("");
-  const live = useRef<VoiceHandle | null>(null);
+  const call = useSyncExternalStore(subscribeVoiceCall, getVoiceCall, getVoiceCallServerSnapshot);
   const scroller = useRef<HTMLDivElement>(null);
   const prefsRef = useRef<Record<string, unknown>>({});
 
   // Providers + the workspace's saved choice, together: the pref only means something once we
-  // know which providers exist.
+  // know which providers exist. A call already running keeps its own — reopening the panel
+  // mid-conversation must not look like it is about to switch voices.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -56,14 +58,15 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
       ]);
       if (!alive) return;
       prefsRef.current = prefs;
+      const live = getVoiceCall();
       const saved = (prefs.voice ?? {}) as VoicePref;
-      const provider = list.find((p) => p.id === saved.provider) ?? list[0];
+      const wanted = isCallActive(live) ? live.provider : saved.provider;
+      const provider = list.find((p) => p.id === wanted) ?? list[0];
       setProviders(list);
       if (provider) {
         setProviderId(provider.id);
-        setVoice(
-          saved.voice && provider.voices.includes(saved.voice) ? saved.voice : provider.default_voice,
-        );
+        const pick = isCallActive(live) ? live.voice : saved.voice;
+        setVoice(pick && provider.voices.includes(pick) ? pick : provider.default_voice);
       }
     })();
     return () => {
@@ -71,18 +74,9 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
     };
   }, []);
 
-  // Leaving the view (or the panel) hangs up — a mic left open costs money nobody is talking to.
-  useEffect(
-    () => () => {
-      live.current?.stop();
-      live.current = null;
-    },
-    [],
-  );
-
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
-  }, [lines, status]);
+  }, [call.lines, call.status]);
 
   const savePref = useCallback((provider: string, v: string) => {
     // Merge into whatever else lives in ui_prefs — a plain PUT would clobber hiddenTypes.
@@ -96,43 +90,12 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
   }, []);
 
   const provider = providers?.find((p) => p.id === providerId);
+  const inCall = isCallActive(call);
 
-  function hangUp() {
-    live.current?.stop();
-    live.current = null;
-    setStatus("closed");
-  }
-
-  async function talk() {
-    if (live.current) return hangUp();
+  function talk() {
+    if (inCall) return endCall();
     if (!provider) return;
-    setError("");
-    setLines([]);
-    try {
-      live.current = await startVoiceSession({
-        provider: provider.id,
-        voice,
-        askTracely,
-        onEvent: (e) => {
-          if (e.type === "status") return setStatus(e.status);
-          if (e.type === "error") return setError(e.detail);
-          if (e.type === "user_transcript")
-            return setLines((l) => [...l, { role: "user", text: e.text }]);
-          if (e.type === "assistant_transcript") {
-            if (e.final) return;
-            return setLines((l) => {
-              const last = l[l.length - 1];
-              return last?.role === "assistant"
-                ? [...l.slice(0, -1), { role: "assistant", text: last.text + e.text }]
-                : [...l, { role: "assistant", text: e.text }];
-            });
-          }
-        },
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "couldn't start the voice session");
-      setStatus("closed");
-    }
+    void startCall({ provider: provider.id, voice, askTracely });
   }
 
   if (providers === null)
@@ -146,7 +109,6 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
       </p>
     );
 
-  const inCall = status !== "closed";
   const select =
     "h-7 rounded-md border border-line bg-ink-800 px-1.5 font-mono text-[11px] text-fg-muted focus:outline-none disabled:opacity-50";
 
@@ -155,6 +117,7 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
       <div className="flex items-center gap-1.5 border-b border-line px-3 py-2">
         <select
           aria-label="Voice provider"
+          autoComplete="off"
           className={select}
           value={providerId}
           disabled={inCall}
@@ -174,6 +137,7 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
         </select>
         <select
           aria-label="Voice"
+          autoComplete="off"
           className={clsx(select, "min-w-0 flex-1")}
           value={voice}
           disabled={inCall}
@@ -191,14 +155,14 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
       </div>
 
       <div ref={scroller} className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
-        {lines.length === 0 && (
+        {call.lines.length === 0 && (
           <p className="py-6 text-center text-[12px] leading-relaxed text-fg-muted">
             {inCall
               ? "Say something — I'm listening."
               : "Talk to the assistant. It uses the same tools as the chat, out loud."}
           </p>
         )}
-        {lines.map((l, i) => (
+        {call.lines.map((l, i) => (
           <div
             key={i}
             className={clsx(
@@ -211,9 +175,9 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
             {l.text}
           </div>
         ))}
-        {error && (
+        {call.error && (
           <div className="rounded-xl border border-fail/30 bg-fail/10 px-3 py-2 font-mono text-[11px] text-fail">
-            {error}
+            {call.error}
           </div>
         )}
       </div>
@@ -228,12 +192,12 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
             inCall
               ? "border-fail/40 bg-fail/15 text-fail hover:bg-fail/25"
               : "border-signal/40 bg-signal/15 text-signal hover:bg-signal/25 hover:shadow-glow",
-            status === "listening" && "animate-pulse",
+            call.status === "listening" && "animate-pulse",
           )}
         >
           <IconMic className="h-6 w-6" />
         </button>
-        <span className="font-mono text-[10px] text-fg-faint">{STATUS_LABEL[status]}</span>
+        <span className="font-mono text-[10px] text-fg-faint">{STATUS_LABEL[call.status]}</span>
       </div>
     </div>
   );
