@@ -5,7 +5,7 @@ description = "Tracely backend: FastAPI API + shared domain (ingestion, ClickHou
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.7",
-  "pydantic-settings>=2.3",
+  "pydantic-settings>=2.15.0",
   "sqlalchemy>=2.0.30",
   "greenlet>=3.0",
   "asyncpg>=0.29",

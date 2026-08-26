@@ -16,7 +16,7 @@ classifiers = [
   "Topic :: System :: Monitoring",
 ]
 dependencies = [
-  "opentelemetry-sdk>=1.25",
+  "opentelemetry-sdk>=1.44.0",
   "opentelemetry-exporter-otlp-proto-http>=1.25",
 ]
 
