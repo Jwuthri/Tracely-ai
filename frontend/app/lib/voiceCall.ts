@@ -10,7 +10,9 @@
 
 import { startVoiceSession, type VoiceHandle, type VoiceStatus } from "./voice";
 
-export type VoiceLine = { role: "user" | "assistant"; text: string; done: boolean };
+/** One bubble. `id` is the provider's conversation-item id — the only reliable identity for
+ *  "this is still the same utterance" (see `VoiceEvent` in voice.ts). */
+export type VoiceLine = { id: string; role: "user" | "assistant"; text: string };
 
 export type VoiceCallState = {
   status: VoiceStatus;
@@ -52,29 +54,28 @@ export function isCallActive(s: VoiceCallState = state): boolean {
   return s.status !== "closed";
 }
 
-/** Grow the transcript by one fragment. Consecutive fragments from the same speaker are ONE
- *  bubble that updates in place — a `replace` carries the whole utterance so far, an `append`
- *  carries only what is new. A finished line is never written to again. */
+/** Grow the transcript by one fragment. Every fragment carrying a given `id` updates that ONE
+ *  bubble in place: `replace` carries the whole utterance so far, `append` only what is new.
+ *
+ *  Keyed by id rather than "the last line, if the speaker matches", because a real microphone
+ *  makes server VAD re-fire `speech_started` between words — which used to split one sentence
+ *  into a bubble per fragment, each repeating the last. The item id doesn't move. */
 export function applyLine(
   lines: VoiceLine[],
+  id: string,
   role: "user" | "assistant",
   text: string,
   mode: "append" | "replace",
-  final: boolean,
 ): VoiceLine[] {
-  const last = lines[lines.length - 1];
-  if (last && last.role === role && !last.done) {
-    const merged = { role, text: mode === "append" ? last.text + text : text, done: final };
-    // A `done` frame with nothing in it (some providers send an empty `.done`) closes the line
-    // rather than blanking it.
-    if (!merged.text && last.text) merged.text = last.text;
-    return [...lines.slice(0, -1), merged];
-  }
-  return text ? [...lines, { role, text, done: final }] : lines;
+  const i = lines.findIndex((l) => l.id === id);
+  if (i === -1) return text ? [...lines, { id, role, text }] : lines;
+  const cur = lines[i];
+  // An empty `.done` (some providers send one) closes the utterance without blanking it.
+  const text_ = mode === "append" ? cur.text + text : text || cur.text;
+  const next = lines.slice();
+  next[i] = { ...cur, text: text_ };
+  return next;
 }
-
-const closeOpenLines = (lines: VoiceLine[]): VoiceLine[] =>
-  lines.some((l) => !l.done) ? lines.map((l) => (l.done ? l : { ...l, done: true })) : lines;
 
 export async function startCall(opts: {
   provider: "openai" | "xai";
@@ -96,9 +97,8 @@ export async function startCall(opts: {
           return set({ status: e.status });
         }
         if (e.type === "error") return set({ error: e.detail });
-        if (e.type === "turn") return set({ lines: closeOpenLines(state.lines) });
         if (e.type === "transcript")
-          return set({ lines: applyLine(state.lines, e.role, e.text, e.mode, e.final) });
+          return set({ lines: applyLine(state.lines, e.id, e.role, e.text, e.mode) });
       },
     });
   } catch (err) {
@@ -113,5 +113,5 @@ export async function startCall(opts: {
 export function endCall(): void {
   handle?.stop();
   handle = null;
-  set({ status: "closed", lines: closeOpenLines(state.lines) });
+  set({ status: "closed" });
 }

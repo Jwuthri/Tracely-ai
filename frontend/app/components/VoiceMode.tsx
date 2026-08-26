@@ -162,9 +162,9 @@ export function VoiceMode({ askTracely }: { askTracely: (q: string) => Promise<s
               : "Talk to the assistant. It uses the same tools as the chat, out loud."}
           </p>
         )}
-        {call.lines.map((l, i) => (
+        {call.lines.map((l) => (
           <div
-            key={i}
+            key={l.id}
             className={clsx(
               "max-w-[88%] break-words rounded-xl border px-3 py-2 text-[13px] leading-relaxed",
               l.role === "user"

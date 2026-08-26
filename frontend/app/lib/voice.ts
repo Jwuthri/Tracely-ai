@@ -20,14 +20,18 @@ export type VoiceStatus = "connecting" | "listening" | "speaking" | "thinking" |
 
 export type VoiceEvent =
   | { type: "status"; status: VoiceStatus }
-  // One transcript fragment. `mode` matters: providers disagree about what a transcript event
-  // carries. xAI re-sends the CUMULATIVE text so far on every `input_audio_transcription.updated`
-  // / `.completed` (verified against a live session), while OpenAI sends incremental `.delta`s.
-  // Appending a cumulative snapshot repeats the sentence; replacing with a delta loses it — so
-  // the transport says which it is and the consumer just obeys.
-  | { type: "transcript"; role: "user" | "assistant"; text: string; mode: "append" | "replace"; final: boolean }
-  // A new utterance began: whatever line was still growing is finished.
-  | { type: "turn" }
+  // One transcript fragment, tagged with the provider's own conversation-item id.
+  //
+  // `id` is what groups fragments into a bubble, and it has to be the provider's id rather than
+  // anything we infer. Server VAD re-fires `speech_started` mid-sentence whenever a real mic
+  // hears a gap, so "a new utterance began" is not a boundary we can detect from the event
+  // stream — but every fragment of one utterance carries the same `item_id`.
+  //
+  // `mode` settles the other disagreement: xAI re-sends the CUMULATIVE text so far on every
+  // `input_audio_transcription.updated` / `.completed` (verified against a live session), while
+  // OpenAI sends incremental `.delta`s. Appending a snapshot repeats the sentence; replacing
+  // with a delta loses it — so the transport says which it is and the consumer just obeys.
+  | { type: "transcript"; id: string; role: "user" | "assistant"; text: string; mode: "append" | "replace" }
   | { type: "tool"; question: string }
   | { type: "tool_done" }
   | { type: "error"; detail: string };
@@ -127,36 +131,42 @@ async function runTool(
   send({ type: "response.create" });
 }
 
-/** Route one realtime server event (both providers speak the same OpenAI event family). Returns
- *  true if the event was consumed. Audio deltas are NOT handled here — they differ per transport. */
-function routeEvent(
-  m: { type?: string; transcript?: string; delta?: string; arguments?: string; call_id?: string },
+/** Route one realtime server event (both providers speak the same OpenAI event family). Audio
+ *  deltas are NOT handled here — those differ per transport.
+ *
+ *  Exported for the test that replays a REAL captured grok-voice session through it. */
+export function routeEvent(
+  m: {
+    type?: string;
+    transcript?: string;
+    delta?: string;
+    arguments?: string;
+    call_id?: string;
+    item_id?: string;
+  },
   opts: Opts,
   send: (obj: Record<string, unknown>) => void,
 ): void {
   const t = m.type ?? "";
+  const id = m.item_id ?? "";
   if (t === "input_audio_buffer.speech_started") {
-    opts.onEvent({ type: "turn" });
     opts.onEvent({ type: "status", status: "listening" });
   } else if (t === "conversation.item.input_audio_transcription.delta" && m.delta) {
-    opts.onEvent({ type: "transcript", role: "user", text: m.delta, mode: "append", final: false });
+    opts.onEvent({ type: "transcript", id, role: "user", text: m.delta, mode: "append" });
   } else if (
     (t === "conversation.item.input_audio_transcription.completed" ||
       t === "conversation.item.input_audio_transcription.updated") &&
     m.transcript
   ) {
-    // Never `final: true` — xAI sends `.completed` several times per utterance, each one a
-    // longer snapshot, so closing the line on the first would strand the rest in a new bubble.
-    opts.onEvent({ type: "transcript", role: "user", text: m.transcript, mode: "replace", final: false });
+    opts.onEvent({ type: "transcript", id, role: "user", text: m.transcript, mode: "replace" });
   } else if (t.endsWith("audio_transcript.delta") && m.delta) {
-    opts.onEvent({ type: "transcript", role: "assistant", text: m.delta, mode: "append", final: false });
+    opts.onEvent({ type: "transcript", id, role: "assistant", text: m.delta, mode: "append" });
   } else if (t.endsWith("audio_transcript.done")) {
     // The `.done` text is authoritative — it replaces whatever the deltas assembled.
-    opts.onEvent({ type: "transcript", role: "assistant", text: m.transcript ?? "", mode: "replace", final: true });
+    opts.onEvent({ type: "transcript", id, role: "assistant", text: m.transcript ?? "", mode: "replace" });
   } else if (t === "response.function_call_arguments.done") {
     void runTool(m.arguments ?? "", m.call_id ?? "", opts, send);
   } else if (t === "output_audio_buffer.started" || t === "response.created") {
-    opts.onEvent({ type: "turn" });
     opts.onEvent({ type: "status", status: "speaking" });
   } else if (t === "response.done" || t === "output_audio_buffer.stopped") {
     opts.onEvent({ type: "status", status: "listening" });

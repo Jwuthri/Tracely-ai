@@ -1,0 +1,118 @@
+[
+  {
+    "type": "session.created"
+  },
+  {
+    "type": "conversation.created"
+  },
+  {
+    "type": "session.updated"
+  },
+  {
+    "type": "input_audio_buffer.speech_started",
+    "item_id": "item-1"
+  },
+  {
+    "type": "conversation.item.added"
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.updated",
+    "item_id": "item-1",
+    "transcript": "Why did my last"
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "item_id": "item-1",
+    "transcript": "Why did my last"
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.updated",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail?"
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail?"
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.updated",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail? Please look it up."
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail? Please look it up."
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.updated",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail? Please look it up for me."
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail? Please look it up for me."
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail? Please look it up for me."
+  },
+  {
+    "type": "response.created"
+  },
+  {
+    "type": "input_audio_buffer.speech_stopped",
+    "item_id": "item-1"
+  },
+  {
+    "type": "input_audio_buffer.committed",
+    "item_id": "item-1"
+  },
+  {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "item_id": "item-1",
+    "transcript": "Why did my last conversation fail? Please look it up for me."
+  },
+  {
+    "type": "response.output_item.added"
+  },
+  {
+    "type": "conversation.item.added"
+  },
+  {
+    "type": "response.content_part.added",
+    "item_id": "item-2"
+  },
+  {
+    "type": "response.output_audio_transcript.delta",
+    "item_id": "item-2",
+    "delta": "I don't have access to your previous"
+  },
+  {
+    "type": "response.output_audio_transcript.delta",
+    "item_id": "item-2",
+    "delta": " conversations or any way to look them up."
+  },
+  {
+    "type": "response.output_audio_transcript.done",
+    "item_id": "item-2",
+    "transcript": "I don't have access to your previous conversations or any way to look them up."
+  },
+  {
+    "type": "response.content_part.done",
+    "item_id": "item-2"
+  },
+  {
+    "type": "response.output_audio.done",
+    "item_id": "item-2"
+  },
+  {
+    "type": "response.output_item.done"
+  },
+  {
+    "type": "response.done"
+  }
+]

@@ -1,47 +1,70 @@
-// The transcript reducer. This is where "a new bubble for every word" came from: xAI re-sends
-// `input_audio_transcription.completed` with the CUMULATIVE text several times per utterance
-// (verified against a live session), so a snapshot must REPLACE the growing line, while
-// OpenAI's `.delta` fragments must APPEND to it.
+// The transcript reducer — where "a new bubble for every word" came from.
+//
+// Two provider behaviours conspire: xAI re-sends `input_audio_transcription.completed` with the
+// CUMULATIVE text several times per utterance, and a real microphone makes server VAD re-fire
+// `speech_started` between words. Grouping by "the last line, if the speaker matches" split one
+// sentence into a bubble per fragment, each repeating the one before. Grouping by the provider's
+// own `item_id` doesn't care about either.
+//
+// The xAI sequence below is REAL — captured from a live grok-voice session fed synthesized
+// speech — so this test fails if the merge rule stops matching what the provider actually sends.
 import { describe, expect, it } from "vitest";
 import { applyLine, type VoiceLine } from "./voiceCall";
 
-const text = (l: VoiceLine[]) => l.map((x) => `${x.role}:${x.text}`);
+const USER = "item-user-1";
+const BOT = "item-bot-1";
+const show = (l: VoiceLine[]) => l.map((x) => `${x.role}:${x.text}`);
 
 describe("applyLine", () => {
-  it("grows ONE bubble from cumulative snapshots", () => {
+  it("keeps ONE bubble across xAI's repeated cumulative snapshots", () => {
+    // verbatim from the captured session, `.updated` and `.completed` interleaved
+    const snapshots = [
+      "Why did my last",
+      "Why did my last",
+      "Why did my last conversation fail?",
+      "Why did my last conversation fail?",
+      "Why did my last conversation fail? Please look it up for me.",
+      "Why did my last conversation fail? Please look it up for me.",
+      "Why did my last conversation fail? Please look it up for me.",
+    ];
     let lines: VoiceLine[] = [];
-    for (const t of ["Why did my last", "Why did my last conversation fail?"])
-      lines = applyLine(lines, "user", t, "replace", false);
-    expect(text(lines)).toEqual(["user:Why did my last conversation fail?"]);
+    for (const t of snapshots) lines = applyLine(lines, USER, "user", t, "replace");
+    expect(show(lines)).toEqual(["user:Why did my last conversation fail? Please look it up for me."]);
   });
 
-  it("grows ONE bubble from incremental deltas", () => {
+  it("keeps ONE bubble across OpenAI's incremental deltas", () => {
     let lines: VoiceLine[] = [];
     for (const t of ["Let me ", "look ", "that up."])
-      lines = applyLine(lines, "assistant", t, "append", false);
-    expect(text(lines)).toEqual(["assistant:Let me look that up."]);
+      lines = applyLine(lines, BOT, "assistant", t, "append");
+    expect(show(lines)).toEqual(["assistant:Let me look that up."]);
   });
 
-  it("starts a new bubble when the speaker changes", () => {
-    let lines = applyLine([], "user", "hi", "replace", false);
-    lines = applyLine(lines, "assistant", "hello", "append", false);
-    expect(text(lines)).toEqual(["user:hi", "assistant:hello"]);
+  it("starts a new bubble per utterance, not per fragment", () => {
+    let lines = applyLine([], USER, "user", "first question", "replace");
+    lines = applyLine(lines, BOT, "assistant", "an answer", "append");
+    lines = applyLine(lines, "item-user-2", "user", "second question", "replace");
+    expect(show(lines)).toEqual([
+      "user:first question",
+      "assistant:an answer",
+      "user:second question",
+    ]);
   });
 
-  it("never writes to a finished line", () => {
-    let lines = applyLine([], "user", "first", "replace", true);
-    lines = applyLine(lines, "user", "second", "replace", false);
-    expect(text(lines)).toEqual(["user:first", "user:second"]);
+  it("still updates an earlier bubble when a late fragment arrives out of order", () => {
+    // xAI sends one last `.completed` for the user AFTER the assistant has started speaking.
+    let lines = applyLine([], USER, "user", "why did it fail", "replace");
+    lines = applyLine(lines, BOT, "assistant", "Looking…", "append");
+    lines = applyLine(lines, USER, "user", "why did it fail exactly", "replace");
+    expect(show(lines)).toEqual(["user:why did it fail exactly", "assistant:Looking…"]);
   });
 
-  it("keeps the text when a done frame arrives empty", () => {
-    let lines = applyLine([], "assistant", "spoken answer", "append", false);
-    lines = applyLine(lines, "assistant", "", "replace", true);
-    expect(text(lines)).toEqual(["assistant:spoken answer"]);
-    expect(lines[0].done).toBe(true);
+  it("keeps the text when an empty done frame arrives", () => {
+    let lines = applyLine([], BOT, "assistant", "spoken answer", "append");
+    lines = applyLine(lines, BOT, "assistant", "", "replace");
+    expect(show(lines)).toEqual(["assistant:spoken answer"]);
   });
 
   it("ignores an empty fragment that would open an empty bubble", () => {
-    expect(applyLine([], "user", "", "replace", false)).toEqual([]);
+    expect(applyLine([], USER, "user", "", "replace")).toEqual([]);
   });
 });
