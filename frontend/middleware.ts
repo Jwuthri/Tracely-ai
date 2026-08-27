@@ -9,6 +9,9 @@ const SESSION_COOKIE = "tracely_session";
 
 const PUBLIC = [
   /^\/$/, // the marketing landing page
+  // The rest of the (marketing) group — every route app/sitemap.ts advertises. Behind the wall they
+  // 307 to /login, so Google indexes a login page at a URL we told it to crawl.
+  /^\/(llm-evaluation|llm-as-a-judge|langfuse-alternatives|agent-skill)$/,
   /^\/login/,
   /^\/register/,
   /^\/accept-invite/,
@@ -34,6 +37,10 @@ export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
     // one of the two lists is public in local mode and a redirect loop in Clerk mode.
     const isPublicClerk = createRouteMatcher([
       "/",
+      "/llm-evaluation",
+      "/llm-as-a-judge",
+      "/langfuse-alternatives",
+      "/agent-skill",
       "/sign-in(.*)",
       "/sign-up(.*)",
       "/share/(.*)",
