@@ -28,6 +28,51 @@ describe("layoutOffice", () => {
     const o = layoutOffice([actor("ghost-child", "missing", 1)]);
     expect(o.desks["ghost-child"]).toBeDefined();
   });
+
+  // The prod shape that looked like a pile-up: one orchestrator with five specialists. The old
+  // fan-out ran past the floor's left edge and every overflowing desk CLAMPED onto the same x,
+  // so two desks drew on top of each other.
+  const spacing = (l: ReturnType<typeof layoutOffice>) => {
+    const rows = new Map<number, number[]>();
+    // rows sit 14 apart, so rounding to that band groups a row's staggered columns together
+    for (const p of Object.values(l.desks)) rows.set(Math.round(p.y / 14), [...(rows.get(Math.round(p.y / 14)) ?? []), p.x]);
+    return [...rows.values()].flatMap((xs) =>
+      xs.sort((a, b) => a - b).slice(1).map((x, i) => x - xs[i]),
+    );
+  };
+
+  it("never stacks two desks on the same spot, however big the team", () => {
+    for (const n of [2, 3, 5, 6, 8, 12, 20]) {
+      const team = [actor("boss"), ...Array.from({ length: n }, (_, i) => actor(`sub${i}`, "boss", 1))];
+      const l = layoutOffice(team);
+      expect(Object.keys(l.desks)).toHaveLength(n + 1);
+      // every neighbour in a row is at least a (scaled) desk width apart
+      for (const gap of spacing(l)) expect(gap).toBeGreaterThan(12 * l.deskScale);
+      for (const p of Object.values(l.desks)) {
+        expect(p.x).toBeGreaterThan(14); // clear of the library
+        expect(p.x).toBeLessThan(86); // clear of the tool wall
+        expect(p.y).toBeLessThan(90); // on the floor, not under the stage edge
+        // a desk hangs below its point, so anything on a sub row must clear the break room
+        if (p.y > 50) expect(p.x).toBeGreaterThan(30);
+      }
+    }
+  });
+
+  it("wraps a big team onto a second row instead of squeezing one", () => {
+    const many = [actor("boss"), ...Array.from({ length: 8 }, (_, i) => actor(`s${i}`, "boss", 1))];
+    const ys = new Set(Object.values(layoutOffice(many).desks).map((p) => Math.round(p.y / 14)));
+    expect(ys.size).toBeGreaterThanOrEqual(3); // root row + two sub rows
+  });
+
+  it("keeps the bottom row clear of the break room, and shrinks only when crowded", () => {
+    const small = layoutOffice([actor("boss"), actor("a", "boss", 1), actor("b", "boss", 1)]);
+    expect(small.deskScale).toBe(1);
+    const big = layoutOffice([actor("boss"), ...Array.from({ length: 14 }, (_, i) => actor(`s${i}`, "boss", 1))]);
+    expect(big.deskScale).toBeLessThan(1);
+    expect(big.deskScale).toBeGreaterThanOrEqual(0.5);
+    // the break room owns the bottom-left corner — nothing on the lowest row may sit in it
+    for (const p of Object.values(big.desks)) if (p.y > 75) expect(p.x).toBeGreaterThan(30);
+  });
 });
 
 describe("poseAt", () => {

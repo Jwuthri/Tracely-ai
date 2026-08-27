@@ -318,8 +318,8 @@ export function OfficeStage({ threadId, src, verdict = null, shared = false }: {
             if (!d) return null;
             return (
               <div key={`desk-${a.id}`}
-                className="absolute w-[13%] -translate-x-1/2"
-                style={{ left: `${d.x}%`, top: `${d.y + 1.5}%`, zIndex: Math.round(d.y) }}>
+                className="absolute -translate-x-1/2"
+                style={{ left: `${d.x}%`, top: `${d.y + 1.5}%`, zIndex: Math.round(d.y), width: `${13 * layout.deskScale}%` }}>
                 <Desk hue={hueOf(a.id)} on={p?.working === true && p.at === "desk"} name={a.name}
                   phone={phoneStateAt(a.id, events, t)}
                   alarm={alarm?.actor === a.id} />
@@ -332,7 +332,7 @@ export function OfficeStage({ threadId, src, verdict = null, shared = false }: {
             const p = poses.get(a.id);
             if (!p) return null;
             return (
-              <Walker key={a.id} actor={a} pose={p} slot={i}
+              <Walker key={a.id} actor={a} pose={p} slot={i} scale={layout.deskScale}
                 sweat={alarm?.actor === a.id}
                 selected={selected?.k === "agent" && selected.id === a.id}
                 onClick={() => pick("agent", a.id)} />
@@ -414,8 +414,11 @@ export function OfficeStage({ threadId, src, verdict = null, shared = false }: {
 }
 
 /* ── a character that walks between poses ── */
-function Walker({ actor, pose, slot, selected, sweat = false, onClick }: {
-  actor: ReplayActor; pose: Pose; slot: number; selected: boolean; sweat?: boolean; onClick: () => void;
+function Walker({ actor, pose, slot, selected, sweat = false, scale = 1, onClick }: {
+  actor: ReplayActor; pose: Pose; slot: number; selected: boolean; sweat?: boolean;
+  /** Shrinks with a crowded floor (see `layoutOffice.deskScale`) so neighbours stay apart. */
+  scale?: number;
+  onClick: () => void;
 }) {
   // Walk in an L along the aisles instead of cutting diagonally through the desks: a move
   // that changes both axes takes the horizontal corridor leg first, then the vertical one.
@@ -435,7 +438,8 @@ function Walker({ actor, pose, slot, selected, sweat = false, onClick }: {
 
   const guest = isCustomer(actor);
   const hue = guest ? 42 : hueOf(actor.id);
-  const size = guest ? 36 : actor.depth ? 38 : 46;
+  // the customer stands alone at the counter — a crowded desk floor never shrinks them
+  const size = (guest ? 36 : actor.depth ? 38 : 46) * (guest ? 1 : scale);
   return (
     <button
       onClick={onClick}
@@ -447,7 +451,7 @@ function Walker({ actor, pose, slot, selected, sweat = false, onClick }: {
       {pose.bubble && (
         // the greeting supervisor stands high near the counter — their bubble drops below,
         // like the customer's, so it can't clip the stage's top edge
-        <BubbleView bubble={pose.bubble} x={shown.x} y={shown.y} beside={guest}
+        <BubbleView bubble={pose.bubble} x={shown.x} y={shown.y} beside={guest} scale={scale}
           forceBelow={pose.at === "counter" && !guest} />
       )}
       <div className={clsx(selected && "rounded-lg ring-2 ring-signal/70")}>
@@ -472,8 +476,10 @@ function Walker({ actor, pose, slot, selected, sweat = false, onClick }: {
   );
 }
 
-function BubbleView({ bubble, x, y, beside = false, forceBelow = false }: {
+function BubbleView({ bubble, x, y, beside = false, forceBelow = false, scale = 1 }: {
   bubble: NonNullable<Pose["bubble"]>; x: number; y: number;
+  /** A crowded floor narrows the bubbles too — otherwise neighbours' words overlap. */
+  scale?: number;
   /** Hang the bubble to the LEFT of the character (the customer by the door, whose words
    *  must not drop onto the desks below). */
   beside?: boolean;
@@ -498,6 +504,9 @@ function BubbleView({ bubble, x, y, beside = false, forceBelow = false }: {
   const tailDots2 = side === "right" ? "ml-auto mr-4" : "ml-4";
 
   // typewriter: while the beat is in flight, only `progress` of the words are on screen
+  // widths shrink with the floor; below full scale the cap is a hard px so long lines wrap
+  // instead of reaching across a neighbour's desk
+  const capped = (px: number) => (scale < 1 ? { maxWidth: `${Math.round(px * scale)}px` } : undefined);
   const typing = bubble.progress !== undefined && bubble.progress < 1;
   const reveal = (text: string) =>
     typing ? text.slice(0, Math.max(1, Math.ceil(text.length * (bubble.progress ?? 1)))) : text;
@@ -505,7 +514,7 @@ function BubbleView({ bubble, x, y, beside = false, forceBelow = false }: {
 
   if (bubble.type === "thought") {
     return (
-      <div className={clsx("pointer-events-none absolute z-50 w-max max-w-[190px]", anchor)}>
+      <div className={clsx("pointer-events-none absolute z-50 w-max max-w-[190px]", anchor)} style={capped(190)}>
         <div className="rounded-[14px] border border-t_think/40 bg-ink-800/95 px-2.5 py-1.5 text-left font-mono text-[10px] leading-snug text-t_think shadow-[2px_2px_0_rgba(10,7,18,0.4)]">
           {reveal(bubble.text)}{caret}
         </div>
@@ -516,7 +525,8 @@ function BubbleView({ bubble, x, y, beside = false, forceBelow = false }: {
   }
   if (bubble.type === "speech") {
     return (
-      <div className={clsx("pointer-events-none absolute z-50 w-max", beside ? "max-w-[168px]" : "max-w-[210px]", anchor)}>
+      <div className={clsx("pointer-events-none absolute z-50 w-max", beside ? "max-w-[168px]" : "max-w-[210px]", anchor)}
+        style={beside ? undefined : capped(210)}>
         <div className={clsx("rounded-lg border border-line-bright bg-[#f4f6fb] px-2.5 py-1.5 text-left text-[10.5px] font-medium leading-snug text-ink-900 shadow-[3px_3px_0_rgba(10,7,18,0.45)]",
           bubble.faded && "line-clamp-3")}>
           {reveal(bubble.text)}{caret}
@@ -535,7 +545,7 @@ function BubbleView({ bubble, x, y, beside = false, forceBelow = false }: {
     );
   }
   return (
-    <div className={clsx("pointer-events-none absolute z-50 w-max max-w-[200px]", anchor)}>
+    <div className={clsx("pointer-events-none absolute z-50 w-max max-w-[200px]", anchor)} style={capped(200)}>
       <span className={clsx("block rounded-md border px-2 py-0.5 text-left font-mono text-[10px] shadow-[2px_2px_0_rgba(10,7,18,0.4)] backdrop-blur-[2px]",
         bubble.icon === "skill" ? "border-t_retriever/50 bg-t_retriever/15 text-t_retriever"
           : bubble.icon === "call" ? "border-t_llm/50 bg-t_llm/15 text-t_llm"

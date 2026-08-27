@@ -10,6 +10,8 @@ export type Pt = { x: number; y: number };
 
 export type OfficeLayout = {
   desks: Record<string, Pt>;
+  /** 0.6–1: how much to shrink desks and people so a big team still fits without overlapping. */
+  deskScale: number;
   library: Pt; // stand point in front of the bookshelf
   tools: Pt;   // stand point at the tool wall
   door: Pt;    // where characters enter from
@@ -54,45 +56,79 @@ export type BreakSpot = Pt & {
   line: string;
 };
 
-/** Seat roots in a row across the floor, sub-agents on a lower row clustered near their
- *  parent. Fixed furniture hugs the walls. All positions are % of the stage. */
-export function layoutOffice(all: ReplayActor[]): OfficeLayout {
-  const actors = all.filter((a) => !isCustomer(a)); // the customer has no desk — they stand by the door
-  const roots = actors.filter((a) => !a.parent);
-  const desks: Record<string, Pt> = {};
-  const rootY = 40;
-  const subY = 66;
-  // Roots stop short of the right corner: that is the customer's spot, and their question
-  // hangs leftward from it in the same band a root's bubble rises into.
-  roots.forEach((r, i) => {
-    const x = roots.length === 1 ? 46 : 20 + (i * 48) / Math.max(1, roots.length - 1);
-    desks[r.id] = { x, y: rootY };
+/* The desk grid. Rows are bands of floor the furniture leaves free: the library hugs the left
+ * wall, the tool rack the right, the reception counter the top-right, and the break room the
+ * bottom-left corner — so the lower row starts further right. Actors are PACKED into these
+ * rows in tree order (roots first, then each parent's children, from `orderActors`) rather
+ * than fanned out around their parent's x: past ~4 siblings a fan-out ran off the floor and
+ * every overflowing desk clamped onto the same edge, stacking them on top of each other. */
+// A desk is ~13% wide and hangs ~11% BELOW its point, so every sub row clears the break room
+// (x < 27, y > 62) on the left — a desk seated at the band's left edge still must not draw on
+// the pong table. The root row sits above the break room entirely and only dodges the library.
+const ROOT_ROW = { y: 40, left: 22, right: 78 };
+const SUB_ROWS = [
+  { y: 60, left: 31, right: 78 },
+  { y: 74, left: 33, right: 78 },
+  { y: 88, left: 33, right: 78 }, // last row before the stage edge
+];
+/** Widest a desk column ever gets, and the tightest one still worth drawing at full size. */
+const COL_MAX = 19;
+const COL_COMFORT = 15;
+const COL_MIN = 12.5;
+
+type Row = { y: number; left: number; right: number };
+
+/** How many desks fit in a row before they'd touch. */
+const rowCapacity = (r: Row) => Math.max(1, Math.floor((r.right - r.left) / COL_MIN) + 1);
+
+/** Fill as few rows as possible, then balance the count across the rows actually used — 6 subs
+ *  read better as 3+3 than as 5+1. Overflow past the last row rides in it and shrinks. */
+function packRows<T>(list: T[], rows: Row[]): { row: Row; items: T[] }[] {
+  if (!list.length) return [];
+  let used = 1;
+  let room = rowCapacity(rows[0]);
+  while (used < rows.length && list.length > room) room += rowCapacity(rows[used++]);
+  const per = Math.ceil(list.length / used);
+  return rows.slice(0, used).map((row, i) => ({
+    row,
+    items: i === used - 1 ? list.slice(i * per) : list.slice(i * per, (i + 1) * per),
+  }));
+}
+
+/** Seat one packed row: even columns, centred in the band, never wider than COL_MAX. Odd
+ *  columns sit a touch lower so neighbouring speech bubbles don't collide head-on. */
+function seatRow(items: ReplayActor[], row: Row, desks: Record<string, Pt>): number {
+  const span = row.right - row.left;
+  const col = items.length <= 1 ? COL_MAX : Math.min(COL_MAX, span / (items.length - 1));
+  const start = (row.left + row.right) / 2 - ((items.length - 1) * col) / 2;
+  // odd columns lift UP, never down — the bottom row is already at the stage edge
+  items.forEach((a, i) => {
+    desks[a.id] = { x: start + i * col, y: row.y - (i % 2 ? 2.5 : 0) };
   });
-  // subs cluster under their parent; siblings fan out around the parent's x
-  const byParent = new Map<string, ReplayActor[]>();
-  for (const a of actors) {
-    if (a.parent) byParent.set(a.parent, [...(byParent.get(a.parent) ?? []), a]);
+  return col;
+}
+
+/** Seat every agent on the floor and report how tightly they had to be packed. Fixed furniture
+ *  hugs the walls. All positions are % of the stage. */
+export function layoutOffice(all: ReplayActor[]): OfficeLayout {
+  const actors = all.filter((a) => !isCustomer(a)); // the customer has no desk — they wait at the counter
+  const desks: Record<string, Pt> = {};
+  // Roots own the top row; everyone else (sub-agents, and orphans whose parent is outside the
+  // window) packs into the rows below in the order `orderActors` already put them — DFS, so
+  // the hierarchy still reads left to right even though desks no longer sit under a parent.
+  const roots = actors.filter((a) => !a.parent);
+  const rest = actors.filter((a) => a.parent);
+  let tightest = COL_MAX;
+  for (const { row, items } of packRows(roots, [ROOT_ROW, ...SUB_ROWS])) {
+    tightest = Math.min(tightest, seatRow(items, row, desks));
   }
-  for (const [pid, kids] of byParent) {
-    const px = desks[pid]?.x ?? 50;
-    // step shrinks with the sibling count so a big team fans out instead of clamping into a
-    // pile at the floor's edge; deeper generations drop a row. Lower rows start at x=30:
-    // the bottom-left corner is the break room now, and a desk in it reads as a bug.
-    const step = Math.min(18, 60 / Math.max(1, kids.length - 1));
-    kids.forEach((k, i) => {
-      const spread = kids.length === 1 ? 0 : (i - (kids.length - 1) / 2) * step;
-      desks[k.id] = { x: clamp(px + spread, 30, 86), y: Math.min(subY + (k.depth - 1) * 11, 84) };
-    });
-  }
-  // orphans (parent outside the window) get root seating at the end, wrapping to new rows
-  let extra = 0;
-  for (const a of actors) {
-    if (!desks[a.id]) {
-      desks[a.id] = { x: 30 + (extra % 4) * 16, y: rootY + Math.floor(extra / 4) * 13 };
-      extra++;
-    }
+  for (const { row, items } of packRows(rest, SUB_ROWS)) {
+    tightest = Math.min(tightest, seatRow(items, row, desks));
   }
   return {
+    // Crowded offices shrink instead of overlapping: the sprites scale with the column width.
+    // The floor is finite — a twenty-agent trace draws small rather than drawing on top of itself.
+    deskScale: clamp(tightest / COL_COMFORT, 0.5, 1),
     desks,
     library: { x: 8.5, y: 48 },
     tools: { x: 91.5, y: 52 },
