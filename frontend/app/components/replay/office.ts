@@ -212,7 +212,17 @@ export function turnDigest(events: PlayEvent[], actors: ReplayActor[]): TurnDige
     for (const a of actors) {
       if (isCustomer(a)) continue;
       const last = lastEventOf(a.id, events, Infinity, turn.trace_id);
-      const bubble = last && wordOf(last, events);
+      let bubble = last ? wordOf(last, events) : null;
+      if (!bubble) {
+        // Nothing sayable in the turn's beats (a turn ingested as one root span, every child
+        // hidden by the type filter, or a turn ending on a silent guard): the reply lives on
+        // the agent's own turn envelope.
+        let env: PlayEvent | null = null;
+        for (const e of events) {
+          if (isContainer(e) && e.actor === a.id && e.trace_id === turn.trace_id && e.detail) env = e;
+        }
+        if (env) bubble = { type: "speech", text: env.detail };
+      }
       if (bubble) turn.words.push({ actor: a.id, bubble });
     }
   }
@@ -261,7 +271,9 @@ function greetingAt(actor: ReplayActor, events: PlayEvent[], t: number): boolean
   for (const e of events) { if (e.pt > t) break; if (e.kind === "ask") ask = e; }
   if (!ask || t >= ask.pt + ask.pdur) return false;
   const trace = ask.trace_id;
-  return events.some((e) => e.trace_id === trace && e.actor === actor.id && !isContainer(e));
+  // ANY event of theirs counts, container included — a turn recorded as one root span
+  // (manual SDK, no child spans) still means this root took the question.
+  return events.some((e) => e.trace_id === trace && e.actor === actor.id);
 }
 
 /* Break-room policy. A SUB-agent (never the customer, never a root — someone has to mind the
@@ -443,6 +455,7 @@ export function poseAt(
   // fading once it is no longer fresh, so nobody ever stands there with an empty head. A
   // pose-level flavor line (break room, answering the phone) takes the head instead.
   let bubble: Bubble | null = flavor;
+  let envBusy = false; // their turn envelope is running and it's ALL they have — still "working"
   if (!bubble) {
     const held = delegation ?? bubbleAt(actor.id, events, t);
     const word = held && wordOf(held, events);
@@ -452,6 +465,23 @@ export function poseAt(
       // words TYPE OUT while the beat is in flight — a finished beat is fully written
       if (t < ended && (word.type === "speech" || word.type === "thought")) {
         bubble.progress = typeProgress(held, t);
+      }
+    } else if (!held) {
+      // No beats of their own at all (a turn ingested as ONE root span — or every child
+      // hidden by the step-type filter): the answer lives on the turn envelope itself.
+      // Only when there are NO beats — a silent llm mid-turn must never leak the ending.
+      let env: PlayEvent | null = null;
+      for (const e of events) {
+        if (e.pt > t) break;
+        if (isContainer(e) && e.actor === actor.id && e.detail) env = e;
+      }
+      if (env) {
+        const ended = env.pt + env.pdur;
+        bubble = { type: "speech", text: env.detail, faded: t > ended && t - ended > LINGER };
+        if (t < ended) {
+          bubble.progress = typeProgress(env, t);
+          envBusy = true;
+        }
       }
     }
   }
@@ -464,7 +494,7 @@ export function poseAt(
     bubble,
     facing: at === "break" && breakSpot ? breakSpot.facing : x < desk.x - 1 ? -1 : 1,
     entered: true,
-    working: inflight !== null || delegation !== null,
+    working: inflight !== null || delegation !== null || envBusy,
   };
 }
 

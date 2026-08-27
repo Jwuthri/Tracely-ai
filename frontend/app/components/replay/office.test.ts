@@ -283,6 +283,45 @@ it("a LONG station beat grabs the tool, then runs it back at the desk", () => {
   expect(back.bubble?.type).toBe("chip");
 });
 
+describe("a turn ingested as ONE root span (manual SDK, no children)", () => {
+  // the real prod shape that showed "no agent said anything": the reply lives on the AGENT
+  // root container's output, and there are no leaf beats at all
+  const actors = [customer, actor("sup")];
+  const layout = layoutOffice(actors);
+  const script = toPlayEvents([
+    ev(0, 0, "__customer__", "ask", "asks", { detail: "Cracked screen — replace it.", trace_id: "t1" }),
+    ev(0, 650, "sup", "turn", "support-agent", { container: true, trace_id: "t1", detail: "RMA-2208 opened — label emailed." }),
+  ], OFFICE_PACING).events;
+
+  it("the agent speaks the envelope's answer instead of standing mute", () => {
+    const during = poseAt(actors[1], script, 400, layout);
+    // during the ask the sup is at the counter — and WORKING, their envelope is running
+    expect(during.working).toBe(true);
+    expect(during.bubble).toMatchObject({ type: "speech", text: "RMA-2208 opened — label emailed." });
+    const after = poseAt(actors[1], script, 9000, layout);
+    expect(after.bubble).toEqual({ type: "speech", text: "RMA-2208 opened — label emailed.", faded: true });
+    expect(after.working).toBe(false);
+  });
+  it("the transcript lists the envelope answer, not 'no agent said anything'", () => {
+    const digest = turnDigest(script, actors);
+    expect(digest[0].words).toEqual([
+      { actor: "sup", bubble: { type: "speech", text: "RMA-2208 opened — label emailed." } },
+    ]);
+  });
+  it("the root still greets at the counter for a container-only turn", () => {
+    expect(poseAt(actors[1], script, 100, layout).at).toBe("counter");
+  });
+  it("a silent llm mid-turn still never leaks the ending", () => {
+    const s2 = toPlayEvents([
+      ev(0, 2000, "sup", "turn", "graph", { container: true, detail: "The final answer.", trace_id: "t1" }),
+      ev(100, 100, "sup", "llm", "step1", { detail: "" }),
+      ev(400, 1500, "sup", "llm", "step2", { detail: "" }),
+    ]).events;
+    // step1 is in flight and silent — with leaf beats present, no envelope borrowing mid-turn
+    expect(poseAt([actor("sup")][0], s2, 150, layoutOffice([actor("sup")])).bubble).toBeNull();
+  });
+});
+
 describe("phones and alarms", () => {
   const actors = [actor("sup"), actor("faq", "sup", 1)];
   const layout = layoutOffice(actors);
