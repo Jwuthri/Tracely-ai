@@ -1,4 +1,4 @@
-.PHONY: help infra-up infra-down infra-prune install migrate migrate-ch migrate-pg seed demo backend workers frontend docs website test send-trace demo-failures gate replay sdk-example auto-openai auto-agent run-all-examples seed-demo seed-regression fmt
+.PHONY: help infra-up infra-down infra-prune install migrate migrate-ch migrate-pg migrate-chat seed demo backend workers frontend docs test send-trace demo-failures gate replay sdk-example auto-openai auto-agent run-all-examples seed-demo seed-regression fmt
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -44,9 +44,6 @@ frontend:    ## run Next.js on :3000
 
 docs:        ## run the SDK documentation site (Nextra) on :3002
 	cd docs && pnpm install && pnpm dev
-
-website:     ## run the marketing site on :3003
-	cd website && pnpm install && pnpm dev
 
 test:        ## run backend tests
 	uv run pytest -q backend/tests
