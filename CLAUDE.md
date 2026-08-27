@@ -26,7 +26,7 @@ uv run ruff check . && uv run ruff format .
 cd frontend && pnpm test        # vitest; pnpm test:watch; pnpm build type-checks (tsc) + lints
 ```
 
-`make test` only runs `backend/tests`; run `sdk/tests` too before pushing. Alembic: `cd backend && uv run alembic revision -m "…"` / `alembic upgrade head`. ClickHouse migrations are `*.up.sql` files in `backend/tracely/infrastructure/clickhouse/ddl/` applied by `python -m tracely.infrastructure.clickhouse.migrations`.
+Alembic: `cd backend && uv run alembic revision -m "…"` / `alembic upgrade head`. ClickHouse migrations are `*.up.sql` files in `backend/tracely/infrastructure/clickhouse/ddl/` applied by `python -m tracely.infrastructure.clickhouse.migrations`.
 
 Whole stack in Docker: `docker compose up -d --build --wait` → UI on **:3001**, backend on **:8000** (remap with `TRACELY_WEB_PORT` / `TRACELY_BACKEND_PORT`). `make frontend` runs plain `next dev` (:3000) — use `cd frontend && pnpm dev -p 3001` to match Docker.
 
