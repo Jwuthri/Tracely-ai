@@ -97,6 +97,9 @@ x-app-env: &app-env
   RESEND_API_KEY: ${RESEND_API_KEY:-}
   EMAIL_FROM: "${EMAIL_FROM:-Tracely <onboarding@resend.dev>}"
   APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3001}
+  # Error tracking (Sentry) — optional; the API and the worker each init on their own when set.
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
   # Hosted-cloud billing — all off by default; self-hosters never need these. BILLING_ENABLED
   # turns on the monthly trace quota (counted in the WORKER, enforced in the API — the shared
   # anchor is what makes sure both see the flag). REQUIRE_PROJECT_LLM_KEY makes server-wide LLM
