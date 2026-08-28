@@ -17,7 +17,9 @@ import math
 import numpy as np
 
 # Minimums (mirror the source spec): a correlation needs at least this many shared conversations;
-# an outlier metric needs at least this many values to have a meaningful mean/spread.
+# an outlier metric needs at least this many values to have a meaningful mean/spread. The outlier
+# floor is a formality: with the population std, |z| ≤ (n−1)/√n, so nothing clears `OUTLIER_Z` = 2.0
+# until n ≥ 6 (n=5 caps at 1.79).
 MIN_CORR_POINTS = 3
 MIN_OUTLIER_POINTS = 2
 # |z| above this flags an outlier; the high/medium cutoffs grade its severity.
