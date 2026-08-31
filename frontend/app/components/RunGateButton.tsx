@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, type ReactNode } from "react";
+import { AgentPicker } from "./AgentPicker";
 import { IconChevron, IconGate } from "./icons";
 import { Badge } from "./ui";
 import type { AgentRow } from "@/app/lib/api";
@@ -118,21 +119,19 @@ export function RunGateButton({
     <div className="flex flex-col items-end gap-1.5">
       <div className="flex items-center gap-2">
         {agents.length > 1 && (
-          <select
+          <AgentPicker
+            agents={agents}
             value={agentId}
-            onChange={(e) => {
-              setAgentId(e.target.value);
+            onChange={(v) => {
+              setAgentId(v);
               setOff(new Set()); // a pick belongs to the agent it was made for
             }}
-            aria-label="Agent to gate"
-            className="rounded-lg border border-line bg-ink-700 px-2.5 py-2 font-mono text-[12.5px] text-fg-muted transition-colors hover:border-line-bright focus:border-signal/50 focus:outline-none"
-          >
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.slug} ({caseCounts[a.id] ?? 0})
-              </option>
-            ))}
-          </select>
+            hint={(a) => `${caseCounts[a.id] ?? 0} cases`}
+            sort={false}
+            id="gate-agent"
+            ariaLabel="Agent to gate"
+            className="w-52 rounded-lg border border-line bg-ink-700 px-2.5 py-2 font-mono text-[12.5px] text-fg transition-colors hover:border-line-bright focus:border-signal/50 focus:outline-none"
+          />
         )}
         <button
           onClick={go}

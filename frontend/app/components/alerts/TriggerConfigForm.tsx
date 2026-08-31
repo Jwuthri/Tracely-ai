@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import type { AgentRow } from "@/app/lib/api";
 import { TRIGGERS, intervalLabel, type Draft, type TriggerId } from "@/app/lib/alerts";
+import { AgentPicker } from "../AgentPicker";
 import { FIELD, LABEL, TONE } from "./tone";
 
 /** The inspector for the **When** node: which event or threshold starts the flow, and how narrow.
@@ -58,19 +59,15 @@ export function TriggerConfigForm({
             <label htmlFor="tr-agent" className={LABEL}>
               Agent
             </label>
-            <select
+            <AgentPicker
               id="tr-agent"
+              agents={agents}
               value={draft.target_agent}
-              onChange={(e) => onChange({ target_agent: e.target.value })}
+              onChange={(v) => onChange({ target_agent: v })}
+              by="slug"
+              allLabel="all agents"
               className={FIELD}
-            >
-              <option value="">all agents</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.slug}>
-                  {a.slug}
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <div className="space-y-1">
             <label htmlFor="tr-interval" className={LABEL}>

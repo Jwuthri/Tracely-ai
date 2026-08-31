@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentRow, ConvNode, SessionSort, SortOrder } from "../lib/api";
 import { mergeMeta, metaText } from "../lib/meta";
+import { AgentPicker } from "./AgentPicker";
 import { DateRangePicker } from "./DateRangePicker";
 import { TraceTable } from "./TraceTable";
 
@@ -209,20 +210,16 @@ export function TracesExplorer({
             <span className="h-5 w-px bg-line" aria-hidden />
             <label className="flex items-center gap-2">
               <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-faint">Agent</span>
-              <select
+              <AgentPicker
+                agents={agents}
                 value={agentId}
-                onChange={(e) => applyAgent(e.target.value)}
+                onChange={applyAgent}
+                allLabel="All agents"
+                ariaLabel="Filter by agent"
+                id="traces-agent"
                 disabled={loading}
-                aria-label="Filter by agent"
-                className="rounded-lg border border-line bg-ink-800 px-2 py-1.5 font-mono text-[12px] text-fg-muted transition-colors hover:text-fg focus:border-signal/40 focus:outline-none disabled:opacity-50"
-              >
-                <option value="">All agents</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.slug}
-                  </option>
-                ))}
-              </select>
+                className="w-52 rounded-lg border border-line bg-ink-800 px-2 py-1.5 font-mono text-[12px] text-fg placeholder:text-fg-faint transition-colors focus:border-signal/40 focus:outline-none disabled:opacity-50"
+              />
             </label>
           </>
         )}
