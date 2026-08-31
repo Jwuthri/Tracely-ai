@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type { AgentRow, Scenario, ScenarioTurn } from "@/app/lib/api";
 import { listJudgeModels, type JudgeModelOption } from "@/app/lib/evaluators";
+import { AgentPicker } from "./AgentPicker";
 import { EndpointPanel } from "./EndpointPanel";
 import { TurnEditor, emptyTurn } from "./TurnEditor";
 import { Toggle } from "./Toggle";
@@ -130,18 +131,15 @@ export function ScenariosManager({
           <label className={LABEL} htmlFor="sc-agent">
             Agent
           </label>
-          <select
+          <AgentPicker
             id="sc-agent"
+            agents={agents}
             value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="mt-1 block rounded-lg border border-line bg-ink-700 px-2.5 py-2 font-mono text-[12.5px] text-fg-muted transition-colors hover:border-line-bright focus:border-signal/50 focus:outline-none"
-          >
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.slug} ({counts[a.id] ?? 0})
-              </option>
-            ))}
-          </select>
+            onChange={setAgentId}
+            hint={(a) => `${counts[a.id] ?? 0} scenarios`}
+            sort={false}
+            className="mt-1 block w-56 rounded-lg border border-line bg-ink-700 px-2.5 py-2 font-mono text-[12.5px] text-fg transition-colors hover:border-line-bright focus:border-signal/50 focus:outline-none"
+          />
         </div>
         <div className="flex flex-col items-end gap-1.5">
           <button

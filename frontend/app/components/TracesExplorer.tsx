@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentRow, ConvNode, SessionSort, SortOrder } from "../lib/api";
 import { mergeMeta, metaText } from "../lib/meta";
+import { AgentPicker } from "./AgentPicker";
 import { DateRangePicker } from "./DateRangePicker";
 import { TraceTable } from "./TraceTable";
 
@@ -43,7 +44,6 @@ export function TracesExplorer({
   // Server-side, like the range: a customer's conversations can sit past the loaded page, so
   // "only this agent" has to be a query, not a filter over the 50 rows on screen. "" = every agent.
   const [agentId, setAgentId] = useState("");
-  const [agentText, setAgentText] = useState(""); // what the Agent combobox shows (a slug, or free text while typing)
   // Sorting is server-side (see lib/api::SessionSort): the list is a page, so ordering only the
   // loaded rows would make "longest first" mean "longest of the 50 already on screen".
   const [sortBy, setSortBy] = useState<SortBy>(DEFAULT_SORT);
@@ -62,7 +62,6 @@ export function TracesExplorer({
     setRange({ from: null, to: null });
     setPreset("all");
     setAgentId("");
-    setAgentText("");
     setFilter("all");
     setSortBy(DEFAULT_SORT);
   }, [initial, initialHasMore]);
@@ -144,26 +143,8 @@ export function TracesExplorer({
     void load(range, sortBy, id, 0, true);
   }
 
-  // Combobox: typing filters the datalist locally; only an exact slug (or an empty box = all
-  // agents) is a real selection worth re-querying the server for.
-  function pickAgent(text: string) {
-    setAgentText(text);
-    const hit = agents.find((a) => a.slug === text);
-    if (hit) {
-      if (hit.id !== agentId) applyAgent(hit.id);
-    } else if (!text.trim() && agentId) {
-      applyAgent("");
-    }
-  }
-
   // Every filter refines the rows already loaded — none of them needs the server.
 
-
-  // Natural order, so agent_2 sorts before agent_10 instead of after it.
-  const sortedAgents = useMemo(
-    () => [...agents].sort((a, b) => a.slug.localeCompare(b.slug, undefined, { numeric: true, sensitivity: "base" })),
-    [agents],
-  );
 
   const counts = useMemo(
     () => ({
@@ -229,21 +210,16 @@ export function TracesExplorer({
             <span className="h-5 w-px bg-line" aria-hidden />
             <label className="flex items-center gap-2">
               <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-faint">Agent</span>
-              <input
-                type="search"
-                list="traces-agent-slugs"
-                value={agentText}
-                onChange={(e) => pickAgent(e.target.value)}
+              <AgentPicker
+                agents={agents}
+                value={agentId}
+                onChange={applyAgent}
+                allLabel="All agents"
+                ariaLabel="Filter by agent"
+                id="traces-agent"
                 disabled={loading}
-                placeholder="All agents"
-                aria-label="Filter by agent"
                 className="w-52 rounded-lg border border-line bg-ink-800 px-2 py-1.5 font-mono text-[12px] text-fg placeholder:text-fg-faint transition-colors focus:border-signal/40 focus:outline-none disabled:opacity-50"
               />
-              <datalist id="traces-agent-slugs">
-                {sortedAgents.map((a) => (
-                  <option key={a.id} value={a.slug} />
-                ))}
-              </datalist>
             </label>
           </>
         )}

@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { AgentPicker } from "@/app/components/AgentPicker";
 import { DocLink } from "@/app/components/DocLink";
 import { Badge } from "@/app/components/ui";
 
@@ -148,18 +149,14 @@ export function MetaAnalysisPanel() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-[12.5px] text-fg outline-none focus:border-signal/50"
-          >
-            <option value={ALL}>All agents</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.display_name}
-              </option>
-            ))}
-          </select>
+          <AgentPicker
+            agents={agents}
+            value={agentId === ALL ? "" : agentId}
+            onChange={(v) => setAgentId(v || ALL)}
+            allLabel="All agents"
+            id="meta-agent"
+            className="w-48 rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-[12.5px] text-fg placeholder:text-fg-faint outline-none focus:border-signal/50"
+          />
           <button
             onClick={run}
             disabled={running}
