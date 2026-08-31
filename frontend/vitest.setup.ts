@@ -31,3 +31,8 @@ if (typeof window !== "undefined" && !window.localStorage) {
   Object.defineProperty(window, "localStorage", { value: localStorage, configurable: true });
   Object.defineProperty(globalThis, "localStorage", { value: localStorage, configurable: true });
 }
+
+// jsdom has no layout, so it ships no scrollIntoView — a no-op is the honest stand-in.
+if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}

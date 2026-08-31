@@ -32,3 +32,4 @@ out/
 # build artifacts
 dist/
 dist-sdk/
+.env.bak-video
