@@ -81,7 +81,7 @@ export function Sidebar({ me }: { me: Me | null }) {
 
       {/* min-h-0 + scroll: without it the nav grows past the viewport on a short window, the footer
           gets pushed off the bottom edge and the account card ends up flush against it. */}
-      <nav className="min-h-0 flex-1 space-y-7 overflow-y-auto px-3 py-1">
+      <nav className="min-h-0 flex-1 space-y-7 overflow-y-auto px-3 pb-4 pt-1">
         {NAV.map((sec) => (
           <div key={sec.group}>
             <div className="px-3 pb-2 font-mono text-[10px] uppercase tracking-[0.2em] text-fg-faint">
