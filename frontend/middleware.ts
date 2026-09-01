@@ -27,6 +27,9 @@ const PUBLIC = [
   /^\/(sitemap\.xml|robots\.txt|opengraph-image)/,
   /^\/api\/health/,
   /^\/api\/auth\//,
+  // PostHog reverse proxy (next.config.mjs). Behind the wall a logged-out visitor's flags/recorder/
+  // event calls 307 to /login — no pageviews and no session replay for the whole marketing funnel.
+  /^\/ingest\//,
 ];
 const isPublic = (p: string) => PUBLIC.some((re) => re.test(p));
 
@@ -50,6 +53,7 @@ export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
       "/opengraph-image(.*)",
       "/api/health",
       "/api/auth/(.*)",
+      "/ingest/(.*)",
     ]);
     return clerkMiddleware(async (auth, r) => {
       if (!isPublicClerk(r)) await auth.protect();
