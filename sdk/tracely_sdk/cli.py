@@ -32,7 +32,14 @@ from tracely_sdk.export import download_export
 MARKER = "<!-- tracely-gate -->"
 STATUS_CONTEXT = "tracely/regression-gate"
 ICON = {"PASS": "✓", "FAIL": "✗", "ERROR": "✗", "SKIP": "–", "NO_COVERAGE": "⚠", "UNGRADED": "⚠"}
-EMOJI = {"PASS": "✅", "FAIL": "❌", "ERROR": "❌", "SKIP": "⏭️", "NO_COVERAGE": "⚠️", "UNGRADED": "⚠️"}
+EMOJI = {
+    "PASS": "✅",
+    "FAIL": "❌",
+    "ERROR": "❌",
+    "SKIP": "⏭️",
+    "NO_COVERAGE": "⚠️",
+    "UNGRADED": "⚠️",
+}
 
 
 # ── Tracely API ──────────────────────────────────────────────────────────────
