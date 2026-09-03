@@ -31,8 +31,8 @@ from tracely_sdk.export import download_export
 
 MARKER = "<!-- tracely-gate -->"
 STATUS_CONTEXT = "tracely/regression-gate"
-ICON = {"PASS": "✓", "FAIL": "✗", "SKIP": "–", "NO_COVERAGE": "⚠", "UNGRADED": "⚠"}
-EMOJI = {"PASS": "✅", "FAIL": "❌", "SKIP": "⏭️", "NO_COVERAGE": "⚠️", "UNGRADED": "⚠️"}
+ICON = {"PASS": "✓", "FAIL": "✗", "ERROR": "✗", "SKIP": "–", "NO_COVERAGE": "⚠", "UNGRADED": "⚠"}
+EMOJI = {"PASS": "✅", "FAIL": "❌", "ERROR": "❌", "SKIP": "⏭️", "NO_COVERAGE": "⚠️", "UNGRADED": "⚠️"}
 
 
 # ── Tracely API ──────────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ def render_console(data: dict, sha: str) -> None:
     print(f"\n  Result: {data['status']}\n")
 
 
-_HEAD = {"FAIL": "🔴", "PASS": "🟢", "NO_COVERAGE": "🟠"}
+_HEAD = {"FAIL": "🔴", "ERROR": "🔴", "PASS": "🟢", "NO_COVERAGE": "🟠"}
 
 # Worst-wins across agents. Anything that isn't PASS blocks, but the headline should name the most
 # alarming thing that happened, not the first one alphabetically.
