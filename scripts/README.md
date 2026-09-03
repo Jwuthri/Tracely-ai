@@ -55,7 +55,7 @@ docker compose --profile demo up -d --build --wait     # Docker: the `demo` comp
 docker compose exec backend python scripts/seed_demo.py   # seed an already-running stack
 ```
 
-Idempotent — each phase is skipped when its data already exists (promote dedupes by input digest; deterministic trace ids replace in place), so it's safe to run on every `docker compose up`. Pass `--force` to re-run anyway. This is the script behind [`DEMO.md`](../DEMO.md).
+Idempotent — each phase is skipped when its data already exists (promote dedupes by input digest; deterministic trace ids replace in place), so it's safe to run on every `docker compose up`. Pass `--force` to re-run anyway. This is the script behind [`DEMO.md`](../guides/DEMO.md).
 
 ## `tracely_gate.py` — deprecated shim
 

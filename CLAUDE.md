@@ -92,6 +92,6 @@ Each folder has a thorough README; read it before changing that area rather than
 | `backend/README.md` | Full flow walkthroughs (ingest, eval, failure intel, regression, gate, auth, rolling summary, meta-analysis), module map, API surface, schema/migration list. |
 | `frontend/README.md` | Data-flow rule, app shell, per-route fetch table, theme tokens. |
 | `sdk/README.md` | Auto + manual instrumentation, the `tracely.*` attributes the backend indexes, hermetic replay seam, CLI. |
-| `README.md`, `OVERVIEW.md`, `DEMO.md`, `DEPLOY.md` | Quickstart / guided tour / 2-min demo / Railway runbook. |
+| `README.md`, `guides/OVERVIEW.md`, `guides/DEMO.md`, `guides/DEPLOY.md` | Quickstart / guided tour / 2-min demo / Railway runbook. |
 | `design/` | The design dossier — the "why" behind every decision above. |
 | `docs/` | The published SDK docs site (Nextra, `make docs` → :3002). |
