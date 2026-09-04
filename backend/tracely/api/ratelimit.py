@@ -21,7 +21,7 @@ import structlog
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from tracely.infrastructure.queue.eval_debounce import _get_client
+from tracely.infrastructure.redis_client import sync_redis
 
 log = structlog.get_logger()
 
@@ -39,7 +39,7 @@ def hits(name: str, ip: str) -> int | None:
     """Count this request and return the window's total, or None when Redis is unavailable."""
     key = f"tracely:rl:{name}:{ip}"
     try:
-        r = _get_client()
+        r = sync_redis()
         n = r.incr(key)
         if n == 1:
             r.expire(key, WINDOW_SECONDS)

@@ -25,7 +25,7 @@ class DeadRedis:
 
 async def test_login_is_limited_per_ip(client, monkeypatch):
     fake = FakeRedis()
-    monkeypatch.setattr(ratelimit, "_get_client", lambda: fake)
+    monkeypatch.setattr(ratelimit, "sync_redis", lambda: fake)
     bad = {"email": "nobody@x.test", "password": "wrong-wrong"}
     for _ in range(20):
         assert (await client.post("/auth/login", json=bad)).status_code == 401
@@ -38,7 +38,7 @@ async def test_login_is_limited_per_ip(client, monkeypatch):
 
 
 async def test_redis_outage_fails_open(client, monkeypatch):
-    monkeypatch.setattr(ratelimit, "_get_client", lambda: DeadRedis())
+    monkeypatch.setattr(ratelimit, "sync_redis", lambda: DeadRedis())
     bad = {"email": "nobody@x.test", "password": "wrong-wrong"}
     for _ in range(25):
         assert (await client.post("/auth/login", json=bad)).status_code == 401
