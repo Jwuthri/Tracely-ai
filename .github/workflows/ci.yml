@@ -85,7 +85,7 @@ jobs:
     # frontend prod image (Dockerfile.railway) was previously never built until Railway deploy.
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Backend image
         uses: docker/build-push-action@v6
         with:
