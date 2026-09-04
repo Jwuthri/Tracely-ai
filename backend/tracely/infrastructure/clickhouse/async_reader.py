@@ -93,7 +93,7 @@ async def traces_overview(project_id: str, limit: int, advisory: Sequence[str] =
         ORDER BY ts DESC
         LIMIT {{n:UInt32}}
         """,
-        parameters={"p": project_id, "n": limit},
+        parameters={"p": project_id, "n": max(limit, 0)},
     )
     rows = [dict(zip(res.column_names, row)) for row in res.result_rows]
     ev = await client.query(
@@ -371,7 +371,7 @@ async def evaluator_score_queue(
         "AND ({v:String} = '' OR verdict = {v:String}) "
         "ORDER BY cityHash64(id) LIMIT {lim:UInt32} OFFSET {off:UInt32}",
         parameters={
-            "p": project_id, "n": name, "lim": limit, "off": max(offset, 0),
+            "p": project_id, "n": name, "lim": max(limit, 0), "off": max(offset, 0),
             "v": verdict.upper(),
         },
     )
@@ -454,7 +454,7 @@ async def sessions_overview(
     order_clause = session_order_clause(sort, order)
     time_clause = ""
     internal_clause = "" if include_internal else f" AND {_REAL}"
-    params: dict = {"p": project_id, "n": limit, "o": max(offset, 0), "adv": list(advisory)}
+    params: dict = {"p": project_id, "n": max(limit, 0), "o": max(offset, 0), "adv": list(advisory)}
     if from_ts:
         time_clause += " AND start_time >= parseDateTimeBestEffort({from:String})"
         params["from"] = from_ts
