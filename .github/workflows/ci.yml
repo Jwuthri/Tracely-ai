@@ -21,7 +21,7 @@ jobs:
     name: backend · ruff + pytest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -44,7 +44,7 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -84,7 +84,7 @@ jobs:
     # Build both production images so a broken Dockerfile fails CI instead of the deploy — the
     # frontend prod image (Dockerfile.railway) was previously never built until Railway deploy.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
       - name: Backend image
         uses: docker/build-push-action@v6
@@ -107,7 +107,7 @@ jobs:
     name: deps · security audit (informational)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
