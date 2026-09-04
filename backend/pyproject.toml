@@ -18,7 +18,7 @@ dependencies = [
   "celery[redis]>=5.4",
   "structlog>=24.1",
   "fastapi>=0.111",
-  "uvicorn[standard]>=0.30",
+  "uvicorn[standard]>=0.52.4",
   # LLM stack: every chat call goes through LangChain v1 `create_agent` on OpenRouter
   # (infrastructure/llm/provider.py); embeddings + clustering power failure intelligence
   "pgvector>=0.3",
