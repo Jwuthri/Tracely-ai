@@ -40,7 +40,7 @@ llama-index = ["openinference-instrumentation-llama-index>=0.1.0", "llama-index"
 crewai = ["openinference-instrumentation-crewai>=0.1.0", "crewai"]
 litellm = ["litellm>=1.40"]
 # first-party agent SDKs (instrumentor + the SDK itself)
-openai-agents = ["openinference-instrumentation-openai-agents>=0.1.0", "openai-agents"]
+openai-agents = ["openinference-instrumentation-openai-agents>=2.1.2", "openai-agents"]
 google-adk = ["openinference-instrumentation-google-adk>=0.1.0", "google-adk"]
 claude-agent-sdk = ["openinference-instrumentation-claude-agent-sdk>=0.1.0", "claude-agent-sdk"]  # also needs the Claude Code CLI on PATH
 openrouter = ["langchain-openrouter>=0.1.0"]  # first-party OpenRouter chat model (traced via langchain)

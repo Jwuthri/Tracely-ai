@@ -3591,7 +3591,7 @@ wheels = [
 
 [[package]]
 name = "openinference-instrumentation-openai-agents"
-version = "1.6.1"
+version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "openinference-instrumentation" },
@@ -3602,9 +3602,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/6f/281a267b837d33505c8b4ef70644b8ebfeb7ed902a909200333916185851/openinference_instrumentation_openai_agents-1.6.1.tar.gz", hash = "sha256:39b211b7ff28d59a401b2659f3885f967fb3e17580b29b4b4aedac6b8fc98e0e", size = 26089, upload-time = "2026-06-05T19:54:22.737Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/35/e44ea95381342887504d56e861b1cd32c9728688002ef14e26e60ceefa61/openinference_instrumentation_openai_agents-2.1.2.tar.gz", hash = "sha256:0b1debd7c0e4be48a96eabc2bab54376aa364ecec30ecb3e3f66a462c5b39d3f", size = 31410, upload-time = "2026-08-31T22:11:29.321Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/54/c3d4e67bdad5170e315bb03086f034d2a60ccb26c4200010428456c9f4d6/openinference_instrumentation_openai_agents-1.6.1-py3-none-any.whl", hash = "sha256:ca5dc650fc53461cbce0f8f19bfa78d43de605c439a9d3c44d99fd0b6e10e3ba", size = 28466, upload-time = "2026-06-05T19:54:21.48Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/f9/607dee115d0f8e2dd4902abefbb063952db3c5b40745a240dbe7af6a7df8/openinference_instrumentation_openai_agents-2.1.2-py3-none-any.whl", hash = "sha256:042016bfc9e998e057864cacc60dad31f4a8b28b0f8c168cec8caaca059b5ec5", size = 34440, upload-time = "2026-08-31T22:11:27.988Z" },
 ]
 
 [[package]]
@@ -5771,7 +5771,7 @@ requires-dist = [
     { name = "openinference-instrumentation-llama-index", marker = "extra == 'llama-index'", specifier = ">=0.1.0" },
     { name = "openinference-instrumentation-mistralai", marker = "extra == 'mistral'", specifier = ">=0.1.0" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'openai'", specifier = ">=0.1.0" },
-    { name = "openinference-instrumentation-openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.1.0" },
+    { name = "openinference-instrumentation-openai-agents", marker = "extra == 'openai-agents'", specifier = ">=2.1.2" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.25" },
     { name = "opentelemetry-instrumentation-anthropic", marker = "extra == 'openllmetry'", specifier = ">=0.30b0" },
     { name = "opentelemetry-instrumentation-openai-v2", marker = "extra == 'openllmetry'", specifier = ">=2.0b0" },
