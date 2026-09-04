@@ -345,7 +345,7 @@ class GitHub:
             },
         )
         try:
-            with urllib.request.urlopen(req) as r:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as r:
                 return json.load(r) if r.length != 0 else {}
         except urllib.error.HTTPError as e:
             print(f"github {method} {path} -> {e.code}: {e.read().decode()[:300]}")
