@@ -30,7 +30,7 @@ Issues = "https://github.com/Jwuthri/Tracely-ai/issues"
 # frontier providers
 openai = ["openinference-instrumentation-openai>=0.1.0"]
 anthropic = ["openinference-instrumentation-anthropic>=0.1.0", "anthropic"]
-google = ["openinference-instrumentation-google-genai>=0.1.0", "google-genai>=0.3"]
+google = ["openinference-instrumentation-google-genai>=0.1.0", "google-genai>=2.21.0"]
 mistral = ["openinference-instrumentation-mistralai>=0.1.0", "mistralai>=1.0"]
 bedrock = ["openinference-instrumentation-bedrock>=0.1.0"]
 groq = ["openinference-instrumentation-groq>=0.1.0"]
@@ -47,7 +47,7 @@ openrouter = ["langchain-openrouter>=0.1.0"]  # first-party OpenRouter chat mode
 # non-patching drop-ins — install just the provider SDK (no extra instrumentor needed; tracely_sdk.<provider> wraps the client instance)
 xai = ["openai>=1.0"]                # tracely_sdk.xai — Grok via OpenAI-compatible endpoint
 openrouter-openai = ["openai>=1.0"]  # tracely_sdk.openrouter — OpenAI-compatible drop-in (alt to the langchain path)
-google-genai = ["google-genai>=0.3"] # tracely_sdk.google — native google-genai SDK drop-in
+google-genai = ["google-genai>=2.21.0"] # tracely_sdk.google — native google-genai SDK drop-in
 mistral-sdk = ["mistralai>=1.0"]     # tracely_sdk.mistral — native mistralai SDK drop-in
 # OpenLLMetry (Traceloop) alternative — init("auto") detects these too
 openllmetry = [
