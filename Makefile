@@ -45,8 +45,8 @@ frontend:    ## run Next.js on :3000
 docs:        ## run the SDK documentation site (Nextra) on :3002
 	cd docs && pnpm install && pnpm dev
 
-test:        ## run backend tests
-	uv run pytest -q backend/tests
+test:        ## run backend + sdk tests (what CI runs)
+	uv run pytest -q backend/tests sdk/tests
 
 send-trace:  ## post a sample OTLP trace to the running API
 	uv run python scripts/send_test_trace.py
