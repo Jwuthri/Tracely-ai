@@ -369,8 +369,8 @@ async def test_signed_out_callers_share_the_projects_chats(db, model):
 def test_a_normal_turn_is_invisible_to_integer_cents():
     """Why the budget is float dollars. A turn costs about half a cent, and the cents estimator
     the scores use rounds that to 0 — accumulate it and a cap never fires, however long it runs."""
-    assert provider.estimate_cost_usd_cents("google/gemini-3.7-flash", 10_000, 550) == 0
-    assert provider.estimate_cost_usd("google/gemini-3.7-flash", 10_000, 550) > 0.004
+    assert provider.estimate_cost_usd_cents("google/gemini-3.7-flash", 3_000, 300) == 0
+    assert provider.estimate_cost_usd("google/gemini-3.7-flash", 3_000, 300) > 0.003
 
 
 def test_spend_accrues_over_a_conversations_assistant_turns():
@@ -396,7 +396,7 @@ async def test_a_turn_records_what_it_cost(db, model, monkeypatch):
     out = await turn("p1", "u1", chat_id=None, message="hi")
     with svc.SyncSessionLocal() as s:
         stored = svc.repo.assistant_chat_get(s, "p1", "u1", out["chat_id"]).messages
-    assert stored[-1]["cost_usd"] == pytest.approx(0.00478, abs=1e-4)
+    assert stored[-1]["cost_usd"] == pytest.approx(0.00956, abs=1e-4)
 
 
 async def test_a_conversation_that_spent_its_budget_is_refused_before_the_model(db, monkeypatch):

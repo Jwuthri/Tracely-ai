@@ -96,6 +96,23 @@ def _no_live_posthog(monkeypatch):
     monkeypatch.setattr(_prov, "_posthog_client", None)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_pricing_catalog(monkeypatch):
+    """Sixth time, same class of bug — and this one is the reason CI went red on a day nobody
+    touched the code. `_openrouter_models()` fetches OpenRouter's `/models` catalog, which is
+    PUBLIC: hard-offing the keys above does not stop it. So every cost assertion in the suite was
+    really asserting *today's live prices*, and the morning OpenRouter doubled
+    `google/gemini-3.7-flash` two assistant tests failed on master. Seed the cache full-but-empty
+    so nothing fetches and pricing resolves off the static fallback table everywhere; the one test
+    that exercises the fetch itself clears `by_id` and fakes httpx."""
+    import time as _time
+
+    from tracely.infrastructure.llm import provider as _prov
+
+    monkeypatch.setattr(_prov, "_models_cache", {"ts": _time.monotonic(), "by_id": {}})
+    monkeypatch.setattr(_prov, "_price_index_cache", {"stamp": None, "idx": None})
+
+
 @pytest_asyncio.fixture
 async def engine():
     eng = create_async_engine(

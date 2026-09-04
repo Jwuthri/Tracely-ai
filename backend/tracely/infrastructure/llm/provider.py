@@ -130,7 +130,7 @@ _FALLBACK_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     # Not in the dropdown either, but it is the shipped `assistant_model` — and the assistant's
     # spend cap is priced from this table when the catalog is unreachable. Unpriced would mean a
     # cap that silently never fires, so this row is load-bearing, not decorative.
-    "google/gemini-3.7-flash":         (0.375, 1.875),
+    "google/gemini-3.7-flash":         (0.75,  3.75),
     "google/gemini-3.1-pro-preview":   (2.00, 12.00),
     "anthropic/claude-haiku-4.5":      (1.00,  5.00),
     "anthropic/claude-sonnet-5":       (2.00, 10.00),

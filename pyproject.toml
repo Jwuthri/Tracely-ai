@@ -32,6 +32,12 @@ target-version = "py312"
 # Vendored agent-skill packs — third-party code we don't own and don't ship.
 extend-exclude = [".agents", ".claude"]
 
+[tool.ruff.lint]
+# Ruff 0.16 widened its *default* rule set, so a Dependabot patch bump (0.15 → 0.16, #97) turned on
+# a dozen new rule families and painted the repo red with 465 findings nobody wrote. Pin the classic
+# default explicitly: a lint-policy change should be a commit, never a side effect of a version bump.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.ruff.lint.per-file-ignores]
 # tracely.init() must run before importing the frameworks it instruments.
 "demo/*.py" = ["E402"]
