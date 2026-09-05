@@ -86,7 +86,14 @@ const config: Config = {
         },
       },
       animation: {
-        fadeup: "fadeup 0.4s cubic-bezier(0.2,0.7,0.2,1) both",
+        // `backwards`, NOT `both`: `both` leaves the 100% keyframe applied for ever, and that
+        // keyframe sets `transform: translateY(0)` — a transform, not `none`, so every .reveal
+        // element stayed a permanent stacking context. That trapped any `z-50` popover inside it
+        // (AgentPicker's listbox) and let the next `.reveal .card` sibling, itself a stacking
+        // context via backdrop-blur, paint straight over it. `backwards` covers the stagger delay
+        // with the 0% frame and then hands the element back to its natural styles — which the 100%
+        // frame already matches, so nothing moves.
+        fadeup: "fadeup 0.4s cubic-bezier(0.2,0.7,0.2,1) backwards",
         grow: "grow 0.5s cubic-bezier(0.2,0.7,0.2,1) both",
         pulse2: "pulse2 2s ease-in-out infinite",
         marquee: "marquee 36s linear infinite",

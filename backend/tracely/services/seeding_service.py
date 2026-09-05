@@ -20,8 +20,12 @@ DEFAULT_KEY = "tracely_dev_key"
 
 
 def _seed_evaluators(s, project_id: str) -> int:
-    """Install the recommended evaluator catalog as editable records (idempotent by score_name) so
-    online evaluation runs out of the box. Existing rows are left untouched (preserves user edits)."""
+    """Install the recommended evaluator catalog as editable records so online evaluation runs out
+    of the box. Existing rows are left untouched (preserves user edits).
+
+    ONLY safe to call on a project this process just created — see `main`. "Idempotent by
+    score_name" is not the same as idempotent: a column the user deleted is, by definition, a
+    score_name that is no longer present, so re-running this re-creates it."""
     existing = set(
         s.execute(select(Evaluator.score_name).where(Evaluator.project_id == project_id)).scalars()
     )
@@ -44,7 +48,8 @@ def main() -> None:
         project = s.execute(
             select(Project).where(Project.slug == DEFAULT_PROJECT_SLUG)
         ).scalar_one_or_none()
-        if not project:
+        created = project is None
+        if created:
             project = Project(id=str(uuid4()), slug=DEFAULT_PROJECT_SLUG, name="Default")
             s.add(project)
             s.commit()
@@ -59,7 +64,11 @@ def main() -> None:
                 s.commit()
             seeded_key = DEFAULT_KEY
 
-        evaluators = _seed_evaluators(s, project.id)
+        # Evaluators are seeded ONCE, when this process creates the project — never on an existing
+        # one. This runs as the pre-deploy step on every deploy, and the evaluators a workspace has
+        # are user state: deleting a column is a decision, so re-seeding an existing project
+        # resurrects every recommended column its owner deliberately removed.
+        evaluators = _seed_evaluators(s, project.id) if created else "skipped (project exists)"
         print(f"project_id={project.id}  slug={project.slug}  ingest_key={seeded_key}  evaluators+={evaluators}")
 
 

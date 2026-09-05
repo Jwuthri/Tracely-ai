@@ -177,9 +177,10 @@ export function TracesExplorer({
 
   return (
     <div className="space-y-3">
-      {/* Time-range bar — relative+z so the range-picker popover floats above the table below it
-          (both rows are `reveal`, whose transform traps a plain z-50 in this row's stacking context). */}
-      <div className="reveal relative z-30 flex flex-wrap items-center gap-2" suppressHydrationWarning>
+      {/* Time-range bar. The range-picker and agent popovers float above the table on their own
+          z-50 — `.reveal` no longer leaves a transform behind, so this row is not a stacking
+          context and does not trap them (see `fadeup` in tailwind.config.ts). */}
+      <div className="reveal flex flex-wrap items-center gap-2" suppressHydrationWarning>
         <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-faint">Range</span>
         <div className="flex items-center gap-1.5">
           {PRESETS.map((p) => (
