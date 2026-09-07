@@ -16,6 +16,8 @@ from sqlalchemy import delete, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from tracely.domain.billing import PLAN_FREE
+
 from tracely.infrastructure.db.models import (
     Agent,
     AssistantChat,
@@ -1543,3 +1545,17 @@ def share_revoke(s: Session, project_id: str, kind: str, subject_id: str) -> Non
         s.add(row)
     row.revoked_at = datetime.now(UTC)
     s.commit()
+
+
+def project_plans(s: Session) -> list[tuple[str, str]]:
+    """`(project_id, plan)` for every workspace — the org's plan, or free when it has no org.
+
+    Deployment-wide (no project scope) because the retention sweep is the one job that runs
+    across every workspace at once; everything else here stays project-scoped.
+    """
+    rows = s.execute(
+        select(Project.id, Organization.plan).join(
+            Organization, Organization.id == Project.organization_id, isouter=True
+        )
+    ).all()
+    return [(pid, plan or PLAN_FREE) for pid, plan in rows]

@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     # never count). `unlimited` plan = no cap.
     free_trace_limit: int = 20_000
     pro_trace_limit: int = 1_000_000
+    # How many days of traces each plan keeps. The ClickHouse table TTL (90 days) is the floor
+    # for every deployment; a nightly sweep (`tracely.enforce_retention`) shortens it for the
+    # plans below it. Only runs when billing is on — a self-hoster's data is never swept.
+    free_retention_days: int = 7
+    pro_retention_days: int = 90
     # Per-organization caps on workspaces and seats (members + pending invites). Personal
     # accounts are always 1/1 — these apply to company orgs. Only enforced when billing is on, so
     # a self-hosted deployment stays uncapped.

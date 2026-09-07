@@ -42,7 +42,12 @@ async def wipe_project_data(body: WipeBody, project_id: str = Depends(get_projec
     the workspace is immediately usable again. Send `{"confirm": "DELETE"}`; anything else is a
     400, which is the whole guard against a stray curl.
 
-    Not transactional across the two stores: ClickHouse goes first, then Postgres. If the Postgres
+    "Everything" includes the raw OTLP bodies in object storage, which are the source of truth and
+    hold the customer's payloads verbatim — deleting only the ClickHouse rows would empty the UI
+    while leaving every byte on disk, and nothing left in the product could ever reach them again.
+    Chat attachments stay: they are not traces (a workspace delete takes those).
+
+    Not transactional across the stores: ClickHouse goes first, then Postgres, then the blobs. If the Postgres
     half fails you're left with derived rows pointing at deleted traces — run it again, it's
     idempotent.
     """
@@ -50,6 +55,10 @@ async def wipe_project_data(body: WipeBody, project_id: str = Depends(get_projec
         raise HTTPException(status_code=400, detail=f"confirm must be exactly '{CONFIRM}'")
 
     events = await deletes.delete_project_events(project_id)
+    # The raw OTLP bodies. Without this the ClickHouse rows go and every byte the customer sent
+    # stays in the bucket for ever — the wipe looks complete in the UI while the payloads it
+    # promised to delete are all still there, unreachable by anything that could clean them up.
+    blobs = await run_in_threadpool(s3.delete_project_blobs, project_id, traces_only=True)
 
     def work():
         with SyncSessionLocal() as s:
@@ -61,7 +70,14 @@ async def wipe_project_data(body: WipeBody, project_id: str = Depends(get_projec
     # just removed the chain-progress rows they pair with — leaving them would keep a copy of the
     # very data this endpoint promises to delete.
     chats = await run_in_threadpool(checkpointer.delete_project_chats, project_id)
-    return {"deleted": {**events, **registry, **({"judge_chats": chats} if chats else {})}}
+    return {
+        "deleted": {
+            **events,
+            **registry,
+            **({"blobs": blobs} if blobs else {}),
+            **({"judge_chats": chats} if chats else {}),
+        }
+    }
 
 
 @router.post("/project/agents/prune", dependencies=[Depends(require_user)])

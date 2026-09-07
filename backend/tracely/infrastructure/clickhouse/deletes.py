@@ -93,3 +93,40 @@ async def delete_project_events(project_id: str) -> dict[str, int]:
                 parameters={"p": project_id},
             )
     return {k: v for k, v in counts.items() if v}
+
+
+def delete_expired(project_ids: list[str], days: int) -> int:
+    """Drop spans + scores older than `days` for these projects. Returns spans removed.
+
+    The plan's retention window, enforced nightly (`tracely.enforce_retention`) because the table
+    TTL is one global expression and a plan lives in Postgres. Counted first, same reason as
+    `delete_project_events`: a lightweight DELETE reports no rowcount, and a mutation that matches
+    nothing is still a mutation — this runs over every free workspace, every night.
+
+    `scores` is cut on `created_at` (its own TTL column), so a score written today for a span from
+    last month survives a few extra days. ponytail: cheap and self-correcting — the next sweep
+    takes it — and the alternative is joining scores to events nightly.
+    """
+    if not project_ids or days <= 0:
+        return 0
+    client = get_client()
+    params = {"p": project_ids, "d": days}
+    res = client.query(
+        "SELECT count() FROM events WHERE project_id IN {p:Array(String)} "
+        "AND start_time < now() - INTERVAL {d:UInt32} DAY",
+        parameters=params,
+    )
+    spans = int(res.result_rows[0][0]) if res.result_rows else 0
+    if not spans:
+        return 0
+    client.command(
+        "DELETE FROM events WHERE project_id IN {p:Array(String)} "
+        "AND start_time < now() - INTERVAL {d:UInt32} DAY",
+        parameters=params,
+    )
+    client.command(
+        "DELETE FROM scores WHERE project_id IN {p:Array(String)} "
+        "AND created_at < now() - INTERVAL {d:UInt32} DAY",
+        parameters=params,
+    )
+    return spans

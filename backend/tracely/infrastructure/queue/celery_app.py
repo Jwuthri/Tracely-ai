@@ -52,6 +52,12 @@ celery_app.conf.update(
             "task": "tracely.prune_chats",
             "schedule": crontab(hour="4", minute="17"),
         },
+        # Plan retention (hosted cloud only): the free tier keeps a week, the table TTL keeps
+        # the rest. Offset from the chat prune so two sweeps don't share the solo worker's slot.
+        "tracely.enforce_retention-nightly": {
+            "task": "tracely.enforce_retention",
+            "schedule": crontab(hour="4", minute="47"),
+        },
     },
     timezone="UTC",
 )

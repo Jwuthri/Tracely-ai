@@ -107,6 +107,10 @@ x-app-env: &app-env
   BILLING_ENABLED: ${BILLING_ENABLED:-false}
   FREE_TRACE_LIMIT: ${FREE_TRACE_LIMIT:-20000}
   PRO_TRACE_LIMIT: ${PRO_TRACE_LIMIT:-1000000}
+  # Days of traces each plan keeps. The ClickHouse TTL (90d) is the floor for everyone;
+  # the nightly `tracely.enforce_retention` sweep shortens it — only when billing is on.
+  FREE_RETENTION_DAYS: ${FREE_RETENTION_DAYS:-7}
+  PRO_RETENTION_DAYS: ${PRO_RETENTION_DAYS:-90}
   # Per-organization caps on workspaces and seats (company accounts; personal ones are always
   # 1/1). Only enforced when BILLING_ENABLED.
   FREE_WORKSPACE_LIMIT: ${FREE_WORKSPACE_LIMIT:-3}

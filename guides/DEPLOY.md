@@ -225,8 +225,17 @@ monitoring engine had never once run). Local docker embeds it in the single work
 celery -A tracely_workers.worker beat --loglevel=info    # its own 1-replica service
 ```
 
+Today's Railway deployment takes the shortcut instead: the worker is a single replica, so its
+start command carries `--beat` and that one process *is* the scheduler.
+
+> **The trap that comes with it:** the moment you scale the worker past one replica, every
+> replica re-fires the whole schedule — including `enforce_retention`, which deletes traces.
+> Scaling up means splitting beat into its own 1-replica service first (the command above) and
+> dropping `--beat` from the worker.
+
 Confirm it took: `/health/queue` reports `beat_age_s` — a null or a growing number means nothing
-is scheduling.
+is scheduling. It read `null` in production until 2026-09-06, so `evaluate_monitors`,
+`selfcheck` and `prune_chats` had never run there.
 
 ---
 

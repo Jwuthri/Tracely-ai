@@ -281,6 +281,22 @@ def prune_chats_task(self) -> dict:
         return {"error": str(exc)}
 
 
+@celery_app.task(name="tracely.enforce_retention", bind=True, max_retries=0)
+def enforce_retention_task(self) -> dict:
+    """Delete traces past their plan's retention window (beat, nightly).
+
+    A no-op unless billing is on — see `services/retention_service.py` for why that gate is not
+    optional. Never retried: a missed night is a day of extra storage, and re-running a sweep
+    that half-failed just re-issues the same DELETEs the next tick anyway."""
+    from tracely.services.retention_service import enforce
+
+    try:
+        return enforce()
+    except Exception as exc:  # noqa: BLE001 — a missed sweep costs disk, never a grade
+        log.warning("enforce_retention_failed", error=str(exc))
+        return {"error": str(exc)}
+
+
 @celery_app.task(name="tracely.selfcheck", bind=True, max_retries=0)
 def selfcheck_task(self) -> dict:
     """Watch our own deployment (beat, every 5 min). Tracely's failure modes are quiet — a dead

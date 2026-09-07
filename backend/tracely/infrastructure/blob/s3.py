@@ -73,15 +73,12 @@ def get_blob_typed(key: str) -> tuple[bytes, str]:
     return obj["Body"].read(), obj.get("ContentType") or "application/octet-stream"
 
 
-def delete_project_blobs(project_id: str) -> int:
-    """Delete every raw OTLP body this project ever uploaded. Used when a workspace is deleted —
-    the blobs are the source of truth, so leaving them behind means the customer's payloads
-    outlive the workspace they asked us to remove.
+def _delete_prefix(prefix: str) -> int:
+    """Delete every object under one key prefix. Returns how many went.
 
     Best-effort: object storage being unavailable must not block the delete (the rows are already
     gone), so failures are counted as zero rather than raised.
     """
-    prefix = f"{settings.s3_event_prefix}{project_id}/"
     client = _s3()
     removed = 0
     try:
@@ -95,5 +92,26 @@ def delete_project_blobs(project_id: str) -> int:
             client.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": batch})
             removed += len(batch)
     except Exception as exc:
-        log.warning("blob_prefix_delete_failed", project_id=project_id, error=str(exc))
+        log.warning("blob_prefix_delete_failed", prefix=prefix, error=str(exc))
     return removed
+
+
+def delete_project_blobs(project_id: str, *, traces_only: bool = False) -> int:
+    """Delete a project's blobs. Returns how many objects went.
+
+    The blobs are the source of truth — the customer's payloads verbatim — so anything that
+    promises to delete traces has to come through here, or the bytes outlive the thing the
+    customer asked us to remove. That is not just disk: a wiped workspace whose raw OTLP bodies
+    are all still in the bucket has not actually been wiped.
+
+    Two prefixes, because a project's keys live at two depths (`event_blob_key`,
+    `regression_service`): `{prefix}{project}/…` for uploads, `{prefix}fixtures/{project}/…` for
+    promoted regression bundles.
+
+    `traces_only` is the Data → wipe half: raw OTLP bodies and the fixture bundles of the cases
+    it deletes, but NOT `{project}/assistant/` — chat attachments are not traces, and that wipe
+    keeps the workspace's configuration. A workspace delete takes everything.
+    """
+    base = settings.s3_event_prefix
+    project_prefix = f"{base}{project_id}/otlp/" if traces_only else f"{base}{project_id}/"
+    return _delete_prefix(project_prefix) + _delete_prefix(f"{base}fixtures/{project_id}/")

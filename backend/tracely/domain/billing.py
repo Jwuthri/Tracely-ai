@@ -42,6 +42,22 @@ def trace_limit_for(plan: str, free_limit: int, pro_limit: int) -> int | None:
     return free_limit
 
 
+def retention_days_for(plan: str, free_days: int, pro_days: int) -> int | None:
+    """How long a plan keeps traces; None = keep whatever the table TTL keeps.
+
+    The ClickHouse TTL is the floor for everyone (see `ddl/0003_events_ttl`); this only ever
+    shortens it, so `unlimited` returns None and Pro returns the TTL horizon (= nothing to
+    sweep). Unknown plan values fall back to the free window on purpose — the same
+    fail-toward-the-cap rule as `trace_limit_for`, minus the data loss risk, because a project
+    only reaches this function when billing is on.
+    """
+    if plan == PLAN_UNLIMITED:
+        return None
+    if plan == PLAN_PRO:
+        return pro_days
+    return free_days
+
+
 def workspace_limit_for(plan: str, kind: str, free_limit: int, pro_limit: int) -> int | None:
     """How many workspaces an org may hold; None = uncapped. A personal account is 1 by
     definition — upgrading it doesn't buy more, converting to a company does."""

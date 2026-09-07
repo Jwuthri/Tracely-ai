@@ -70,3 +70,34 @@ tracely gate <agent>       # new, canonical usage  (see sdk/README.md + .github/
 
 - **A raw protobuf sender** (no SDK) proves the OTLP endpoint accepts standard OpenTelemetry traffic from anything, and gives deterministic, labelled failure shapes for the clustering/eval demos.
 - **The gate moved to the SDK** so it ships as an installable, GitHub-aware CLI usable from any CI; the shim is kept only for backward compatibility.
+
+## `storage_report.py` — what is stored, where, and whose it is
+
+Read-only inventory across the three stores that hold customer bytes: ClickHouse (`events`,
+`scores`, **and** ClickHouse's own `system.*` telemetry), object storage (raw OTLP bodies,
+regression fixtures, chat attachments), and the Postgres registry that says which workspace,
+organization and people each project id belongs to.
+
+```bash
+railway ssh -s api "python scripts/storage_report.py"   # everything — PG and MinIO are internal
+uv run python scripts/storage_report.py                 # locally, against `make infra-up`
+```
+
+Point it anywhere with the app's own env vars (TLS turns on for any non-local host):
+
+```bash
+CLICKHOUSE_HOST=clickhouse-production-xxxx.up.railway.app CLICKHOUSE_USER=… \
+CLICKHOUSE_PASSWORD=… uv run python scripts/storage_report.py
+```
+
+Each store is optional — whatever the process can't reach is reported as unreachable and the
+rest still prints, so the same script works from a laptop and from inside the deployment.
+
+What it is for, beyond a row count:
+
+| Line to look for | What it means |
+|---|---|
+| `⚠ system.* logs hold …` | ClickHouse's own telemetry has no TTL by default and will dwarf your traces. The report ends with the `ALTER TABLE system.… MODIFY TTL` statements that cap it. |
+| `masked` in *stored vs visible* | Rows a lightweight DELETE hid but no merge has dropped. Still on disk; `OPTIMIZE TABLE events FINAL` reclaims them. |
+| `⚠ NOT IN THE REGISTRY` | A project id holding bytes that no longer exists in Postgres — a deleted workspace whose data outlived it. Nothing in the product can reach it and nothing will clean it up. |
+| *What a retention sweep would delete* | What `tracely.enforce_retention` (and the table TTL) would take right now. |
