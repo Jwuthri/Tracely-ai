@@ -8,7 +8,7 @@ export async function GET(
   { params }: { params: Promise<{ agentRef: string }> },
 ) {
   const { agentRef } = await params;
-  const r = await fetch(`${API}/api/agents/${encodeURIComponent(agentRef)}/endpoint`, {
+  const r = await fetch(`${API}/api/agents/${agentRef}/endpoint`, {
     headers: await authHeaders(),
     cache: "no-store",
   });
@@ -20,7 +20,7 @@ export async function GET(
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ agentRef: string }> }) {
   const { agentRef } = await params;
   const body = await req.json();
-  const r = await fetch(`${API}/api/agents/${encodeURIComponent(agentRef)}/endpoint`, {
+  const r = await fetch(`${API}/api/agents/${agentRef}/endpoint`, {
     method: "PUT",
     headers: { ...(await authHeaders()), "content-type": "application/json" },
     body: JSON.stringify(body),

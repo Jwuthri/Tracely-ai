@@ -24,9 +24,10 @@ export default async function ConversationEvalsPage({
   params: Promise<{ threadId: string }>;
 }) {
   const { threadId } = await params;
+  const thread = decodeURIComponent(threadId);
   const [chain, ...levels] = await Promise.all([
-    getChainProgress(encodeURIComponent(threadId)).catch(() => ({ metrics: [] as ChainMetric[] })),
-    ...LEVELS.map((level) => loadLevel(threadId, level.key)),
+    getChainProgress(encodeURIComponent(thread)).catch(() => ({ metrics: [] as ChainMetric[] })),
+    ...LEVELS.map((level) => loadLevel(thread, level.key)),
   ]);
   const found = levels.filter((l): l is NonNullable<typeof l> => l !== null);
 
@@ -34,14 +35,14 @@ export default async function ConversationEvalsPage({
     <div className="space-y-6">
       <header className="reveal">
         <a
-          href={`/sessions/${encodeURIComponent(threadId)}`}
+          href={`/sessions/${encodeURIComponent(thread)}`}
           className="inline-flex items-center gap-1.5 text-[13px] text-fg-muted transition-colors hover:text-signal"
         >
           <IconArrowLeft className="h-4 w-4" /> Conversation
         </a>
         <h1 className="mt-4 font-display text-[22px] font-extrabold tracking-tight">Evaluations</h1>
         <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[11.5px] text-fg-faint">
-          <CopyId value={threadId} label="thread id" />
+          <CopyId value={thread} label="thread id" />
           <span>
             {found.reduce((a, l) => a + l.turns.length, 0)} run
             {found.reduce((a, l) => a + l.turns.length, 0) === 1 ? "" : "s"}

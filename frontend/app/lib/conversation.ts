@@ -15,7 +15,7 @@ export type Conversation = {
 };
 
 export async function loadConversation(threadId: string): Promise<Conversation> {
-  const { turns, scores: threadScores } = await getSession(threadId);
+  const { turns, scores: threadScores } = await getSession(encodeURIComponent(threadId));
   // Eagerly resolve each turn's spans so the whole tree renders pre-expanded.
   const traces = await Promise.all(turns.map((t) => getTrace(t.trace_id)));
   const fullTurns: FullTurn[] = turns.map((t, i) => ({ ...t, spans: traces[i].spans }));

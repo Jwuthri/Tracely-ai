@@ -9,16 +9,18 @@ export default async function ThreadPage({ params, searchParams }: {
 }) {
   const { threadId } = await params;
   const { view } = await searchParams;
-  const { conv, turns, usage, agentRef } = await loadConversation(threadId);
+  // Next hands dynamic params percent-encoded; every link below encodes once more.
+  const thread = decodeURIComponent(threadId);
+  const { conv, turns, usage, agentRef } = await loadConversation(thread);
 
   return (
     <div className="space-y-6">
-      <ConversationHeader threadId={threadId} turns={turns.length} usage={usage}
+      <ConversationHeader threadId={thread} turns={turns.length} usage={usage}
         agentRef={agentRef} firstInput={turns[0]?.input ?? ""} />
 
       {turns.length === 0 ? (
         // Not "not found" — a scenario run opens this page before its first turn is driven.
-        <AwaitingTurns threadId={threadId} />
+        <AwaitingTurns threadId={thread} />
       ) : (
         <div className="reveal" style={{ animationDelay: "60ms" }}>
           <SessionView conv={conv} turns={turns} views

@@ -8,7 +8,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   const r = await fetch(
-    `${API}/api/sessions/${encodeURIComponent(id)}/rolling-summary/generate`,
+    `${API}/api/sessions/${id}/rolling-summary/generate`,
     {
       method: "POST",
       headers: { ...(await authHeaders()), "Content-Type": "application/json" },
