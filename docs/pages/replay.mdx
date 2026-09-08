@@ -121,6 +121,16 @@ with tracely.fixtures(bundle):     # bundle = the case's recorded tool/LLM outpu
 
 `fixture(kind, name)` peeks the next recorded output for a tool/model without consuming it.
 
+**After a fix, re-record.** The recording is a recording of the *bug*. A fix that adds a call the
+bug never made (the silent-failure case: the fixed agent now calls the tool) cannot be served from
+it — strict replay reports `INCOMPLETE — no recorded call for tools:get_weather`, never a live
+call. Once the fixed code has run for real (CI, staging, production), re-record the case from that
+run: `POST /api/cases/{id}/recapture` with the trace id (same input required; bumps the case
+version). From then on the suite replays the fix hermetically and a regression (`run_broken`)
+fails on the missing tool. The same applies to a changed prompt: recorded-model replay serves the
+old answer back, so a quality fix is shown by re-recording from the faithful run, not by replaying
+the old recording.
+
 `tracely replay` itself refuses to run a case whose recording cannot be loaded: it emits the
 case's trace **errored** without running your agent, so the gate fails loudly instead of grading a
 live (or "nothing recorded") run as the recorded case.

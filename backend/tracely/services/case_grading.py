@@ -73,9 +73,10 @@ def grade_case(
     returned nothing surface as UNAVAILABLE required checks — never as a pass."""
     assertions = case.assertions or {}
     expected = list(((assertions.get("quality") or {}).get("score_names")) or [])
+    execution = execution_evidence(spans)
     judges: dict[str, dict] = {}
     quality: list[dict] = []
-    if expected:
+    if expected and execution.complete:  # an incomplete execution has no answer worth judging
         specs = eval_service.quality_specs(case.project_id, expected)
         judges = {s["score_name"]: judge_identity(s) for s in specs}
         results = (
@@ -94,5 +95,5 @@ def grade_case(
         quality=quality,
         quality_blocks=settings.gate_quality_blocks,
         judges=judges,
-        execution=execution_evidence(spans),
+        execution=execution,
     )

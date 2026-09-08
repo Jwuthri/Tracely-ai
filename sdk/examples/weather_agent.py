@@ -11,6 +11,11 @@ hermetic, it's never called; with `--live` it blows up — proving CI isn't hitt
     tracely replay planner --entrypoint weather_agent:run          # fixed   -> gate PASS
     tracely replay planner --entrypoint weather_agent:run_broken   # regressed-> gate FAIL
     tracely replay planner --entrypoint weather_agent:run --live    # -> live model raises
+
+Replay is STRICT: a call the recording lacks is an execution problem (INCOMPLETE), never a live
+call. `run` adds the get_weather call the *original* failing recording never had, so it only
+PASSes once the case has been re-recorded from a fixed run (`POST /api/cases/{id}/recapture`,
+which seed_regression.py does) — a recording of the bug cannot stand in for the fix's new call.
 """
 
 from __future__ import annotations

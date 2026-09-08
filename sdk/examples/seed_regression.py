@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 
 from pathlib import Path
 
@@ -60,6 +61,11 @@ def send_trace(**env_overrides: str) -> str:
         **os.environ,
         "TRACELY_API": API,
         "TRACELY_KEY": KEY,
+        # Each seeding run emits its OWN traces. Re-sending a deterministic id does not replace
+        # the previous send (the events dedup key ends in start_time), so without this a second
+        # `make demo` leaves one trace holding both the broken and the fixed run — and the
+        # red→green story inverts.
+        "TRACELY_FRESH": "1",
         **{k: str(v) for k, v in env_overrides.items()},
     }
     out = subprocess.run(
@@ -84,8 +90,22 @@ def wait_for(trace_id: str, timeout_s: int = 120) -> None:
     raise TimeoutError(f"trace {trace_id} was never ingested")
 
 
-def run_gate(git_ref: str, pr: int, env: str = "ci") -> dict:
-    return _req("POST", "/api/gate", {"agent": AGENT, "env": env, "git_ref": git_ref, "pr_number": pr})
+def run_gate(git_ref: str, pr: int, env: str = "ci", run_id: str = "") -> dict:
+    """Gate the promoted suite. `run_id` scopes candidate pairing to the traces THIS step emitted
+    — without it the gate falls back to "newest ci trace with the same input", and a leftover
+    trace from an earlier seeder run or a `tracely replay` would be graded instead."""
+    body = {"agent": AGENT, "env": env, "git_ref": git_ref, "pr_number": pr}
+    if run_id:
+        body["run_id"] = run_id
+        body["execution_mode"] = "live"
+    return _req("POST", "/api/gate", body)
+
+
+def ci_run(**env_overrides: str) -> tuple[str, str]:
+    """Emit one ci trace stamped with a fresh run id; returns `(trace_id, run_id)`."""
+    run_id = f"seed-{uuid.uuid4().hex[:12]}"
+    tid = send_and_wait(ENV="ci", TRACELY_RUN_ID=run_id, **env_overrides)
+    return tid, run_id
 
 
 def send_and_wait(**env_overrides: str) -> str:
@@ -123,17 +143,21 @@ def main() -> None:
     print(f"   case {case['id'][:8]}  status={case['status']}  required_tools={req}  fail_to_pass={case['fail_to_pass_validated']}")
 
     print("3) CI gate while the bug is present (no tool call) → expect FAIL")
-    send_and_wait(ENV="ci", SILENT="1")
-    gate_line("still broken", run_gate("feat/weather-fix", 41))
+    _, broken_run = ci_run(SILENT="1")
+    gate_line("still broken", run_gate("feat/weather-fix", 41, run_id=broken_run))
 
     print("4) CI gate after the fix (agent now calls get_weather) → expect PASS")
-    fixed_ci = send_trace(ENV="ci", FIXED="1")
-    wait_for(fixed_ci)
-    gate_line("fixed", run_gate("feat/weather-fix", 41))
+    fixed_ci, fixed_run = ci_run(FIXED="1")
+    gate_line("fixed", run_gate("feat/weather-fix", 41, run_id=fixed_run))
 
     print("5) replay the case against the fixed trace → expect PASS")
     r = _req("POST", f"/api/cases/{case['id']}/replay", {"candidate_trace_id": fixed_ci})
     print(f"   replay verdict={r['verdict']}")
+    # The fix ADDS a get_weather call the original recording never had, so strict recorded
+    # replay of the fixed code cannot be served from that recording (it reports INCOMPLETE).
+    # Re-record the case from the fixed run: same input, now with the tool's recorded output.
+    rc = _req("POST", f"/api/cases/{case['id']}/recapture", {"trace_id": fixed_ci})
+    print(f"   re-recorded from the fixed run → case v{rc['case_version']} (artifact {rc['artifact_digest'][:8]})")
 
     print("\n══ Scenario B — QUALITY bug (HALLUCINATION: get_weather succeeds, but the answer is fabricated) ══")
     print("   A structural check PASSES this (the tool ran!). Only the judge-in-the-gate catches it.")
@@ -148,20 +172,31 @@ def main() -> None:
     print(f"   case {qcase['id'][:8]}  status={qcase['status']}  quality={q}  fail_to_pass={qcase['fail_to_pass_validated']}")
 
     print("8) CI gate while the answer is STILL hallucinated → structural PASS, QUALITY FAIL → gate FAIL")
-    send_and_wait(HALLUCINATE="1", QUERY_IDX="1", ENV="ci")
-    gate_line("still hallucinating", run_gate("feat/answer-fix", 42))
+    # Both cases are in the suite now, so this run must carry BOTH inputs or case A reports
+    # INCOMPLETE ("no trace from this run matched"). One run id, two traces.
+    hall_run = f"seed-{uuid.uuid4().hex[:12]}"
+    send_and_wait(HALLUCINATE="1", QUERY_IDX="1", ENV="ci", TRACELY_RUN_ID=hall_run)
+    send_and_wait(FIXED="1", ENV="ci", TRACELY_RUN_ID=hall_run)  # case A is already fixed
+    gate_line("still hallucinating", run_gate("feat/answer-fix", 42, run_id=hall_run))
 
     print("9) CI gate after the answer is fixed (faithful to the tool) → expect PASS")
-    send_and_wait(FIXED="1", QUERY_IDX="1", ENV="ci")
-    gate_line("answer fixed", run_gate("feat/answer-fix", 42))
+    fix_run = f"seed-{uuid.uuid4().hex[:12]}"
+    faithful_ci = send_and_wait(FIXED="1", QUERY_IDX="1", ENV="ci", TRACELY_RUN_ID=fix_run)
+    send_and_wait(FIXED="1", ENV="ci", TRACELY_RUN_ID=fix_run)
+    gate_line("answer fixed", run_gate("feat/answer-fix", 42, run_id=fix_run))
+    # Recorded-model replay would serve the hallucinated answer back; re-record from the
+    # faithful run so the recording carries the fixed answer.
+    rc = _req("POST", f"/api/cases/{qcase['id']}/recapture", {"trace_id": faithful_ci})
+    print(f"   re-recorded from the fixed run → case v{rc['case_version']}")
 
     print("\n══ Safety — a gate that matched NO CI traces must NOT be a false green ══")
     gate_line("no coverage", run_gate("test-coverage", 43, env="staging"))
 
     print("\ndone — Regression cases + CI gates now show TWO red→green stories (structural + quality),")
-    print("plus the NO_COVERAGE safety net. Hermetic replay also works:")
+    print("plus the NO_COVERAGE safety net. Both cases were re-recorded from their fixed runs, so")
+    print("strict hermetic replay (recorded tools + recorded model, no keys) tells fix from bug:")
     print(f"   docker compose exec backend sh -c 'cd /app && PYTHONPATH=sdk/examples tracely replay {AGENT} --entrypoint weather_agent:run'        # PASS")
-    print(f"   docker compose exec backend sh -c 'cd /app && PYTHONPATH=sdk/examples tracely replay {AGENT} --entrypoint weather_agent:run_broken' # FAIL")
+    print(f"   docker compose exec backend sh -c 'cd /app && PYTHONPATH=sdk/examples tracely replay {AGENT} --entrypoint weather_agent:run_broken' # FAIL (missing get_weather)")
 
 
 if __name__ == "__main__":

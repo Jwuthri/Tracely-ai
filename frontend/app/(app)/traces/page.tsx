@@ -1,6 +1,7 @@
 import { DocLink } from "@/app/components/DocLink";
 import { getAgents, getSessions, getSessionsCount } from "@/app/lib/api";
-import { TracesExplorer, queryFromView, viewFromParams } from "@/app/components/TracesExplorer";
+import { TracesExplorer } from "@/app/components/TracesExplorer";
+import { queryFromView, viewFromParams } from "@/app/lib/tracesView";
 
 // First page is rendered server-side for fast first paint; TracesExplorer pages/filters from there.
 // The URL carries the view (range/agent/sort/filter/q), so a shared link renders the same list.

@@ -118,3 +118,16 @@ def test_passing_judge_passes_in_both_paths(db):
     judge = _Judge([EvalResult(name="tracely.run.quality", level="AGENT_RUN", verdict="PASS", value=0.9)])
     assert _manual(db, judge).verdict == "PASS"
     assert _gate(db, judge).status == "PASS"
+
+
+def test_judge_is_not_called_when_the_execution_did_not_complete(db):
+    class _Boom(_Judge):
+        def grade_trace_quality(self, *a, **k):
+            raise AssertionError("judge must not run on an incomplete execution")
+
+    broken = [dict(SPANS[0], level="ERROR", status_message="replay error: no recorded call for tools:get_weather"), SPANS[1]]
+    reader = _Reader()
+    reader.read_spans = lambda p, t: broken if t == "cand" else []
+    svc = RegressionService(db, trace_reader=reader, eval_service=_Boom([]))
+    svc.score_writer = _NoWrite()
+    assert svc.replay_case(PROJECT, "c1", "cand").verdict == "INCOMPLETE"

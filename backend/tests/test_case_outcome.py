@@ -181,3 +181,14 @@ def test_worst_gate_status_ordering():
     assert worst_gate_status("NO_COVERAGE", "INCOMPLETE") == "INCOMPLETE"
     assert worst_gate_status("INCOMPLETE", "FAIL") == "FAIL"
     assert worst_gate_status("PASS", "UNKNOWN") == "UNKNOWN"  # unknown = treated as worst
+
+
+def test_execution_problem_makes_quality_unavailable_even_with_a_failing_judge_result():
+    """A replay that could not be served answers with an error string; the judge fails that —
+    but it is an execution problem, not a behavioural failure: INCOMPLETE, never FAIL."""
+    out = evaluate_contract(
+        QUALITY, "superset", _traj(), quality=[_q("FAIL", "no answer at all")],
+        execution=Execution(mode="recorded", problem="replay error: no recorded call for tools:get_weather"),
+    )
+    assert out.verdict == "INCOMPLETE"
+    assert all(c.status == "UNAVAILABLE" for c in out.checks)

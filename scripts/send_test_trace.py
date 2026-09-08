@@ -78,11 +78,22 @@ def main() -> None:
         # Pick a random query variant for diversity.
         idx = int.from_bytes(trace_id[:1], "big") % len(_QUERIES)
     else:
-        # Deterministic base: same (variant, query, env) always produces the same trace_id so
-        # re-runs dedup. Query index is in a distinct bit region so scenarios stay separable.
+        # Deterministic base: same (variant, query, env) always produces the same trace_id.
+        # Query index is in a distinct bit region so scenarios stay separable.
         base = 0xFACADE if hallucinate else 0x511EE7 if silent else 0xF0FFEE if fixed else 0xC0FFEE
         base += (0x010000 if env == "ci" else 0) + (query_idx * 0x01000000)
-        trace_id = base.to_bytes(16, "big")
+        # A re-send does NOT replace the previous one: the events table's ReplacingMergeTree key
+        # ends in `start_time` (ddl/0001_events.up.sql) and every send stamps a fresh clock, so
+        # identical ids ACCUMULATE — a trace ends up holding several runs at once, and a demo
+        # that re-ran twice shows a "broken" run that also contains the fixed run's tool call.
+        # TRACELY_FRESH keeps the recognisable variant bits in the low half and salts the high
+        # half, so each run emits its own traces instead of piling onto the last one.
+        if os.environ.get("TRACELY_FRESH", "") not in ("", "0", "false"):
+            import secrets
+
+            trace_id = secrets.token_bytes(8) + base.to_bytes(8, "big")
+        else:
+            trace_id = base.to_bytes(16, "big")
         now = time.time_ns()
         idx = query_idx
 
@@ -200,6 +211,13 @@ def main() -> None:
     if os.environ.get("TRACELY_SAMPLE"):  # seeded demo data: never the customer's activation
         for sp in spans:
             sp.attributes.append(kv("tracely.sample", True))
+    # The CI execution this trace belongs to (the SDK stamps the same attribute from the same
+    # env var). A gate given this run id grades ONLY these traces, so a leftover trace with the
+    # same input — a previous seeder run, an earlier `tracely replay` — can never stand in.
+    run_id = os.environ.get("TRACELY_RUN_ID", "")
+    if run_id:
+        for sp in spans:
+            sp.attributes.append(kv("tracely.replay.run_id", run_id))
 
     req = ExportTraceServiceRequest(resource_spans=[
         ResourceSpans(

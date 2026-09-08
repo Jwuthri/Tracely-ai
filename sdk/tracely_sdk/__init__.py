@@ -1428,6 +1428,40 @@ def _args_match(recorded: Any, live: Any) -> bool:
     return _canon(recorded) == _canon(live)
 
 
+def _user_text(v: Any) -> str:
+    """The user-turn text inside an LLM input, whatever shape it came in: a messages list (last
+    user message), one message dict, a content-parts list, or a plain string (parsed as JSON
+    when it is)."""
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+        except (ValueError, TypeError):
+            return v.strip()
+        return _user_text(parsed) if isinstance(parsed, (list, dict)) else v.strip()
+    if isinstance(v, dict):
+        if v.get("role") and v.get("role") != "user":
+            return ""
+        return _user_text(v.get("content", v.get("text", "")))
+    if isinstance(v, list):
+        if v and all(isinstance(m, dict) and "role" in m for m in v):  # a messages list
+            for m in reversed(v):
+                if m.get("role") == "user":
+                    return _user_text(m.get("content", ""))
+            return ""
+        return " ".join(t for t in (_user_text(p) for p in v) if t).strip()  # content parts
+    return str(v).strip() if v is not None else ""
+
+
+def _llm_input_match(recorded: Any, live: Any) -> bool:
+    """The LLM matching strategy: exact canonical equality first; else the two inputs carry the
+    same user turn (the recording keeps the full messages list, a manual `call_llm` often
+    passes just the prompt — same call, different framing). Anything else is a divergence."""
+    if _args_match(recorded, live):
+        return True
+    rec_turn, live_turn = _user_text(recorded), _user_text(live)
+    return bool(rec_turn) and rec_turn == live_turn
+
+
 def _pop_fixture(kind: str, key: str, args: Any = None) -> dict | None:
     """Consume the next recorded entry for a tool/model. Returns None only when not replaying, or
     in lenient mode on a miss (the caller then runs the real function).
@@ -1465,8 +1499,9 @@ def _pop_fixture(kind: str, key: str, args: Any = None) -> dict | None:
         return None
     entry: dict | None = None
     if args is not None:
+        match = _llm_input_match if kind == "llm" else _args_match
         for i, e in enumerate(queue):
-            if _args_match(e.get("args"), args):
+            if match(e.get("args"), args):
                 entry = queue.pop(i)
                 break
         else:

@@ -249,12 +249,14 @@ async def backfill_artifacts(project_id: str = Depends(get_project_id)) -> dict:
     return await run_in_threadpool(work)
 
 
-@router.post("/cases/{case_id}/recapture", dependencies=[Depends(require_user)])
+@router.post("/cases/{case_id}/recapture")
 async def recapture(
     case_id: str, project_id: str = Depends(get_project_id), body: dict = Body(default={})
 ) -> dict:
-    """Rebuild a case's artifact from a fresh trace with the same input (digest must match);
-    bumps the case version."""
+    """Re-record a case from a fresh trace with the same input (digest must match); bumps the
+    case version. The step after a fix: a fixed run that ADDS a call the old recording lacks
+    cannot be replayed from that recording — re-recording from the fixed run gives the suite a
+    truthful one. Additive like promote/replay, so an ingest key (CI) may do it."""
     trace_id = str(body.get("trace_id") or "")
     if not trace_id:
         raise HTTPException(status_code=400, detail="trace_id is required")

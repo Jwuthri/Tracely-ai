@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_VIEW, paramsFromView, queryFromView, viewFromParams } from "../TracesExplorer";
+import { DEFAULT_VIEW, paramsFromView, queryFromView, viewFromParams } from "@/app/lib/tracesView";
 
 describe("traces view ⇄ URL", () => {
   it("round-trips every filter and omits defaults", () => {

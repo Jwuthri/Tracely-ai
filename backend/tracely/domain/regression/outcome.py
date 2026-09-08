@@ -160,7 +160,11 @@ def evaluate_contract(
     got = {q.get("score_name"): q for q in quality or []}
     for name in expected:
         q = got.get(name)
-        if q is None:
+        if not execution.complete:
+            # The "answer" of a run that did not complete is an error message; grading it would
+            # turn an execution problem into a behavioural FAIL. Unavailable, like the rest.
+            checks.append(Check(f"quality:{name}", quality_blocks, UNAVAILABLE, f"not evaluated: {execution.problem}"))
+        elif q is None:
             checks.append(
                 Check(
                     f"quality:{name}",

@@ -19,7 +19,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import tracely_sdk as tracely
-from tracely_sdk import ReplayError, _args_match, _patch_class_method, _reconstruct_openai_chat
+from tracely_sdk import ReplayError, _args_match, _llm_input_match, _patch_class_method, _reconstruct_openai_chat
 
 
 @pytest.fixture(scope="module")
@@ -213,3 +213,21 @@ def test_clean_report_when_everything_replayed() -> None:
     with tracely.fixtures({"version": 2, "tools": [_tool("a", None, 1)]}) as rep:
         tracely.call_tool("a", lambda: None)
     assert rep.clean is True and rep.unused == [] and rep.errors == []
+
+
+def test_llm_input_matches_on_the_same_user_turn():
+    recorded = '[{"role": "system", "content": "be brief"}, {"role": "user", "content": "weather in NYC?"}]'
+    assert _llm_input_match(recorded, "weather in NYC?")
+    assert _llm_input_match(recorded, {"role": "user", "content": [{"type": "text", "text": "weather in NYC?"}]})
+    assert _llm_input_match(recorded, '{"role": "user", "content": "weather in NYC?"}')
+    assert not _llm_input_match(recorded, "weather in SF?")
+    # the fallback needs an actual user turn on the recorded side; a system-only recording
+    # matches nothing (exact equality still applies on its own)
+    assert not _llm_input_match('[{"role": "system", "content": "be brief"}]', "hi")
+
+
+def test_call_llm_with_a_prompt_does_not_diverge_from_a_recorded_messages_list():
+    bundle = {"version": 2, "llm": [{"model": "gpt-4o", "input": '[{"role": "user", "content": "hi"}]', "output": "rec", "error": None}]}
+    with tracely.fixtures(bundle) as rep:
+        assert tracely.call_llm("gpt-4o", lambda: None, input="hi") == "rec"
+    assert rep.diverged == [] and rep.clean
