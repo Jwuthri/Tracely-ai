@@ -81,11 +81,17 @@ class FixtureBundle:
 
     @classmethod
     def decode(cls, raw: bytes) -> dict:
-        """Best-effort decode of a stored bundle. Returns the dict (not a FixtureBundle) for
-        callers that just feed it back to the agent runner — they want the raw shape."""
+        """Decode a stored bundle. Returns the dict (not a FixtureBundle) for callers that just
+        feed it back to the agent runner — they want the raw shape. An empty or unparsable blob
+        raises `ValueError`: a recording that cannot be read must surface as an execution
+        problem, never as "no calls recorded" (which strict replay would treat as an explicitly
+        empty recording) or as live execution."""
         if not raw:
-            return {}
+            raise ValueError("fixture bundle is empty")
         try:
-            return json.loads(raw)
-        except (ValueError, TypeError):
-            return {}
+            data = json.loads(raw)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"fixture bundle is not valid JSON: {e}") from e
+        if not isinstance(data, dict):
+            raise ValueError("fixture bundle is not a JSON object")
+        return data

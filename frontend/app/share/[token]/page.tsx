@@ -131,7 +131,7 @@ function VerdictBanner({ gate: g }: { gate: SharedGate }) {
   const tone =
     g.status === "PASS"
       ? { box: "border-ok/30 bg-ok/[0.04]", text: "text-ok" }
-      : g.status === "NO_COVERAGE"
+      : g.status === "NO_COVERAGE" || g.status === "INCOMPLETE"
         ? { box: "border-warn/30 bg-warn/[0.05]", text: "text-warn" }
         : g.status === "FAIL" || g.status === "ERROR"
           ? { box: "border-fail/30 bg-fail/[0.05]", text: "text-fail" }
@@ -151,6 +151,12 @@ function VerdictBanner({ gate: g }: { gate: SharedGate }) {
         {g.status}
       </div>
       <div className="mt-3 font-mono text-[12px] text-fg-muted">{line.join(" · ")}</div>
+      {g.status === "INCOMPLETE" && (
+        <p className="mt-3 max-w-xl text-[12.5px] leading-snug text-warn/90">
+          Some case(s) could not be fully checked — a required judge or the replay did not
+          complete. Nothing failed, but nothing was shown to pass either.
+        </p>
+      )}
       {g.status === "NO_COVERAGE" && (
         <p className="mt-3 max-w-xl text-[12.5px] leading-snug text-warn/90">
           This run graded 0 of {g.total} case(s) — nothing was actually exercised. A gate that tests

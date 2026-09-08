@@ -1,5 +1,5 @@
 import { DocLink } from "@/app/components/DocLink";
-import { getCases, getClusters, getEvaluators, getGates, getStats, getTraces, getTrends, type FailureCluster } from "@/app/lib/api";
+import { getCases, getClusters, getEvaluators, getGates, getMilestones, getStats, getTraces, getTrends, type EvalCase, type FailureCluster, type GateRun } from "@/app/lib/api";
 import { getMe } from "@/app/lib/auth";
 import { Activation } from "@/app/components/Activation";
 import { Badge, StatCard, statusVariant, verdictVariant } from "@/app/components/ui";
@@ -86,11 +86,61 @@ function TopClusters({ clusters }: { clusters: FailureCluster[] }) {
   );
 }
 
+function NextActions({ clusters, cases, gate }: { clusters: FailureCluster[]; cases: EvalCase[]; gate: GateRun | null }) {
+  const unprotected = clusters.filter((c) => c.status === "OPEN" && !c.candidate_case_id);
+  const incomplete = cases.filter((c) => c.status === "DRAFT" || !c.verified_candidate_trace_id || c.verified_case_version !== (c.version ?? 1));
+  const blocked = gate && gate.status !== "PASS" && gate.status !== "RUNNING";
+  if (unprotected.length === 0 && incomplete.length === 0 && !gate) return null;
+  return (
+    <section className="reveal grid grid-cols-1 gap-3 sm:grid-cols-3" style={{ animationDelay: "160ms" }} aria-label="Next actions">
+      <Tile
+        n={unprotected.length}
+        label="unprotected failures"
+        sub="open clusters with no regression case"
+        tone={unprotected.length ? "text-warn" : "text-fg"}
+        href={unprotected[0] ? `/clusters/${unprotected[0].id}` : "/clusters"}
+        cta={unprotected[0] ? "Promote the biggest →" : "Failure clusters →"}
+      />
+      <Tile
+        n={incomplete.length}
+        label="incomplete tests"
+        sub="draft, or no verified fix at the current version"
+        tone={incomplete.length ? "text-warn" : "text-fg"}
+        href={incomplete[0] ? `/cases/${incomplete[0].id}` : "/cases"}
+        cta={incomplete[0] ? "Open the first →" : "Regression cases →"}
+      />
+      <Tile
+        n={gate ? undefined : 0}
+        label={gate ? `last CI run: ${gate.status}` : "no CI run yet"}
+        sub={gate ? `${gate.agent ?? ""}${gate.run_id ? "" : " · not run-scoped"}` : "wire the gate into a workflow"}
+        tone={blocked ? "text-fail" : gate ? "text-ok" : "text-fg"}
+        href={gate ? `/gates/${gate.id}` : "https://docs.tracely-ai.com/cli"}
+        cta={gate ? "Inspect the run →" : "CI setup →"}
+      />
+    </section>
+  );
+}
+
+function Tile({ n, label, sub, tone, href, cta }: { n?: number; label: string; sub: string; tone: string; href: string; cta: string }) {
+  return (
+    <a href={href} className="card flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-hilite/[0.025]">
+      <span className="min-w-0">
+        <span className="flex items-baseline gap-2">
+          {n !== undefined && <span className={`font-display text-[22px] font-extrabold tabular-nums ${tone}`}>{n}</span>}
+          <span className={`text-[13px] font-semibold ${n === undefined ? tone : "text-fg"}`}>{label}</span>
+        </span>
+        <span className="block truncate font-mono text-[11px] text-fg-faint">{sub}</span>
+      </span>
+      <span className="shrink-0 text-[12px] text-signal">{cta}</span>
+    </a>
+  );
+}
+
 export default async function Dashboard() {
   // The dashboard only ever renders the top few of each list, so it asks for exactly that many
   // instead of pulling every case and cluster in the project to slice 6 off the front. The big
   // numbers above come from `getStats()`, which counts server-side.
-  const [stats, traces, casesPage, trends, clustersPage, evaluators, gatesPage, me] = await Promise.all([
+  const [stats, traces, casesPage, trends, clustersPage, evaluators, gatesPage, me, milestones] = await Promise.all([
     getStats(),
     getTraces(),
     getCases(6),
@@ -99,6 +149,7 @@ export default async function Dashboard() {
     getEvaluators(),
     getGates(1),
     getMe(),
+    getMilestones(),
   ]);
   const cases = casesPage.items;
   const clusters = clustersPage.items;
@@ -131,6 +182,7 @@ export default async function Dashboard() {
         gates={gatesPage.total}
         ingestKey={me?.ingest_keys?.[0] ?? "<your-ingest-key>"}
         endpoint={process.env.NEXT_PUBLIC_TRACELY_PUBLIC_API ?? "http://localhost:8000"}
+        milestones={milestones}
       />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -160,6 +212,9 @@ export default async function Dashboard() {
       </div>
 
       <OpsStrip />
+
+      {/* What needs a decision, with the action beside it — the charts below are evidence. */}
+      <NextActions clusters={clusters} cases={cases} gate={gatesPage.items[0] ?? null} />
 
       <TopClusters clusters={clusters} />
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import structlog
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from tracely.config import settings
 from tracely.domain.gate.warnings import delta_warnings
-from tracely.domain.regression.contract import apply_quality, evaluate_assertions
+from tracely.domain.regression.outcome import gate_status, worst_gate_status
 from tracely.domain.regression.fixtures import FixtureBundle
 from tracely.domain import introspection
 from tracely.domain.simulation import (
@@ -56,6 +57,8 @@ from tracely.infrastructure.db.models import (
     Scenario,
 )
 from tracely.infrastructure.llm.provider import llm_enabled, run_structured_agent, use_project_key
+from tracely.domain.regression.outcome import Execution
+from tracely.services.case_grading import grade_case, mark_verified, record_case_milestones
 from tracely.services.evaluation_service import EvaluationService
 from tracely.services.introspection_service import record
 from tracely.services.simulation_service import SimulationService
@@ -90,11 +93,20 @@ class _ExpectVerdict(BaseModel):
 
 
 # Blocking beats "tested nothing" beats green, so a gate is only as good as its worst half.
-_SEVERITY = {"PASS": 0, "NO_COVERAGE": 1, "FAIL": 2}
+_worst = worst_gate_status
 
 
-def _worst(*statuses: str) -> str:
-    return max(statuses, key=lambda s: _SEVERITY.get(s, 2))
+@dataclass
+class Pairing:
+    """How one case was bound to a candidate trace in a gate. `problem` set = the binding is not
+    trustworthy (INCOMPLETE with that reason); `pairing` names the strategy: `run` (scoped to
+    the CI execution — the only one that verifies a candidate), `explicit-unscoped` (caller-
+    supplied ids, no run id), `digest-fallback` (latest trace with the same input)."""
+
+    trace_id: str
+    spans: list
+    problem: str | None
+    pairing: str
 
 
 def _failing_score_names(scores: list[dict], advisory: Sequence[str]) -> list[str]:
@@ -154,17 +166,42 @@ class GateService:
         """The PROMOTED cases for an agent plus each one's recorded input and fixture bundle —
         the suite `tracely replay` re-runs the agent against (hermetically, when fixtures
         exist)."""
+        from tracely.services.regression_service import RegressionService
+
+        reg = RegressionService(self.session, trace_reader=self.trace_reader, eval_service=self.eval_service)
         cases = self._promoted_cases(project_id, agent_id)
-        return [
-            {
-                "id": c.id,
-                "title": c.title,
-                "input": self._recover_input(project_id, c.source_trace_id),
-                "input_digest": c.input_digest,
-                "fixtures": self._load_fixtures(c),
-            }
-            for c in cases
-        ]
+        out = []
+        for c in cases:
+            art, err = reg.load_artifact(c)
+            if art is not None:
+                text, bundle, digest = art.input_text, art.fixtures, c.artifact_digest
+            else:
+                # Legacy case with no artifact: the source spans + fixture bundle, while they
+                # still exist. Once the source is gone there is nothing to invent an input from.
+                text = self._recover_input(project_id, c.source_trace_id)
+                bundle, ferr = self._load_fixtures(c)
+                digest = ""
+                if text and bundle is not None:
+                    err = None
+                elif not text:
+                    err = f"input unrecoverable: {err}"
+                else:
+                    err = ferr
+            out.append(
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "input": text,
+                    "input_digest": c.input_digest,
+                    "case_version": c.version or 1,
+                    "artifact_digest": digest,
+                    # `fixtures` is None exactly when `fixture_error` says why — the CLI must
+                    # then report an execution problem, not run the case live or on `{}`.
+                    "fixtures": None if err else bundle,
+                    "fixture_error": err,
+                }
+            )
+        return out
 
     def run_gate(
         self,
@@ -180,10 +217,18 @@ class GateService:
         finalize: bool = True,
         case_ids: Sequence[str] | None = None,
         scenario_ids: Sequence[str] | None = None,
+        run_id: str = "",
+        failed: dict[str, str] | None = None,
+        execution_mode: str = "",
     ) -> GateRun:
-        """Replay an agent's PROMOTED cases -> PASS/FAIL. Two pairing modes:
-        - `candidates` given: explicit `{case_id: trace_id}` map (as `tracely replay` produces).
-        - otherwise: match each case to the latest ci-tagged trace whose `input_digest` equals.
+        """Replay an agent's PROMOTED cases -> PASS/FAIL. Pairing (see `_pair_candidates`):
+        - `run_id` given: only traces stamped with this run count. `candidates` (`{case_id:
+          trace_id}` from `tracely replay --entrypoint`) are validated against it; without a
+          candidate for a case the run's traces are matched by input digest (`--cmd`). `failed`
+          names cases whose command did not complete — they are INCOMPLETE, never rescued by an
+          older trace.
+        - no `run_id`: legacy — explicit `candidates` accepted unscoped, else the latest ci-tagged
+          trace by input digest. Recorded as unverified pairing (a warning on the run).
 
         With `with_scenarios`, the same run ALSO drives every enabled scenario against the agent's
         registered endpoint (emulated conversations). Driving is all it does — grading happens in
@@ -197,7 +242,10 @@ class GateService:
         existing caller means; `[]` = deliberately none of that half.
         """
         cases = self._promoted_cases(project_id, agent_id, case_ids)
-        case_to_trace = self._pair_candidates(project_id, agent_id, env, cases, candidates)
+        pairings = self._pair_candidates(
+            project_id, agent_id, env, cases, candidates, run_id=run_id, failed=failed or {}
+        )
+        case_to_trace = {cid: (p.trace_id, p.spans) for cid, p in pairings.items() if p.spans}
 
         total_lat, total_tok, per_trace = self.trace_reader.candidate_metrics(
             project_id, [tid for tid, _ in case_to_trace.values()]
@@ -210,6 +258,7 @@ class GateService:
             gate = GateRun(
                 id=gate_run_id or str(uuid.uuid4()), project_id=project_id, agent_id=agent_id,
                 env=env, git_ref=git_ref, pr_number=pr_number, status="RUNNING",
+                run_id=run_id or "", execution_mode=execution_mode or "",
             )
             self.session.add(gate)
         else:
@@ -225,8 +274,10 @@ class GateService:
         gate.total = len(cases)
         self.session.commit()
 
-        passed, failed, skipped = self._record_gate_cases(gate, cases, case_to_trace, per_trace)
-        case_status = self._final_status(passed, failed, skipped, len(cases), [])
+        passed, n_failed, skipped, incomplete = self._record_gate_cases(
+            gate, cases, pairings, per_trace, execution_mode=execution_mode
+        )
+        case_status = self._final_status(passed, n_failed, skipped, incomplete, len(cases), [])
 
         driven = self._drive_scenarios(gate, env, scenario_ids) if with_scenarios else 0
         # -1 = enabled scenarios with no endpoint configured. Record it on the run so BOTH the
@@ -239,6 +290,12 @@ class GateService:
         warnings = list(gate.warnings or [])
         if misconfigured:
             warnings.append("scenarios are enabled but this agent has no endpoint configured")
+        if cases and not run_id:
+            warnings.append(
+                "candidates paired without a run id — an older trace with the same input could "
+                "satisfy this gate; set TRACELY_RUN_ID around the agent run (or use tracely replay) "
+                "so results verify THIS execution"
+            )
 
         baseline = self._baseline_gate(project_id, agent_id, gate.id)
         warnings += delta_warnings(total_lat, total_tok, baseline)
@@ -247,7 +304,8 @@ class GateService:
             case_status = _worst(case_status, "NO_COVERAGE")
 
         gate.total = len(cases) + driven
-        gate.passed, gate.failed, gate.skipped = passed, failed, skipped
+        gate.passed, gate.failed, gate.skipped = passed, n_failed, skipped
+        gate.incomplete = incomplete
         gate.latency_ms, gate.total_tokens, gate.warnings = total_lat, total_tok, warnings
         if warnings and settings.gate_block_on_warnings:
             case_status = "FAIL"
@@ -257,6 +315,7 @@ class GateService:
         self.session.commit()
         if finalize:
             self._notify_gate(gate)
+            self._milestone_ci(gate, [p.spans for p in pairings.values() if p.spans])
         return gate
 
     def grade_scenarios(
@@ -344,7 +403,7 @@ class GateService:
         # counts in — otherwise the regression verdict is computed from the combined totals and a
         # failing conversation would read as a failing case.
         case_status = self._final_status(
-            gate.passed, gate.failed, gate.skipped,
+            gate.passed, gate.failed, gate.skipped, gate.incomplete or 0,
             gate.total - len(outcomes) - len(orphaned), gate.warnings or [],
         )
         gate.passed += sum(o.verdict == "PASS" for o in outcomes)
@@ -358,13 +417,28 @@ class GateService:
         self._notify_gate(gate)
         return gate
 
+    def _milestone_ci(self, gate: GateRun, candidate_spans: list[list]) -> None:
+        """`ci_check_completed` — a REAL CI run graded the suite against a specific revision: it
+        must be run-scoped, have cases in it, and end PASS or FAIL. An empty gate, NO_COVERAGE
+        or INCOMPLETE completes nothing."""
+        if not gate.run_id or gate.total <= 0 or gate.status not in ("PASS", "FAIL"):
+            return
+        from tracely.services import milestones
+
+        spans = candidate_spans[0] if candidate_spans else []
+        milestones.record_own(
+            gate.project_id, "ci_check_completed",
+            sample=milestones.is_sample(spans), integration=milestones.integration_of(spans),
+            meta={"gate_id": gate.id, "status": gate.status},
+        )
+
     def _notify_gate(self, gate: GateRun) -> None:
         """Fire the "the gate failed" event monitors (`/settings/alerts`) once the run is final.
 
         `NO_COVERAGE` pages too: a suite that could not run is the quietly-green failure this
         product exists to prevent, and it is exactly the case nobody notices in CI output.
         Best-effort — alerting must never fail the gate it is reporting on."""
-        if gate.status not in ("FAIL", "NO_COVERAGE"):
+        if gate.status not in ("FAIL", "NO_COVERAGE", "INCOMPLETE"):
             return
         try:
             from tracely.services.alert_events import gate_event
@@ -862,16 +936,61 @@ class GateService:
         env: str,
         cases: list[EvaluationCase],
         candidates: dict[str, str] | None,
-    ) -> dict[str, tuple[str, list]]:
-        case_to_trace: dict[str, tuple[str, list]] = {}
+        *,
+        run_id: str = "",
+        failed: dict[str, str] | None = None,
+    ) -> dict[str, "Pairing"]:
+        """Bind each case to the trace that stands for it in this gate — and say how.
+
+        With a `run_id`, a candidate counts only if it exists in this project, was stamped with
+        THIS run, and carries the case's input; anything else is an execution problem on the
+        case (`Pairing.problem`), so a failed command, a missing or late trace, a retry's stale
+        trace or a wrong-project id all land as INCOMPLETE with the reason — never as a pass and
+        never silently as SKIP. Without a run id the legacy behaviour stands, labelled
+        `digest-fallback` / `explicit-unscoped` so nobody mistakes it for verification."""
+        failed = failed or {}
+        out: dict[str, Pairing] = {}
+        candidates = candidates or {}
+        if run_id:
+            run_traces = [
+                (tid, spans)
+                for tid in self.trace_reader.traces_for_run(project_id, agent_id, run_id)
+                if (spans := self.trace_reader.read_spans(project_id, tid))
+            ]
+            by_digest: dict[str, tuple[str, list]] = {}
+            for tid, spans in run_traces:  # newest first; keep the newest per digest
+                by_digest.setdefault(input_digest(spans), (tid, spans))
+            for case in cases:
+                if case.id in failed:
+                    out[case.id] = Pairing("", [], f"command failed: {failed[case.id]}", "run")
+                    continue
+                tid = candidates.get(case.id)
+                if tid:
+                    spans = self.trace_reader.read_spans(project_id, tid)
+                    out[case.id] = Pairing(tid, spans, self._candidate_problem(case, spans, run_id), "run")
+                    continue
+                m = by_digest.get(case.input_digest)
+                if m:
+                    out[case.id] = Pairing(m[0], m[1], None, "run")
+                elif candidates:
+                    continue  # explicit pairings given; this case simply wasn't run → SKIP
+                else:
+                    out[case.id] = Pairing(
+                        "", [],
+                        "no trace from this run matched the case input (not ingested in time, "
+                        "or the command emitted no trace)",
+                        "run",
+                    )
+            return out
+
         if candidates:
             for case in cases:
                 tid = candidates.get(case.id)
                 if tid:
                     spans = self.trace_reader.read_spans(project_id, tid)
                     if spans:
-                        case_to_trace[case.id] = (tid, spans)
-            return case_to_trace
+                        out[case.id] = Pairing(tid, spans, None, "explicit-unscoped")
+            return out
 
         trace_ids = self.trace_reader.latest_traces_for_env(project_id, agent_id, env, limit=300)
         digest_to_trace: dict[str, tuple[str, list]] = {}
@@ -884,55 +1003,89 @@ class GateService:
         for case in cases:
             m = digest_to_trace.get(case.input_digest)
             if m:
-                case_to_trace[case.id] = m
-        return case_to_trace
+                out[case.id] = Pairing(m[0], m[1], None, "digest-fallback")
+        return out
+
+    @staticmethod
+    def _candidate_problem(case: EvaluationCase, spans: list[dict], run_id: str) -> str | None:
+        if not spans:
+            return "candidate trace not found (not ingested yet, or not in this project)"
+        root = next((s for s in spans if s.get("parent_span_id", "") == "" or s.get("is_app_root")), spans[0])
+        stamped = str((root.get("metadata") or {}).get("tracely.replay.run_id") or "")
+        if stamped != run_id:
+            return "candidate trace was not produced by this run" + (f" (stamped {stamped})" if stamped else " (no run id on the trace)")
+        if input_digest(spans) != case.input_digest:
+            return "candidate input differs from the case input"
+        return None
 
     def _record_gate_cases(
         self,
         gate: GateRun,
         cases: list[EvaluationCase],
-        case_to_trace: dict[str, tuple[str, list]],
+        pairings: dict[str, "Pairing"],
         per_trace: dict[str, tuple[float, int]],
-    ) -> tuple[int, int, int]:
-        passed = failed = skipped = 0
+        *,
+        execution_mode: str = "",
+    ) -> tuple[int, int, int, int]:
+        """`(passed, failed, skipped, incomplete)`. Every exercised case goes through `grade_case`
+        — the same contract manual replay applies — so INCOMPLETE (a required judge that could
+        not run, an execution that did not complete, a candidate that is not this run's) is a
+        distinct count, never a pass. A PASS under run-scoped pairing records candidate
+        verification on the case."""
+        passed = failed = skipped = incomplete = 0
         for case in cases:
-            match = case_to_trace.get(case.id)
-            if not match:
-                verdict, detail, cand = "SKIP", {"reason": "not exercised in this run"}, ""
+            pairing = pairings.get(case.id)
+            provenance = {
+                "run_id": gate.run_id or "",
+                "pairing": pairing.pairing if pairing else "none",
+                "case_version": case.version or 1,
+                "artifact_digest": case.artifact_digest or "",
+            }
+            if pairing is None:
+                verdict, detail, cand = "SKIP", {"reason": "not exercised in this run", "provenance": provenance}, ""
                 skipped += 1
+            elif pairing.problem:
+                cand = pairing.trace_id
+                ex = Execution(mode=execution_mode or "unknown", problem=pairing.problem)
+                verdict = "INCOMPLETE"
+                detail = {
+                    "checks": [], "execution": ex.to_dict(), "provenance": provenance,
+                    "reason": pairing.problem, "case_version": case.version or 1,
+                    "artifact_digest": case.artifact_digest or "",
+                }
+                incomplete += 1
             else:
-                cand, spans = match
-                verdict, detail = evaluate_assertions(
-                    case.assertions or {}, case.match_mode, build_trajectory(spans)
-                )
-                # Judge-in-the-gate: cases promoted from an answer-quality failure re-grade the
-                # replayed answer; a sub-threshold score FAILs the case (unless made advisory).
-                if (case.assertions or {}).get("quality"):
-                    quality = self._grade_quality(case, spans)
-                    verdict, detail = apply_quality(
-                        verdict, detail, quality, blocks=settings.gate_quality_blocks
-                    )
+                cand, spans = pairing.trace_id, pairing.spans
+                outcome = grade_case(self.eval_service, case, spans)
+                verdict = outcome.verdict
                 lat, tok = per_trace.get(cand, (0.0, 0))
-                detail = {**detail, "latency_ms": lat, "tokens": tok}
+                detail = {
+                    **outcome.detail,
+                    "latency_ms": lat,
+                    "tokens": tok,
+                    # Provenance: which case version / artifact this verdict was graded against,
+                    # so a pinned historical run stays explainable after the case changes.
+                    "case_version": case.version or 1,
+                    "artifact_digest": case.artifact_digest or "",
+                    "expectations": {"assertions": case.assertions or {}, "match_mode": case.match_mode},
+                    "provenance": provenance,
+                }
+                verified = False
                 if verdict == "PASS":
                     passed += 1
+                    if pairing.pairing == "run":  # only THIS run's candidate is verification
+                        verified = mark_verified(case, outcome, cand, f"gate:{gate.id}")
+                elif verdict == "INCOMPLETE":
+                    incomplete += 1
                 else:
                     failed += 1
             self.session.add(GateCase(
                 id=str(uuid.uuid4()), gate_run_id=gate.id, evaluation_case_id=case.id,
                 candidate_trace_id=cand, verdict=verdict, detail=detail,
             ))
-        return passed, failed, skipped
-
-    def _grade_quality(self, case: EvaluationCase, spans: list[dict]) -> list[dict]:
-        """Re-grade a replayed trace's answer with the judge(s) the case was promoted from.
-        Returns `[{score_name, verdict, value, comment}, ...]` for `apply_quality`."""
-        names = ((case.assertions or {}).get("quality") or {}).get("score_names") or None
-        results = self.eval_service.grade_trace_quality(case.project_id, spans, only_names=names)
-        return [
-            {"score_name": r.name, "verdict": r.verdict, "value": r.value, "comment": r.comment}
-            for r in results
-        ]
+            if pairing is not None and not pairing.problem:
+                record_case_milestones(self.session, case, outcome, cand, pairing.spans, verified=verified)
+        return passed, failed, skipped, incomplete
 
     def _baseline_gate(
         self, project_id: str, agent_id: str, exclude_id: str
@@ -954,28 +1107,19 @@ class GateService:
 
     @staticmethod
     def _final_status(
-        passed: int, failed: int, skipped: int, total: int, warnings: list[str]
+        passed: int, failed: int, skipped: int, incomplete: int, total: int, warnings: list[str]
     ) -> str:
-        """Aggregate case verdicts into the gate status.
-
-        Coverage is a first-class part of the verdict. A gate that exercised NONE of its
-        promoted cases — every case SKIPped because CI emitted no matching trace — must NOT
-        report green: that false-PASS is exactly how a misconfigured CI pipeline (no traces
-        emitted, renamed agent, input-digest drift, crashed replay) silently ships a known
-        regression. Such a run is `NO_COVERAGE`, a blocking non-PASS status. (Previously this
-        method only looked at `failed`, so all-SKIP returned PASS — the gate's worst bug.)
-        """
-        if failed > 0:
-            return "FAIL"  # fail-to-pass is the hard gate
-        if total == 0:
-            return "PASS"  # no regression suite for this agent yet — nothing to protect
-        if passed == 0:
-            return "NO_COVERAGE"  # cases exist but the run exercised none of them
-        if skipped > 0 and settings.gate_require_full_coverage:
-            return "NO_COVERAGE"  # partial coverage, and full coverage is required
-        if warnings and settings.gate_block_on_warnings:
+        """Aggregate case verdicts into the gate status — the policy table lives in
+        `domain.regression.outcome.gate_status`. Coverage is a first-class part of the verdict:
+        a gate that exercised NONE of its promoted cases is `NO_COVERAGE`, a case that could
+        not be fully checked makes the run `INCOMPLETE`; neither is green."""
+        status = gate_status(
+            passed, failed, skipped, incomplete, total,
+            require_full_coverage=settings.gate_require_full_coverage,
+        )
+        if status == "PASS" and warnings and settings.gate_block_on_warnings:
             return "FAIL"  # opt-in: treat soft regressions as blocking
-        return "PASS"
+        return status
 
     def _recover_input(self, project_id: str, source_trace_id: str) -> str:
         """The user-facing input recorded on a case's source trace — what to feed the agent on
@@ -987,14 +1131,16 @@ class GateService:
                 return str(s["input"])
         return ""
 
-    def _load_fixtures(self, case: EvaluationCase) -> dict:
-        """Recorded tool/LLM outputs captured for this case at promote time (hermetic replay)."""
+    def _load_fixtures(self, case: EvaluationCase) -> tuple[dict | None, str | None]:
+        """Recorded tool/LLM outputs captured for this case at promote time (hermetic replay).
+        `(bundle, None)` on success; `(None, reason)` when the case has no recording or it can't
+        be read — propagated, never swapped for an empty bundle that would replay as "nothing was
+        recorded" or fall back to live calls."""
         key = case.fixture_bundle_s3_key
         if not key:
-            return {}
+            return None, "no fixture bundle recorded for this case (re-promote it to record one)"
         try:
-            raw = blobstore.get_blob(key)
-            return FixtureBundle.decode(raw)
-        except Exception as exc:  # missing/unreadable bundle -> replay falls back to live calls
+            return FixtureBundle.decode(blobstore.get_blob(key)), None
+        except Exception as exc:  # missing/unreadable bundle -> an explicit execution problem
             log.warning("fixture_load_failed", case_id=case.id, error=str(exc))
-            return {}
+            return None, f"fixture bundle {key} could not be loaded: {exc}"

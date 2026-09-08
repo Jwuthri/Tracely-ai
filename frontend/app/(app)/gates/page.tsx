@@ -20,7 +20,7 @@ const PICKER_CASES = 200;
 function gateVariant(s: string): "ok" | "fail" | "warn" | "info" | "neutral" {
   if (s === "PASS") return "ok";
   if (s === "FAIL") return "fail";
-  if (s === "NO_COVERAGE") return "warn"; // exercised nothing — a blocking non-pass, not green
+  if (s === "NO_COVERAGE" || s === "INCOMPLETE") return "warn"; // blocking non-pass, not green
   if (s === "RUNNING") return "info";
   return "neutral";
 }

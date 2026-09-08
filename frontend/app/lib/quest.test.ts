@@ -36,11 +36,11 @@ describe("visitMarker", () => {
 describe("deriveSteps", () => {
   it("a fresh workspace has everything to do", () => {
     const steps = deriveSteps(status(), EMPTY_LOCAL);
-    expect(steps).toHaveLength(12);
+    expect(steps).toHaveLength(10);
     expect(steps.filter(stepComplete)).toHaveLength(0);
   });
 
-  it("data-derived steps read real counts, visit steps read markers, theme reads the toggle flag", () => {
+  it("data-derived steps read real counts (legacy workspace), visit steps read markers", () => {
     const steps = deriveSteps(
       status({ traces: 12, evaluators: 2, clusters: 1, llm_key: true }),
       { visited: ["trace", "trends", "replay"], theme_touched: true },
@@ -54,18 +54,24 @@ describe("deriveSteps", () => {
       eval: true,
       trends: true,
       replay: true,
-      fleet: false,
-      theme: true,
       fail: true, // a cluster counts as a caught failure, same as Activation
       case: false,
       gate: false,
     });
   });
 
-  it("replay/fleet deep-link into the latest conversation when one exists", () => {
+  it("outcome steps read durable milestones once any exist — and sample rows never tick", () => {
+    const m = (name: string, sample: boolean) => ({ name, first_at: "2026-09-07T10:00:00Z", sample });
+    const steps = deriveSteps(status({ traces: 500, cases: 4, gates: 2, milestones: [m("first_trace_received", false), m("source_failure_confirmed", true), m("ci_check_completed", true)] }), EMPTY_LOCAL);
+    const byId = Object.fromEntries(steps.map((s) => [s.id, s.done]));
+    expect(byId.trace).toBe(true);
+    expect(byId.case).toBe(false); // 4 cases, all sample
+    expect(byId.gate).toBe(false);
+  });
+
+  it("replay deep-links into the latest conversation when one exists", () => {
     const withThread = deriveSteps(status({ thread_id: "th-9" }), EMPTY_LOCAL);
     expect(withThread.find((s) => s.id === "replay")?.href).toBe("/sessions/th-9/replay");
-    expect(withThread.find((s) => s.id === "fleet")?.href).toBe("/sessions/th-9/fleet");
     const without = deriveSteps(status(), EMPTY_LOCAL);
     expect(without.find((s) => s.id === "replay")?.href).toBe("/traces");
   });
@@ -149,10 +155,10 @@ describe("settleDaily", () => {
 
 describe("questRank", () => {
   it("climbs from Rookie to Trace Master", () => {
-    expect(questRank(0, 12)).toBe("Rookie");
-    expect(questRank(1, 12)).toBe("Observer");
-    expect(questRank(5, 12)).toBe("Trace Detective");
-    expect(questRank(9, 12)).toBe("Gate Keeper");
-    expect(questRank(12, 12)).toBe("Trace Master");
+    expect(questRank(0, 10)).toBe("Rookie");
+    expect(questRank(1, 10)).toBe("Observer");
+    expect(questRank(5, 10)).toBe("Trace Detective");
+    expect(questRank(8, 10)).toBe("Gate Keeper");
+    expect(questRank(10, 10)).toBe("Trace Master");
   });
 });

@@ -27,6 +27,11 @@ export async function GET(req: NextRequest) {
   // The Agent select: a registry agent id, forwarded as-is.
   const agent = sp.get("agent");
   if (agent) qs.set("agent", agent);
+  // Status / multi-turn / text filters run server-side over the whole thread set (W7).
+  for (const k of ["failing", "multi", "q"] as const) {
+    const v = sp.get(k);
+    if (v) qs.set(k, v);
+  }
   const r = await fetch(`${API}/api/sessions?${qs.toString()}`, {
     headers: await authHeaders(),
     cache: "no-store",

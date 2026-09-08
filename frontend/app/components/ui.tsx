@@ -25,14 +25,18 @@ export function Badge({
   children,
   dot = false,
   className,
+  title,
 }: {
   variant?: Variant;
   children: ReactNode;
   dot?: boolean;
   className?: string;
+  /** Native tooltip — the one-line "what this badge actually establishes". */
+  title?: string;
 }) {
   return (
     <span
+      title={title}
       className={clsx(
         "inline-flex items-center gap-1.5 rounded-md border px-2 py-[3px] font-mono text-[10.5px] font-semibold uppercase tracking-wide",
         BADGE[variant],
@@ -50,7 +54,8 @@ export function verdictVariant(v?: string | null): Variant {
   if (v === "FAIL" || v === "ERROR") return "fail";
   // UNGRADED and NO_COVERAGE block the merge — rendering them the same grey as SKIP/PENDING
   // made a blocking gate look idle.
-  if (v === "UNGRADED" || v === "NO_COVERAGE") return "warn";
+  // INCOMPLETE: a required check could not run — blocking, and not a failure either.
+  if (v === "UNGRADED" || v === "NO_COVERAGE" || v === "INCOMPLETE") return "warn";
   return "neutral";
 }
 

@@ -36,6 +36,7 @@ import os
 import re
 import threading
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from contextvars import ContextVar, copy_context
 from typing import Any, Callable, Iterator
@@ -78,6 +79,8 @@ __all__ = [
     "call_llm",
     "call_tool",
     "ToolError",
+    "ReplayError",
+    "ReplayReport",
     "export_conversations",
     "download_export",
 ]
@@ -88,6 +91,67 @@ log = logging.getLogger("tracely")
 class ToolError(RuntimeError):
     """Raised by call_tool/call_llm in hermetic replay when the recorded call errored — so the
     agent's own error handling (try/except) runs exactly as it would against the live tool."""
+
+
+class ReplayError(RuntimeError):
+    """Strict recorded replay could not serve a call from the fixture bundle — raised INSTEAD of
+    running the real function, so a recorded execution never quietly goes live.
+
+    `reason`: "missing" (nothing recorded under this name) · "exhausted" (every recorded call for
+    this name already served) · "mismatch" (a tool was called with args the recording doesn't
+    have) · "load" (the bundle itself could not be loaded — raised by the CLI, not here).
+    `detail` carries what was recorded vs what was asked, for the report."""
+
+    def __init__(
+        self, reason: str, kind: str, key: str, message: str, *, detail: dict | None = None
+    ) -> None:
+        super().__init__(message)
+        self.reason, self.kind, self.key = reason, kind, key
+        self.detail = detail or {}
+
+
+@dataclass
+class ReplayEvent:
+    reason: str  # missing | exhausted | mismatch
+    kind: str  # tools | llm
+    key: str
+    message: str = ""
+
+
+@dataclass
+class ReplayReport:
+    """What a `fixtures()` block actually did — the evidence beside a replay's verdict.
+
+    `mode`: "live" (no bundle) · "recorded" (strict) · "lenient" (legacy fall-through).
+    `served` every call answered from the recording; `unused` recorded calls the run never asked
+    for (divergence: a different path, or a provider that went live); `diverged` calls served in
+    order despite an input mismatch; `live` calls that ran for real (lenient only); `errors` the
+    strict misses that were raised; `providers` which SDK create-methods were patched."""
+
+    mode: str = "live"
+    served: list[str] = field(default_factory=list)
+    unused: list[str] = field(default_factory=list)
+    diverged: list[ReplayEvent] = field(default_factory=list)
+    live: list[str] = field(default_factory=list)
+    errors: list[ReplayEvent] = field(default_factory=list)
+    providers: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def clean(self) -> bool:
+        """True iff this was a strict recorded run that reproduced the recording exactly."""
+        return self.mode == "recorded" and not (self.unused or self.diverged or self.errors)
+
+    def to_dict(self) -> dict:
+        return {
+            "mode": self.mode,
+            "clean": self.clean,
+            "served": list(self.served),
+            "unused": list(self.unused),
+            "diverged": [e.__dict__ for e in self.diverged],
+            "live": list(self.live),
+            "errors": [e.__dict__ for e in self.errors],
+            "providers": dict(self.providers),
+        }
 
 
 _tracer: otel_trace.Tracer | None = None
@@ -134,6 +198,15 @@ class TracelyContextSpanProcessor(SpanProcessor):
         tenant = ctx.get("tenant") or _tenant
         if tenant:
             span.set_attribute("tracely.tenant.id", str(tenant))
+        # The CI run this process belongs to (`tracely replay`/`gate` set it; a workflow can set
+        # it around its own agent run). The gate pairs candidates by it, so an older trace with
+        # the same input can never stand in for this run's.
+        run_id = os.environ.get("TRACELY_RUN_ID", "")
+        if run_id:
+            span.set_attribute("tracely.replay.run_id", run_id)
+        # Sample/demo data (the seeder sets this) — kept apart from real activation server-side.
+        if os.environ.get("TRACELY_SAMPLE"):
+            span.set_attribute("tracely.sample", True)
         if not ctx:
             return
         if ctx.get("conversation"):
@@ -798,16 +871,14 @@ def _replay_observed_tool(span: Span, name: str, args: Any) -> tuple[bool, Any]:
     so the caller runs the real function (this is a strict no-op in production, where `_fixtures` is
     unset). This is what lets an auto-instrumented agent whose tools are merely `@observe`-decorated
     replay deterministically in CI, with no `call_tool` rewrite."""
-    entry = _pop_fixture("tools", name, args)
+    try:
+        entry = _pop_fixture("tools", name, args)
+    except ReplayError as e:
+        error(span, str(e))
+        raise
     if entry is None:
         return False, None
-    span.set_attribute("tracely.replay.fixture", True)
-    if entry.get("output") is not None:
-        set_io(span, output=entry.get("output"))
-    if entry.get("error"):
-        error(span, str(entry["error"]))
-        raise ToolError(str(entry["error"]))
-    return True, entry.get("output")
+    return True, _serve_entry(span, entry)
 
 
 def observe(
@@ -1239,6 +1310,12 @@ def flush() -> None:
 # In CI replay we want the agent to see the exact tool/LLM outputs the production trace saw —
 # deterministic, offline, no live API keys or cost. `tracely replay` loads each case's recorded
 # fixture bundle and activates it here; the agent's call_tool / call_llm then serve from it.
+#
+# Execution policy (W1): `fixtures(None)` = no replay requested, everything live.
+# `fixtures(bundle)` = RECORDED, strict by default — a call the recording cannot answer raises
+# `ReplayError` instead of running for real, and `{}` is an explicitly EMPTY recording, not live.
+# `fixtures(bundle, strict=False)` keeps the legacy lenient behaviour (live fall-through, ordered
+# serve on mismatch) for callers migrating; its report says "lenient", never "recorded".
 
 
 def _normalize_bundle(bundle: dict | None) -> dict:
@@ -1272,28 +1349,44 @@ def _normalize_bundle(bundle: dict | None) -> dict:
 
 
 @contextmanager
-def fixtures(bundle: dict | None) -> Iterator[None]:
+def fixtures(bundle: dict | None, *, strict: bool = True) -> Iterator[ReplayReport]:
     """Serve recorded outputs for the duration of this block. Covers all three execution paths:
     the manual seams (call_tool/call_llm), `@observe(as_type="tool")`, and — via provider-client
     patching installed here — the auto-instrument / drop-in path (code that calls the provider SDK
-    directly). Entries are consumed in order (so N calls replay the N recorded outputs); pass None
-    to leave calls live."""
-    normalized = _normalize_bundle(bundle) if bundle else None
-    if normalized:
-        _install_replay_patches()  # idempotent; only patches importable providers
-    token = _fixtures.set(normalized)
+    directly). Entries are consumed in order (so N calls replay the N recorded outputs).
+
+    `bundle=None` → no replay: every call is live. Any other bundle (even `{}`) → recorded mode:
+    with `strict=True` (default) a call the recording cannot answer raises `ReplayError`; with
+    `strict=False` it falls through to the real call (legacy) and is listed in the report's `live`.
+    Yields a `ReplayReport`; read it after the block for served/unused/diverged/errors."""
+    if bundle is None:
+        report = ReplayReport(mode="live")
+        token = _fixtures.set(None)
+    else:
+        store = _normalize_bundle(bundle)
+        report = ReplayReport(
+            mode="recorded" if strict else "lenient", providers=_install_replay_patches()
+        )
+        store["report"] = report
+        store["counts"] = {
+            k: {key: len(q) for key, q in store[k].items()} for k in ("tools", "llm")
+        }
+        token = _fixtures.set(store)
     try:
-        yield
+        yield report
     finally:
-        _warn_unconsumed(_fixtures.get())
+        left = _fixtures.get()
+        if left:
+            report.unused = _unconsumed(left)
+            _warn_unconsumed(left)
         _fixtures.reset(token)
 
 
 def _unconsumed(store: dict | None) -> list[str]:
     """`kind:key ×n` for every recorded call the replayed run never asked for."""
     left = []
-    for kind, by_key in (store or {}).items():
-        for key, queue in (by_key or {}).items():
+    for kind in ("tools", "llm"):
+        for key, queue in ((store or {}).get(kind) or {}).items():
             if queue:
                 left.append(f"{kind}:{key} ×{len(queue)}")
     return sorted(left)
@@ -1314,20 +1407,101 @@ def _warn_unconsumed(store: dict | None) -> None:
         )
 
 
+def _canon(v: Any) -> Any:
+    """Canonical form for arg comparison: a JSON string is parsed (ClickHouse hands recorded
+    inputs back as strings), then everything is JSON-round-tripped so key order, tuple/list and
+    non-JSON scalars (stringified) don't count as a difference."""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except (ValueError, TypeError):
+            return v
+    return json.loads(json.dumps(v, sort_keys=True, default=str))
+
+
+def _args_match(recorded: Any, live: Any) -> bool:
+    """THE matching strategy, in one place. An entry recorded without args matches any call (the
+    ordered strategy); otherwise both sides are canonicalised (`_canon`) and compared for equality.
+    No fuzzy matching: a different call is a different call."""
+    if recorded is None:
+        return True
+    return _canon(recorded) == _canon(live)
+
+
 def _pop_fixture(kind: str, key: str, args: Any = None) -> dict | None:
-    """Consume the next recorded entry for a tool/model: an args-match if `args` is given and one
-    exists, else the next in recorded order. Returns None if not replaying / nothing recorded."""
+    """Consume the next recorded entry for a tool/model. Returns None only when not replaying, or
+    in lenient mode on a miss (the caller then runs the real function).
+
+    Lookup: the queue under `key`; for LLM calls whose model id was never recorded under that name
+    (auto-instrumentor span names ≠ model ids) the next recorded LLM call of ANY name — explicit,
+    reported via `served`. Then, if `args` were given, the first entry that `_args_match`es;
+    a tool whose recorded args don't match is a strict `ReplayError("mismatch")` — a different
+    call is never consumed just because the name matches. An LLM input mismatch is served in
+    order but reported as `diverged` (and stamped on the span): recorded-model replay tests the
+    orchestration under the recorded conditions, and a changed prompt is exactly the divergence
+    the report must show. Missing/exhausted names raise in strict mode."""
     store = _fixtures.get()
     if not store:
         return None
-    queue = store.get(kind, {}).get(key)
+    rep: ReplayReport = store["report"]
+    strict = rep.mode == "recorded"
+    by_key = store[kind]
+    served_key, queue = key, by_key.get(key)
+    if queue is None and kind == "llm":
+        served_key, queue = next(((k, q) for k, q in by_key.items() if q), (key, None))
     if not queue:
+        n = store["counts"][kind].get(served_key, 0)
+        reason = "exhausted" if n else "missing"
+        msg = (
+            f"replay: no recorded call for {kind}:{key}"
+            + (f" ({n} recorded, all served)" if n else "")
+            + " — the run asked for a call the recording does not have; re-record the case or "
+            "run --live"
+        )
+        if strict:
+            rep.errors.append(ReplayEvent(reason, kind, key, msg))
+            raise ReplayError(reason, kind, key, msg, detail={"recorded": n})
+        rep.live.append(f"{kind}:{key}")
         return None
+    entry: dict | None = None
     if args is not None:
         for i, e in enumerate(queue):
-            if e.get("args") == args:
-                return queue.pop(i)
-    return queue.pop(0)
+            if _args_match(e.get("args"), args):
+                entry = queue.pop(i)
+                break
+        else:
+            recorded = [e.get("args") for e in queue]
+            msg = (
+                f"replay: {kind}:{key} called with args the recording does not have "
+                f"(asked: {json.dumps(args, default=str)[:200]}; "
+                f"recorded: {json.dumps(recorded, default=str)[:400]})"
+            )
+            ev = ReplayEvent("mismatch", kind, key, msg)
+            if strict and kind == "tools":
+                rep.errors.append(ev)
+                raise ReplayError(
+                    "mismatch", kind, key, msg, detail={"args": args, "recorded": recorded}
+                )
+            rep.diverged.append(ev)
+            entry = dict(queue.pop(0), diverged=True)
+    if entry is None:
+        entry = queue.pop(0)
+    rep.served.append(f"{kind}:{served_key}")
+    return entry
+
+
+def _serve_entry(span: Span, entry: dict) -> Any:
+    """Stamp a served fixture onto its span and return the recorded output — or reproduce the
+    recorded error (span ERROR + `ToolError`) so the agent's own error handling runs."""
+    span.set_attribute("tracely.replay.fixture", True)
+    if entry.get("diverged"):
+        span.set_attribute("tracely.replay.divergence", "input")
+    if entry.get("output") is not None:
+        set_io(span, output=entry.get("output"))
+    if entry.get("error"):
+        error(span, str(entry["error"]))
+        raise ToolError(str(entry["error"]))
+    return entry.get("output")
 
 
 def fixture(kind: str, name: str) -> Any:
@@ -1346,22 +1520,21 @@ def call_tool(
     never call `fn`. Pass `args` to match a specific recorded call; without it, recorded calls are
     served in order. If the recorded call ERRORED in production, the replayed span is marked ERROR
     and a `ToolError` is raised — so the agent's own error handling runs and the gate sees the same
-    failure (faithful error-condition replay). Errors propagate the same way under `--live`."""
+    failure (faithful error-condition replay). A call the recording cannot answer raises
+    `ReplayError` (strict) rather than running `fn`. Errors propagate the same way under `--live`."""
     with tool(name, agent=agent) as span:
         if args is not None:
             set_io(span, input=args)
-        entry = _pop_fixture("tools", name, args)
+        try:
+            entry = _pop_fixture("tools", name, args)
+        except ReplayError as e:
+            error(span, str(e))
+            raise
         if entry is None:
             out = fn()
             set_io(span, output=out)
             return out
-        span.set_attribute("tracely.replay.fixture", True)
-        if entry.get("output") is not None:
-            set_io(span, output=entry.get("output"))
-        if entry.get("error"):
-            error(span, str(entry["error"]))
-            raise ToolError(str(entry["error"]))
-        return entry.get("output")
+        return _serve_entry(span, entry)
 
 
 def call_llm(
@@ -1374,25 +1547,25 @@ def call_llm(
 ) -> Any:
     """Execute an LLM call inside a GENERATION span — but in hermetic replay serve the recorded
     completion (in recorded order) and never call `fn`. A recorded error is reproduced on the span
-    and raised as a `ToolError`. Pass `usage=(input_tokens, output_tokens)` to report token usage
-    (feeds the gate's cost/token soft gate)."""
+    and raised as a `ToolError`; a recording with nothing left for this model raises `ReplayError`.
+    Pass `input` so an input that differs from the recording is reported as a divergence, and
+    `usage=(input_tokens, output_tokens)` to report token usage (feeds the gate's cost/token soft
+    gate)."""
     with llm(model, agent=agent) as span:
         if input is not None:
             set_io(span, input=input)
         if usage is not None:
             set_usage(span, input_tokens=usage[0], output_tokens=usage[1])
-        entry = _pop_fixture("llm", model)
+        try:
+            entry = _pop_fixture("llm", model, input)
+        except ReplayError as e:
+            error(span, str(e))
+            raise
         if entry is None:
             out = fn()
             set_io(span, output=out)
             return out
-        span.set_attribute("tracely.replay.fixture", True)
-        if entry.get("output") is not None:
-            set_io(span, output=entry.get("output"))
-        if entry.get("error"):
-            error(span, str(entry["error"]))
-            raise ToolError(str(entry["error"]))
-        return entry.get("output")
+        return _serve_entry(span, entry)
 
 
 # ── auto-instrument / drop-in hermetic replay (provider-client patching) ───────
@@ -1410,16 +1583,27 @@ def call_llm(
 # providers slot into _REPLAY_PROVIDERS with a reconstruct fn — add one when a customer replays it.
 
 
-def _pop_fixture_any(kind: str) -> dict | None:
-    """Pop the next recorded entry of `kind` regardless of key — the order-matched fallback for when
-    the recorded span name doesn't equal the live model id (auto-instrumentor span names vary)."""
+def _serve_fixture(
+    model: str,
+    kwargs: dict,
+    input_extractor: Callable[[dict], Any],
+    reconstruct: Callable[[Any], Any],
+) -> tuple[bool, Any]:
+    """The provider-adapter twin of call_llm: `(handled, result)`. handled=False → the caller
+    runs the real method (not replaying, or a lenient miss). A strict miss raises `ReplayError`
+    before any span opens, so the agent's code sees the failure exactly where it called the SDK."""
     store = _fixtures.get()
     if not store:
-        return None
-    for queue in store.get(kind, {}).values():
-        if queue:
-            return queue.pop(0)
-    return None
+        return False, None
+    inp = input_extractor(kwargs)
+    entry = _pop_fixture("llm", model, inp)
+    if entry is None:
+        return False, None
+    with llm(model or "") as span:
+        if inp is not None:
+            set_io(span, input=inp)
+        _serve_entry(span, entry)
+    return True, reconstruct(entry.get("output"))
 
 
 def _assistant_message(output: Any) -> dict:
@@ -1548,25 +1732,7 @@ def _patch_class_method(
         return
 
     def _serve(model: str, kwargs: dict) -> tuple[bool, Any]:
-        """(handled, result). handled=False → caller runs the real method (not replaying, or a
-        replay miss — better a loud live failure than a silent wrong-green)."""
-        store = _fixtures.get()
-        if not store:
-            return False, None
-        inp = input_extractor(kwargs)
-        entry = _pop_fixture("llm", model, inp) or _pop_fixture_any("llm")
-        if entry is None:
-            return False, None
-        with llm(model or "") as span:
-            if inp is not None:
-                set_io(span, input=inp)
-            span.set_attribute("tracely.replay.fixture", True)
-            if entry.get("error"):
-                error(span, str(entry["error"]))
-                raise ToolError(str(entry["error"]))
-            out = entry.get("output")
-            set_io(span, output=out)
-        return True, reconstruct(out)
+        return _serve_fixture(model, kwargs, input_extractor, reconstruct)
 
     # Async-detection sees through functools.wraps chains (OpenAI decorates create with
     # @required_args + others — iscoroutinefunction on the outer layer returns False even when the
@@ -1659,23 +1825,7 @@ def _patch_module_function(
         return
 
     def _serve(model: str, kwargs: dict) -> tuple[bool, Any]:
-        store = _fixtures.get()
-        if not store:
-            return False, None
-        inp = input_extractor(kwargs)
-        entry = _pop_fixture("llm", model, inp) or _pop_fixture_any("llm")
-        if entry is None:
-            return False, None
-        with llm(model or "") as span:
-            if inp is not None:
-                set_io(span, input=inp)
-            span.set_attribute("tracely.replay.fixture", True)
-            if entry.get("error"):
-                error(span, str(entry["error"]))
-                raise ToolError(str(entry["error"]))
-            out = entry.get("output")
-            set_io(span, output=out)
-        return True, reconstruct(out)
+        return _serve_fixture(model, kwargs, input_extractor, reconstruct)
 
     if inspect.iscoroutinefunction(inspect.unwrap(original)):
 
@@ -1716,12 +1866,22 @@ _REPLAY_PROVIDERS: list[Callable[[], None]] = [
 ]
 
 
-def _install_replay_patches() -> None:
+_replay_patch_status: dict[str, str] = {}
+
+
+def _install_replay_patches() -> dict[str, str]:
     """Patch importable providers' create-methods for hermetic replay. Idempotent; called on every
-    fixtures() enter. A provider that isn't installed (or whose API moved) is skipped — it just
-    stays live in replay rather than breaking the others."""
+    fixtures() enter. Returns {provider: "patched" | "absent" | "failed: …"} — the report's
+    `providers`, so a run can say which SDK paths were actually intercepted. A provider that isn't
+    installed (or whose API moved) is skipped: its direct calls stay LIVE in replay, which the
+    unused-fixtures warning is the only thing that catches — see the compatibility matrix."""
     for installer in _REPLAY_PROVIDERS:
+        name = installer.__name__.removeprefix("_patch_").removesuffix("_replay")
         try:
             installer()
-        except Exception:  # noqa: BLE001 — provider absent / API drift; degrade to live for it
-            pass
+            _replay_patch_status[name] = "patched"
+        except ImportError:
+            _replay_patch_status[name] = "absent"
+        except Exception as e:  # noqa: BLE001 — provider API drift; degrade to live for it
+            _replay_patch_status[name] = f"failed: {e}"
+    return dict(_replay_patch_status)

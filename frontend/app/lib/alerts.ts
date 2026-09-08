@@ -36,7 +36,7 @@ export const TRIGGERS: Record<TriggerId, TriggerMeta> = {
   gate_failed: {
     label: "CI gate failed",
     family: "event",
-    blurb: "A gate run finished FAIL — or NO_COVERAGE, the suite that could not run at all.",
+    blurb: "A gate run finished FAIL — or NO_COVERAGE / INCOMPLETE, a suite that could not run or be fully checked.",
     fields: ["env", "contains"],
   },
   trace_failed: {

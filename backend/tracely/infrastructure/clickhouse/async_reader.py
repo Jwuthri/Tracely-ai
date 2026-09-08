@@ -403,6 +403,30 @@ SESSION_SORTS = {
 }
 
 
+# What the traces list's text filter searches, server-side: the thread's first input, last
+# output, model id, user metadata (keys and values, as the JSON string) and agent id. Case-
+# insensitive substring; no tokenising. Defined once so the count and the page agree.
+_SESSION_HAYSTACK = "concat(first_input, ' ', last_output, ' ', model, ' ', metadata, ' ', agent_id)"
+
+
+def session_filter_clauses(failing: bool | None, multi: bool | None, q: str) -> tuple[str, dict]:
+    """The status / multi-turn / text filters as HAVING fragments over the thread rollup — the
+    whole dataset, not the loaded page. Returns `(sql_suffix, params)`; `None` = don't filter."""
+    parts, params = [], {}
+    if failing is True:
+        parts.append(" AND failing = 1")
+    elif failing is False:
+        parts.append(" AND failing = 0")
+    if multi is True:
+        parts.append(" AND turns > 1")
+    elif multi is False:
+        parts.append(" AND turns = 1")
+    if q and q.strip():
+        parts.append(f" AND positionCaseInsensitiveUTF8({_SESSION_HAYSTACK}, {{q:String}}) > 0")
+        params["q"] = q.strip()[:200]
+    return "".join(parts), params
+
+
 def session_order_clause(sort: str, order: str) -> str:
     """ORDER BY for the threads list. Unknown keys fall back to the default rather than raising:
     a sort is a view preference, and 400-ing a stale link is worse than showing the usual order.
@@ -431,9 +455,17 @@ async def sessions_overview(
     sort: str = "recent",
     order: str = "desc",
     agent_id: str = "",
-) -> list[dict]:
+    failing: bool | None = None,
+    multi: bool | None = None,
+    q: str = "",
+    count_only: bool = False,
+) -> list[dict] | int:
     """Traces grouped into threads by conversation (a trace with no conversation is its own
     1-turn thread), newest-last-activity first, with per-thread rollups + parsed metadata.
+
+    `failing` / `multi` / `q` filter the WHOLE thread set server-side (`session_filter_clauses`),
+    so a match past the loaded page is still returned. `count_only=True` returns the number of
+    threads matching the same filters — the page and its count are one query body.
 
     Each row carries `agent_id`: the registry agent of the thread's latest trace (its ROOT span's,
     the same attribution failure intel, regression and the gate use). `agent_id` as a filter keeps
@@ -465,8 +497,9 @@ async def sessions_overview(
     if agent_id:
         agent_clause = "HAVING t_agent = {ag:String}"
         params["ag"] = agent_id
-    res = await client.query(
-        f"""
+    filter_clause, fparams = session_filter_clauses(failing, multi, q)
+    params.update(fparams)
+    body = f"""
         SELECT
           if(conv != '', conv, trace_id)        AS thread,
           count()                               AS turns,
@@ -533,10 +566,13 @@ async def sessions_overview(
         -- Drop 1-turn threads with no message content on either side (e.g. a lone TOOL/RETRIEVER
         -- span the output-normalizer couldn't map to text) unless an evaluator flagged it — pure
         -- ingestion noise, not a conversation worth listing.
-        HAVING NOT (turns = 1 AND first_input = '' AND last_output = '' AND failing = 0)
-        {order_clause}
-        LIMIT {{n:UInt32}} OFFSET {{o:UInt32}}
-        """,
+        HAVING NOT (turns = 1 AND first_input = '' AND last_output = '' AND failing = 0){filter_clause}
+        """
+    if count_only:
+        res = await client.query(f"SELECT count() FROM ({body})", parameters=params)
+        return int(res.result_rows[0][0]) if res.result_rows else 0
+    res = await client.query(
+        f"{body}\n        {order_clause}\n        LIMIT {{n:UInt32}} OFFSET {{o:UInt32}}",
         parameters=params,
     )
     rows = []

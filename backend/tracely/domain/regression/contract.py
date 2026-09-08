@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import json
+
 from tracely.domain.trajectory import (
     Trajectory,
     erroring_steps,
@@ -16,6 +18,61 @@ from tracely.domain.trajectory import (
     tool_sequence,
     tools_satisfied,
 )
+
+# The assertion keys a human may edit (W5). Anything else on the blob is rejected at the API.
+EDITABLE_ASSERTIONS = frozenset({
+    "required_tools", "forbidden_tools", "match_mode", "no_error", "allow_tool_errors",
+    "max_tool_calls", "tool_args",
+})
+MATCH_MODES = ("superset", "subset", "strict", "unordered")
+
+
+def _parsed(v):
+    """Tool input as recorded is a JSON string (or a dict when built in-process)."""
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except (ValueError, TypeError):
+            return v
+    return v
+
+
+def _lookup(obj, key: str):
+    """`a.b.c` path lookup into a parsed tool input; `@observe` tools record `{kwargs: {...}}`
+    or the bound args directly, so both shapes are tried."""
+    for root in (obj, (obj or {}).get("kwargs") if isinstance(obj, dict) else None):
+        cur = root
+        for part in key.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                cur = _MISSING
+                break
+            cur = cur[part]
+        if cur is not _MISSING:
+            return cur
+    return _MISSING
+
+
+_MISSING = object()
+
+
+def check_tool_args(predicates: list[dict], traj: Trajectory) -> list[str]:
+    """Argument predicates: `[{tool, key, equals}]` — every call to `tool` must carry `key` ==
+    `equals` (path keys allowed). Returns the violations, one line each. A tool that was never
+    called is NOT a violation here (that is `required_tools`' job)."""
+    violations: list[str] = []
+    for p in predicates or []:
+        tool, key = str(p.get("tool") or ""), str(p.get("key") or "")
+        if not tool or not key:
+            continue
+        for st in traj.steps:
+            if st.kind != "tool" or st.name != tool:
+                continue
+            got = _lookup(_parsed(st.input), key)
+            if got is _MISSING:
+                violations.append(f"{tool}: argument '{key}' missing")
+            elif got != p.get("equals"):
+                violations.append(f"{tool}: '{key}' was {json.dumps(got, default=str)[:80]}, expected {json.dumps(p.get('equals'), default=str)[:80]}")
+    return violations
 
 
 def evaluate_case(case, traj: Trajectory) -> tuple[str, dict]:
@@ -25,41 +82,6 @@ def evaluate_case(case, traj: Trajectory) -> tuple[str, dict]:
     `.assertions` and `.match_mode` attributes works.
     """
     return evaluate_assertions(case.assertions or {}, case.match_mode, traj)
-
-
-def apply_quality(
-    verdict: str,
-    detail: dict[str, Any],
-    quality: list[dict] | None,
-    *,
-    blocks: bool,
-) -> tuple[str, dict]:
-    """Fold answer-quality judge results into a structural case verdict (the judge-in-the-gate).
-
-    `quality` is what re-running the case's answer-quality judge(s) on the produced trajectory's
-    trace yielded — a list of `{score_name, verdict, value, comment}`. A FAIL flips the case to
-    FAIL when `blocks` (the default), catching wrong/hallucinated answers a structural check
-    (tool sequence + no-error) cannot. When not blocking, the result is recorded but advisory.
-
-    Pure: the (impure) judge call happens in the service; this only combines the outcome. When
-    `quality` is empty/None — no quality assertion, no enabled judge, or no LLM key — the verdict
-    is unchanged and `quality_checked=False` records that the answer wasn't graded.
-    """
-    if not quality:
-        return verdict, {**detail, "quality_checked": False}
-    failed = [q for q in quality if q.get("verdict") == "FAIL"]
-    worst = failed[0] if failed else quality[0]
-    merged = {
-        **detail,
-        "quality_checked": True,
-        "quality_pass": not failed,
-        "quality_score": worst.get("value"),
-        "quality_score_name": worst.get("score_name"),
-        "quality_reason": worst.get("comment"),
-    }
-    if failed and blocks:
-        return "FAIL", merged
-    return verdict, merged
 
 
 def evaluate_assertions(
@@ -89,11 +111,22 @@ def evaluate_assertions(
         error_ok = len(run_errs) == 0  # tools may error; the run outcome must be clean
     else:
         error_ok = len(errs) == 0
-    passed = tools_ok and error_ok
+    forbidden = [t for t in assertions.get("forbidden_tools") or [] if t in produced]
+    limits = assertions.get("max_tool_calls") or {}
+    over = [
+        f"{t}: called {produced.count(t)}×, max {n}"
+        for t, n in limits.items()
+        if isinstance(n, int) and produced.count(t) > n
+    ]
+    arg_violations = check_tool_args(assertions.get("tool_args") or [], traj)
+    passed = tools_ok and error_ok and not forbidden and not over and not arg_violations
     detail = {
         "passed": passed,
         "tools_ok": tools_ok,
         "error_ok": error_ok,
+        "forbidden_hit": forbidden,
+        "count_violations": over,
+        "arg_violations": arg_violations,
         "match_mode": mode,
         "allow_tool_errors": allow_tool_errors,
         "required_tools": ref_tools,

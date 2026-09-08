@@ -114,4 +114,9 @@ def delete_project_blobs(project_id: str, *, traces_only: bool = False) -> int:
     """
     base = settings.s3_event_prefix
     project_prefix = f"{base}{project_id}/otlp/" if traces_only else f"{base}{project_id}/"
-    return _delete_prefix(project_prefix) + _delete_prefix(f"{base}fixtures/{project_id}/")
+    return (
+        _delete_prefix(project_prefix)
+        + _delete_prefix(f"{base}fixtures/{project_id}/")
+        # the durable case artifacts (`domain/regression/artifact.py`) — deleted with the cases
+        + _delete_prefix(f"{base}cases/{project_id}/")
+    )

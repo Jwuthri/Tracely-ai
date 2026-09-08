@@ -14,6 +14,8 @@ A case is a production trace that must never recur. You do not write it; you **p
 
 1. **The input** — the user request exactly as it arrived, plus a digest of it so the same input is never promoted twice and a CI run can be matched to its case without any wiring.
 2. **A fixture bundle** — every tool call and model call the run made, in order, with arguments, outputs and error status, stored in object storage. This is what makes [hermetic replay](/replay) possible: in CI the agent's code runs for real, but its tools and model calls are served from the recording.
+0. **Lifecycle evidence, kept apart.** A case page shows separate facts, never one "protected" badge: **source failure confirmed** (the source trace fails the contract — the bug is reproduced), **candidate verified · vN** (a specific candidate execution passed the contract at case version N, from a run-scoped CI gate or a manual replay of a candidate trace — replaying the *source* never counts), and, when the contract has changed since, *verified against vN — re-verify*. Suite inclusion and repository branch protection are separate facts again, shown on the gate.
+3. **A durable artifact** — one versioned snapshot per case version holding the executable input, the fixture bundle, the expectations (assertions + match mode), the identity of every judge the case expects (evaluator id, config digest, model) and provenance (source trace, agent version, input digest, captured-at), with a content digest pinned on the case and on every gate result graded against it. This is what keeps a case executable after its source trace has aged out of retention. External state (a database row, a ticket) is **not** captured; the artifact says so rather than pretending to be self-contained. Cases promoted before artifacts existed are snapshotted by a nightly backfill while their source still exists; one whose source already expired shows **not snapshotted** and needs a recapture (`POST /api/cases/{id}/recapture` with a fresh trace of the same input, which bumps the case version). Deleting a case is the only thing that deletes its artifact and bundle.
 3. **The reference trajectory** — the ordered list of steps the failing run took.
 4. **A fail-to-pass contract** — the assertions a candidate run must satisfy: no run error; the tools the agent was *asked* for and must actually execute; whether the tool sequence must match; whether a tool error is tolerated when the agent handles it gracefully.
 
@@ -32,9 +34,19 @@ Then the contract is **validated against the source trace**: the failing run mus
 
 <img className="screenshot" src="/screenshots/case-detail.png" alt="A case: assertions, reference trajectory, replay controls and history" />
 
-- **Assertions** — the contract, one line each, with the last verdict.
-- **Reference trajectory** — the source run's steps.
-- **Replay** — paste the trace id of a candidate run (a fixed version of the agent, run in staging or CI) and Tracely evaluates it against the contract right here: `FAIL` while the bug is present, `PASS` once it is fixed. Every replay is kept as history, so a case carries its own red → green story.
+The case page is the **failure-to-fix workspace**: seven numbered sections, top to bottom, so a developer answers the five questions without assembling them across screens.
+
+1. **What went wrong** — agent, source trace, whether a test exists (in the suite or draft), and how the original fails the contract, check by check.
+2. **What the agent should have done** — the expectations in plain language ("Must call `lookup` …", "Must never call …", "`lookup` must be called with order_id = "42""), backed by an editor: required and forbidden tools, match mode, error-handling expectations, and under *Advanced* call bounds and argument predicates. Saving creates the next case version, re-snapshots the artifact and re-checks that the original still fails — a case whose original now passes goes back to DRAFT and says so. The recorded arguments are never copied into the contract for you: a failure trace is evidence of the bug, not the expected behaviour.
+3. **Reproduce it** — the execution mode (recorded tools + recorded model), fixture readiness, and a copyable `tracely replay <agent> --entrypoint … --case <id>` for this case, with what recorded replay does and does not establish.
+4. **Pick the run to check** — the exact compatible candidates (runs of this agent with this input), newest first, each with its env, run id and prior verdict; *Verify* grades one through the same contract CI applies. Pasting a trace id is the advanced path.
+5. **Original vs candidate** — the relevant steps aligned side by side (stacked on narrow screens): tool by tool, arguments and results, with the first meaningful divergence named; both answers below.
+6. **What the check established** — the evidence receipt: verdict, case version, artifact digest, execution mode, every check with its status, the judge identity, and one sentence on what this does and does not prove.
+7. **Next** — in the suite or not, the last CI verdict (linked, with its run id), and branch protection — shown as *not confirmed by Tracely* until you make the check required in your repository.
+
+The reference trajectory and the full replay history sit in a collapsible strip at the bottom.
+
+- **Replay** — paste the trace id of a candidate run (a fixed version of the agent, run in staging or CI) and Tracely evaluates it against the contract right here — the *same* contract the CI gate applies, structural checks **and** the answer-quality judge the case was promoted from: `FAIL` while the bug is present, `PASS` once it is fixed, `INCOMPLETE` when a required check could not run (no LLM key for the judge, a replay that did not complete). Every replay is kept as history with its checks, execution mode and judge identity, so a case carries its own red → green story and a historical verdict stays explainable after the judge changes.
 - **Source trace** — the production run it came from, one click away.
 
 <Callout type="info">

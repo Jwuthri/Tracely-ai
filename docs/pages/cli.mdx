@@ -7,7 +7,7 @@ import { Callout } from "nextra/components";
 # CI gate CLI
 
 The `tracely` CLI (shipped with the SDK) turns an agent's behaviour into a pull-request check —
-exit `0` (PASS) / `1` (FAIL) / `2` (never got an answer), plus a GitHub commit status + PR comment.
+exit `0` (PASS) / `1` (the gate said no: FAIL, NO_COVERAGE) / `2` (no verdict was reached: INCOMPLETE, ERROR, unreachable), plus a GitHub commit status + PR comment. All non-zero codes block the merge; the split says whose fault it was.
 
 ```bash
 tracely simulate [<agent> | --agent a,b | --all] [--min-pass-rate 0.9] [--timeout 900] [--github]
@@ -73,7 +73,29 @@ PYTHONPATH=sdk/examples tracely replay planner --entrypoint weather_agent:run
 tracely replay planner --cmd "python my_agent.py"
 
 # --live makes real tool/LLM calls instead of serving recorded fixtures
+# --lenient keeps the legacy fall-through (a call the recording lacks runs live; reported)
+# --run-id  identity of this execution (default: minted; TRACELY_RUN_ID) — every trace is stamped
+#           with it and the gate pairs candidates ONLY within it
+# --cmd-timeout  seconds a --cmd run may take per case (default 600); a non-zero exit or a
+#           timeout is reported to the gate as a failed command → that case is INCOMPLETE,
+#           never rescued by an older trace with the same input
 ```
+
+Every result is bound to **this execution**: `replay` mints a run id, stamps it on the traces it
+emits (`tracely.replay.run_id`), waits for *those* traces to be ingested (bounded polling on
+`GET /api/gate/run-traces`, no fixed sleep), and the gate refuses any candidate that was not
+produced by that run, carries a different input, or cannot be found — each an `INCOMPLETE` with
+the reason. `--entrypoint` accepts a plain function or an `async def` coroutine function
+(awaited per case); generator functions are refused. For `tracely gate` on pre-emitted traces,
+export `TRACELY_RUN_ID` around your own agent run and pass the same value (`--run-id`, or the
+env) — otherwise candidates are matched by input digest and the run carries a warning saying so.
+
+Replay is **strict** by default: a case whose recording cannot be loaded is not run — its trace is
+emitted errored so the gate fails — and a run that asks for a call the recording lacks raises
+`ReplayError` inside the agent. Each case line says what happened: `[recorded · N served]`,
+`· diverged` with the evidence beneath it, `[replay error: fixtures unavailable]`, `[lenient · …]`
+or `[live]`. `--cmd` runs are always live (fixtures are not injected into an external process).
+See [Hermetic replay](/replay) for the policy and the provider matrix.
 
 <Callout type="info">
   **Which one?** `simulate` drives multi-turn conversations against your live endpoint — no agent

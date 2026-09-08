@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { getGate } from "@/app/lib/api";
 import { Badge, verdictVariant } from "@/app/components/ui";
+import { CaseChecks } from "@/app/components/CaseChecks";
 import { CopyId } from "@/app/components/CopyId";
 import { GateAutoRefresh } from "@/app/components/GateAutoRefresh";
 import { IconArrowLeft, IconBolt, IconCheck, IconX } from "@/app/components/icons";
@@ -19,12 +20,13 @@ export default async function GatePage({ params }: { params: Promise<{ gateId: s
   }
   const pass = g.status === "PASS";
   const nocov = g.status === "NO_COVERAGE";
+  const incomplete = g.status === "INCOMPLETE";
   const running = g.status === "RUNNING" || (!g.finished_at && g.status !== "ERROR");
   const tone = pass
     ? { box: "border-ok/30 bg-ok/[0.04]", chip: "border-ok/40 bg-ok/10 text-ok", text: "text-ok" }
     : running
       ? { box: "border-info/30 bg-info/[0.04]", chip: "border-info/40 bg-info/10 text-info", text: "text-info" }
-      : nocov
+      : nocov || incomplete
         ? { box: "border-warn/30 bg-warn/[0.05]", chip: "border-warn/40 bg-warn/10 text-warn", text: "text-warn" }
         : { box: "border-fail/30 bg-fail/[0.05]", chip: "border-fail/40 bg-fail/10 text-fail", text: "text-fail" };
   const cases = g.cases ?? [];
@@ -63,6 +65,14 @@ export default async function GatePage({ params }: { params: Promise<{ gateId: s
                 <GateAutoRefresh />
               </div>
             )}
+            {incomplete && (
+              <div className="mt-2 max-w-md text-[12px] leading-snug text-warn/90">
+                {g.incomplete ?? 0} case(s) could not be fully checked — a required judge returned
+                no result (no LLM key for this workspace, judge disabled) or the replay did not
+                complete. Nothing failed, but nothing was shown to pass either; the merge blocks
+                until the check can actually run. Each case below says which check.
+              </div>
+            )}
             {nocov && (
               <div className="mt-2 max-w-md text-[12px] leading-snug text-warn/90">
                 The gate exercised nothing that produced a verdict — no CI trace matched a
@@ -77,6 +87,7 @@ export default async function GatePage({ params }: { params: Promise<{ gateId: s
           <Stat n={g.passed} label="passed" tone="text-ok" />
           <Stat n={g.failed} label="failed" tone={g.failed ? "text-fail" : "text-fg"} />
           <Stat n={g.skipped} label="skipped" tone="text-fg-muted" />
+          {(g.incomplete ?? 0) > 0 && <Stat n={g.incomplete ?? 0} label="incomplete" tone="text-warn" />}
         </div>
       </div>
 
@@ -85,7 +96,7 @@ export default async function GatePage({ params }: { params: Promise<{ gateId: s
           <div className="mb-2 flex items-center gap-2 text-[12.5px] font-semibold text-warn">
             ⚠️ Warnings{" "}
             <span className="font-mono text-[10px] text-fg-faint">
-              (blocking when the run is FAIL/NO_COVERAGE or strict mode is on — otherwise advisory)
+              (blocking when the run is FAIL/NO_COVERAGE/INCOMPLETE or strict mode is on — otherwise advisory)
             </span>
           </div>
           <ul className="space-y-1">
@@ -103,6 +114,12 @@ export default async function GatePage({ params }: { params: Promise<{ gateId: s
         <Meta k="PR" v={g.pr_number ? `#${g.pr_number}` : "—"} />
         <Meta k="Tokens" v={g.total_tokens ? g.total_tokens.toLocaleString() : "—"} />
         <Meta k="Latency" v={g.latency_ms ? `${Math.round(g.latency_ms)} ms` : "—"} />
+      </div>
+      {/* The execution manifest: what actually produced these candidates. A gate without a run
+          id paired traces by input — inspectable, but not verification of this execution. */}
+      <div className="reveal font-mono text-[11px] text-fg-faint" style={{ animationDelay: "80ms" }}>
+        run {g.run_id ? <span className="text-fg-muted">{g.run_id}</span> : <span className="text-warn">not scoped — candidates paired by input digest, not by execution</span>}
+        {g.execution_mode ? <> · mode <span className="text-fg-muted">{g.execution_mode}</span></> : null}
       </div>
 
       <section className="reveal card overflow-hidden" style={{ animationDelay: "120ms" }}>
@@ -176,6 +193,7 @@ export default async function GatePage({ params }: { params: Promise<{ gateId: s
                     </span>
                   )}
                   {c.verdict === "SKIP" && reason && <span className="ml-2 font-mono text-[11px] text-fg-faint">{reason}</span>}
+                  {!sim && <CaseChecks detail={c.detail} compact={c.verdict === "PASS"} />}
                 </span>
                 {c.candidate_trace_id ? (
                   sim ? (

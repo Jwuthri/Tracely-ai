@@ -49,6 +49,9 @@ def launch(ingest_key: str) -> bool:
                 **os.environ,
                 "TRACELY_API": settings.internal_api_url,
                 "TRACELY_KEY": ingest_key,
+                # Every span the seeder emits is stamped `tracely.sample=true`, so sample data
+                # never counts as the customer's own activation (services/milestones.py).
+                "TRACELY_SAMPLE": "1",
             },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

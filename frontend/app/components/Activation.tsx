@@ -1,23 +1,24 @@
 import { CopyId } from "./CopyId";
 import { PipelinePeek } from "./PipelinePeek";
+import { SampleButton } from "./SampleButton";
+import type { Milestone } from "@/app/lib/api";
 
-/* The first-run path, told as the product's own loop: trace → grade → failure → case → gate.
-   Every step's done-ness is DERIVED from real counts — there is no stored progress to drift
-   out of sync, and a workspace that already did the work never sees this card. Only the first
+/* The first-run path, told as the product's own loop: trace → check → confirmed failure →
+   reproduced → verified fix → CI. Every step's done-ness is a DURABLE milestone the backend
+   recorded from a confirmed operation (services/milestones.py) — never a click, never sample
+   data. Workspaces from before milestones existed fall back to the old counts. Only the first
    unfinished step is expanded; the rest are one line each. */
 
 export type ActivationState = {
   traces: number;
   evaluators: number;
   failures: number;
-  /** Clusters count as a caught failure too: a raw execution error is clustered without any
-   *  evaluator scoring it FAIL, and the step must not read "not done" next to a full
-   *  clusters page. */
   clusters: number;
   cases: number;
   gates: number;
   ingestKey: string;
   endpoint: string;
+  milestones: Milestone[];
 };
 
 type Step = {
@@ -30,6 +31,7 @@ type Step = {
 };
 
 const n = (v: number) => v.toLocaleString("en-US");
+const when = (iso: string | null) => (iso ? iso.slice(0, 16).replace("T", " ") : "");
 
 function Snippet({ code, label }: { code: string; label: string }) {
   return (
@@ -52,20 +54,31 @@ function Action({ href, children }: { href: string; children: React.ReactNode })
 }
 
 export function Activation(s: ActivationState) {
+  const ms = s.milestones ?? [];
+  const real = (name: string) => ms.find((m) => m.name === name && m.first_at && !m.sample) ?? null;
+  const sampleOnly = ms.some((m) => m.first_at && m.sample) && !ms.some((m) => m.first_at && !m.sample);
+  // Pre-milestone workspaces: nothing was ever recorded, so the old count-derived doneness stands.
+  const legacy = !ms.some((m) => m.first_at);
+  const done = (name: string, fallback: boolean) => Boolean(real(name)) || (legacy && fallback);
+  const proof = (name: string, fallback: string) => {
+    const m = real(name);
+    return m ? `${when(m.first_at)}${m.integration ? ` · ${m.integration}` : ""}` : fallback;
+  };
+
   const steps: Step[] = [
     {
       title: "Send your first trace",
-      done: s.traces > 0,
-      proof: `${n(s.traces)} traces`,
+      done: done("first_trace_received", s.traces > 0),
+      proof: proof("first_trace_received", `${n(s.traces)} traces`),
       body: (
         <>
           <p className="text-[12.5px] text-fg-muted">
             Point the SDK at this workspace. Auto-instrumentation traces your existing agent with
-            no span code.
+            no span code. The package is <code className="font-mono">tracely-ai</code>.
           </p>
           <Snippet
             label="python"
-            code={`pip install "tracely-sdk[openai]"
+            code={`pip install "tracely-ai[openai]"
 
 import tracely_sdk as tracely
 tracely.init(endpoint="${s.endpoint}", api_key="${s.ingestKey}")
@@ -77,110 +90,112 @@ with tracely.trace(agent="support", conversation="conv-1"):
       ),
     },
     {
-      title: "Let Tracely grade every run",
-      done: s.evaluators > 0,
-      proof: `${n(s.evaluators)} evaluator${s.evaluators === 1 ? "" : "s"}`,
+      title: "Complete a check on a real run",
+      done: done("first_check_completed", s.evaluators > 0 && s.traces > 0),
+      proof: proof("first_check_completed", `${n(s.evaluators)} evaluator${s.evaluators === 1 ? "" : "s"}`),
       body: (
         <>
           <p className="text-[12.5px] text-fg-muted">
-            Evaluators are the columns of the traces table — structural checks run free, an
-            LLM judge grades the answer. They run automatically on every new trace.
+            Evaluators are the columns of the traces table — structural checks run free, an LLM
+            judge grades the answer. This ticks when one actually produces a verdict on your trace.
           </p>
           <Action href="/traces">Add a column on Traces →</Action>
         </>
       ),
     },
     {
-      title: "Catch a real failure",
-      done: s.failures > 0 || s.clusters > 0,
-      proof: s.failures > 0 ? `${n(s.failures)} detected` : `${n(s.clusters)} clustered`,
+      title: "Confirm a real failure as a test",
+      done: done("source_failure_confirmed", s.cases > 0),
+      proof: proof("source_failure_confirmed", `${n(s.cases)} case${s.cases === 1 ? "" : "s"}`),
       body: (
         <>
           <p className="text-[12.5px] text-fg-muted">
-            Nothing to do here — this ticks the first time an evaluator fails a production run.
-            Similar failures are then clustered into one issue instead of a wall of traces.
+            Promote a failing run. It becomes a case only once the original is shown to fail the
+            contract — a failure that cannot be told from a fix is left as a draft.
           </p>
-          <Action href="/clusters">See failure clusters →</Action>
+          <Action href="/clusters">Promote from a failure cluster →</Action>
         </>
       ),
     },
     {
-      title: "Promote a failure to a regression case",
-      done: s.cases > 0,
-      proof: `${n(s.cases)} case${s.cases === 1 ? "" : "s"}`,
+      title: "Reproduce it under recorded conditions",
+      done: done("case_reproduced", false),
+      proof: proof("case_reproduced", ""),
       body: (
         <>
           <p className="text-[12.5px] text-fg-muted">
-            A promoted failure becomes a fail-to-pass test with the real tool calls recorded, so
-            it replays hermetically — no dataset to hand-write.
-          </p>
-          <Action href="/clusters">Promote from a cluster →</Action>
-        </>
-      ),
-    },
-    {
-      title: "Gate a pull request",
-      done: s.gates > 0,
-      proof: `${n(s.gates)} gate run${s.gates === 1 ? "" : "s"}`,
-      body: (
-        <>
-          <p className="text-[12.5px] text-fg-muted">
-            Run the promoted cases against the PR's agent. It exits non-zero and posts a commit
-            status, so the failure you fixed can never come back.
+            Replay the case against your current code with the recorded tools and model. A FAIL
+            here is the bug reproduced offline — no keys, no cost.
           </p>
           <Snippet
-            label="ci"
-            code={`pip install tracely-sdk
+            label="shell"
+            code={`pip install tracely-ai
 TRACELY_API=${s.endpoint} TRACELY_KEY=${s.ingestKey} \\
   tracely replay --agent support --entrypoint app.agent:run`}
           />
         </>
       ),
     },
+    {
+      title: "Verify a fix",
+      done: done("candidate_verified", false),
+      proof: proof("candidate_verified", ""),
+      body: (
+        <p className="text-[12.5px] text-fg-muted">
+          Fix the agent, run the same command (or pick the run on the case page and press Verify).
+          The case records which candidate passed, at which case version.
+        </p>
+      ),
+    },
+    {
+      title: "Run it in CI",
+      done: done("ci_check_completed", s.gates > 0),
+      proof: proof("ci_check_completed", `${n(s.gates)} gate run${s.gates === 1 ? "" : "s"}`),
+      body: (
+        <>
+          <p className="text-[12.5px] text-fg-muted">
+            Add the gate to your workflow. It exits non-zero and posts a commit status; this ticks
+            when a run-scoped gate actually grades the suite against a revision.
+          </p>
+          <Action href="https://docs.tracely-ai.com/cli">CI setup →</Action>
+        </>
+      ),
+    },
   ];
 
-  const done = steps.filter((x) => x.done).length;
-  if (done === steps.length) return null; // the loop is closed — this card has nothing left to say
+  const finished = steps.filter((x) => x.done).length;
+  if (finished === steps.length) return null; // the loop is closed — this card has nothing left to say
   const current = steps.findIndex((x) => !x.done);
 
   return (
-    <section className="reveal card overflow-hidden">
-      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+    <section className="reveal card p-5" aria-label="Getting started">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-[13.5px] font-semibold text-fg">Get to your first gate</h2>
-          <p className="mt-0.5 text-[12px] text-fg-muted">
-            The whole loop, once: a production trace becomes a test that blocks a PR.
+          <h2 className="text-[15px] font-semibold text-fg">Close the loop once</h2>
+          <p className="mt-0.5 text-[12.5px] text-fg-muted">
+            Six real outcomes, in order. Each ticks from the operation itself — not from a click.
           </p>
         </div>
-        <span className="shrink-0 font-mono text-[11px] text-fg-faint">
-          {done} / {steps.length}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[12px] text-fg-faint">{finished} / {steps.length}</span>
+          <SampleButton />
+          <a href="#connect" className="btn-primary">Connect my agent</a>
+        </div>
       </div>
-      {/* The same five steps as a picture: a stage with nothing in it stays dark, so the diagram
-          shows where the loop currently stops before the list explains what to do about it. */}
-      <div className="border-b border-line/50 px-4 py-5">
-        <PipelinePeek
-          live={{
-            traces: s.traces,
-            evaluators: s.evaluators,
-            failures: s.failures,
-            clusters: s.clusters,
-            cases: s.cases,
-            gates: s.gates,
-          }}
-        />
-      </div>
-      <ol className="divide-y divide-line/50">
+      {sampleOnly && (
+        <p className="mt-3 rounded-md border border-warn/30 bg-warn/[0.05] px-3 py-2 text-[12px] text-warn">
+          Sample data is flowing (labelled <code className="font-mono">sample</code> everywhere). It never ticks these steps —
+          they are yours to earn with your own agent.
+        </p>
+      )}
+      <PipelinePeek live={{ traces: s.traces, evaluators: s.evaluators, failures: s.failures, clusters: s.clusters, cases: s.cases, gates: s.gates }} />
+      <ol id="connect" className="mt-4 space-y-2">
         {steps.map((step, i) => (
-          <li key={step.title} className={i === current ? "bg-hilite/[0.02] px-4 py-3.5" : "px-4 py-2.5"}>
+          <li key={i} className="rounded-lg border border-line/60 px-3 py-2">
             <div className="flex items-center gap-2.5">
               <span
                 className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border text-[9px] ${
-                  step.done
-                    ? "border-ok/50 bg-ok/15 text-ok"
-                    : i === current
-                      ? "border-signal/60 text-signal"
-                      : "border-line text-fg-faint"
+                  step.done ? "border-ok/50 bg-ok/15 text-ok" : i === current ? "border-signal/60 bg-signal/15 text-signal" : "border-line text-fg-faint"
                 }`}
               >
                 {step.done ? "✓" : i + 1}
@@ -192,7 +207,7 @@ TRACELY_API=${s.endpoint} TRACELY_KEY=${s.ingestKey} \\
               >
                 {step.title}
               </span>
-              {step.done && <span className="shrink-0 font-mono text-[10.5px] text-fg-faint">{step.proof}</span>}
+              {step.done && step.proof && <span className="shrink-0 font-mono text-[10.5px] text-fg-faint">{step.proof}</span>}
             </div>
             {i === current && <div className="mt-2 pl-6.5">{step.body}</div>}
           </li>

@@ -154,6 +154,19 @@ async def delete_workspace(
     return {"deleted": deleted, "switch_to": siblings[0]}
 
 
+@router.get("/admin/milestones/funnel", dependencies=[Depends(require_user)])
+async def milestones_funnel() -> dict:
+    """Deployment-wide activation funnel: real vs sample counts per milestone and the drop-off
+    between consecutive milestones. The founder's inspection view."""
+    from tracely.services import milestones
+
+    def work():
+        with SyncSessionLocal() as s:
+            return milestones.funnel(s)
+
+    return await run_in_threadpool(work)
+
+
 @router.post("/project/seed", dependencies=[Depends(require_user)])
 async def seed_project_demo(project_id: str = Depends(get_project_id)) -> dict:
     """Populate this workspace with the demo dataset — traces, clusters, cases, gates, scenarios.

@@ -8,7 +8,7 @@ The service composes:
 - `TraceReader` (ClickHouse `events` reads)
 - `ScoreWriter` (the regression verdict score row)
 - `BlobStore` module functions (fixture bundle upload)
-- pure `evaluate_assertions` from `domain.regression.contract`
+- `grade_case` from `services.case_grading` — the ONE contract shared with the CI gate
 - `FixtureBundle.capture` from `domain.regression.fixtures`
 - `root_span` / `input_digest` from `domain.traces.spans`
 """
@@ -22,7 +22,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tracely.config import settings
-from tracely.domain.regression.contract import evaluate_assertions
+from tracely.domain.regression.artifact import CaseArtifact, artifact_key
+from tracely.domain.regression.compare import align_steps
+from tracely.domain.regression.contract import EDITABLE_ASSERTIONS, MATCH_MODES, evaluate_assertions
 from tracely.domain.regression.fixtures import FixtureBundle
 from tracely.domain.trajectory import (
     Trajectory,
@@ -40,6 +42,7 @@ from tracely.infrastructure.db.models import (
     EvaluationSuite,
     EvaluationSuiteCase,
 )
+from tracely.services.case_grading import grade_case, judge_identity, mark_verified, record_case_milestones
 from tracely.services.evaluation_service import EvaluationService
 
 
@@ -109,25 +112,36 @@ class RegressionService:
         assertions = self._build_assertions(traj)
         # Answer-quality judges that the SOURCE trace failed → the case guards against them too,
         # so a hallucination with a structurally-clean trace is still promotable + gate-able.
-        quality_failed = self._grade_source_quality(project_id, spans)
+        quality_results = self._grade_source_quality(project_id, spans)
+        quality_failed = [r.name for r in quality_results if r.verdict == "FAIL"]
         if quality_failed:
             assertions["quality"] = {"score_names": quality_failed}
-        fixture_key = self._store_fixtures(project_id, digest, spans)
+        bundle = FixtureBundle.capture(spans)
+        fixture_key = self._store_fixtures(project_id, digest, bundle)
         # One logical promote = one transaction. The helpers FLUSH (so later steps see the rows) but
         # never commit mid-way; a crash anywhere rolls the whole thing back instead of leaving a
         # half-promoted case (case without suite link, or a PROMOTED case with no validation replay).
+        # Blob keys are deterministic, so a retried promote overwrites its own orphans.
         case = self._create_case(
             project_id=project_id, agent_id=agent_id, trace_id=trace_id, root=root,
             digest=digest, title=title, assertions=assertions, fixture_key=fixture_key,
             trajectory_json=traj.to_json(),
         )
         self._attach_to_regression_suite(project_id, agent_id, case)
-        recorded = self._record_fail_to_pass(
-            case, traj, trace_id, quality_failed=bool(quality_failed)
-        )
+        recorded = self._record_fail_to_pass(case, spans, trace_id, quality_results)
+        # The durable artifact is written BEFORE the commit: if the blob store is down the
+        # promote fails whole rather than leaving a case that will not survive retention.
+        self.snapshot_artifact(case, input_text=self._root_input(spans), fixtures=bundle.to_dict())
         self.session.commit()
         # ClickHouse write is external (non-transactional) → do it only after the PG commit succeeds.
         self.score_writer.write_regression_verdict(case, trace_id, recorded)
+        if case.fail_to_pass_validated:
+            from tracely.services import milestones
+
+            milestones.record_own(
+                project_id, "source_failure_confirmed",
+                sample=milestones.is_sample(spans), integration=milestones.integration_of(spans),
+            )
         return case
 
     def replay_case(
@@ -140,32 +154,28 @@ class RegressionService:
         spans = self.trace_reader.read_spans(project_id, candidate_trace_id)
         if not spans:
             raise NotFound("candidate trace not found")
-        traj = build_trajectory(spans)
-        verdict, detail = self._evaluate(case, traj)
+        outcome = grade_case(self.eval_service, case, spans)
+        # A manual replay of the SOURCE trace is a re-check of source failure, not a candidate.
+        verified = candidate_trace_id != case.source_trace_id and mark_verified(case, outcome, candidate_trace_id, "replay")
         replay = CaseReplay(
             id=str(uuid.uuid4()), case_id=case.id, candidate_trace_id=candidate_trace_id,
-            verdict=verdict, detail=detail,
+            verdict=outcome.verdict,
+            detail={**outcome.detail, "case_version": case.version or 1, "artifact_digest": case.artifact_digest or ""},
         )
         self.session.add(replay)
         self.session.commit()
-        self.score_writer.write_regression_verdict(case, candidate_trace_id, verdict)
+        self.score_writer.write_regression_verdict(case, candidate_trace_id, outcome.verdict)
+        record_case_milestones(self.session, case, outcome, candidate_trace_id, spans, verified=bool(verified))
         return replay
 
     # ── pure-ish helpers (no I/O beyond the session/trace_reader/score_writer) ────
 
-    @staticmethod
-    def _evaluate(case: EvaluationCase, traj: Trajectory) -> tuple[str, dict]:
-        return evaluate_assertions(case.assertions or {}, case.match_mode, traj)
-
-    def _grade_source_quality(self, project_id: str, spans: list[dict]) -> list[str]:
-        """Answer-quality judge `score_name`s the SOURCE trace FAILed. The case is promoted to
-        guard against these recurring; the gate re-checks them on replay. Empty when no judge is
-        configured / no LLM key — the case then stays a structural-only regression (old behavior)."""
-        return [
-            r.name
-            for r in self.eval_service.grade_trace_quality(project_id, spans)
-            if r.verdict == "FAIL"
-        ]
+    def _grade_source_quality(self, project_id: str, spans: list[dict]) -> list:
+        """The answer-quality judge results for the SOURCE trace. The ones it FAILed become the
+        case's expected judges; the gate and manual replay re-check them on every candidate.
+        Empty when no judge is configured / no LLM key — the case then stays a structural-only
+        regression (old behavior)."""
+        return list(self.eval_service.grade_trace_quality(project_id, spans))
 
     @staticmethod
     def _build_assertions(traj: Trajectory) -> dict:
@@ -195,11 +205,209 @@ class RegressionService:
         }
 
     @staticmethod
-    def _store_fixtures(project_id: str, digest: str, spans: list[dict]) -> str:
-        bundle = FixtureBundle.capture(spans)
+    def _store_fixtures(project_id: str, digest: str, bundle: FixtureBundle) -> str:
         key = f"{settings.s3_event_prefix}fixtures/{project_id}/{digest}.json"
         blobstore.put_blob(key, bundle.encode(), "application/json")
         return key
+
+    @staticmethod
+    def _root_input(spans: list[dict]) -> str:
+        """The executable input: the root span's, else the first span that has one."""
+        if not spans:
+            return ""
+        r = root_span(spans)
+        if r.get("input"):
+            return str(r["input"])
+        return next((str(s["input"]) for s in spans if s.get("input")), "")
+
+    # ── the failure-to-fix workspace (W5) ─────────────────────────────────────
+
+    def update_expectations(self, project_id: str, case_id: str, patch: dict) -> EvaluationCase:
+        """Edit what the fixed agent must do. Whitelisted keys only; bumps the case version,
+        re-snapshots the artifact for the new version (so a gate result pins the contract it
+        was graded against) and re-checks that the SOURCE still fails the contract when its
+        spans are available — a case whose source passes cannot discriminate and goes DRAFT.
+        Candidate verification recorded at the old version is left in place; the UI reads it as
+        stale by version."""
+        case = self.session.get(EvaluationCase, case_id)
+        if not case or case.project_id != project_id:
+            raise NotFound("case not found")
+        bad = set(patch) - EDITABLE_ASSERTIONS
+        if bad:
+            raise ValueError(f"unknown assertion(s): {', '.join(sorted(bad))}")
+        if "match_mode" in patch and patch["match_mode"] not in MATCH_MODES:
+            raise ValueError(f"match_mode must be one of {', '.join(MATCH_MODES)}")
+        for key in ("required_tools", "forbidden_tools"):
+            if key in patch and not (isinstance(patch[key], list) and all(isinstance(t, str) for t in patch[key])):
+                raise ValueError(f"{key} must be a list of tool names")
+        if "max_tool_calls" in patch and not (
+            isinstance(patch["max_tool_calls"], dict)
+            and all(isinstance(n, int) and n >= 0 for n in patch["max_tool_calls"].values())
+        ):
+            raise ValueError("max_tool_calls must map tool name → non-negative integer")
+        if "tool_args" in patch and not (
+            isinstance(patch["tool_args"], list)
+            and all(isinstance(p, dict) and p.get("tool") and p.get("key") for p in patch["tool_args"])
+        ):
+            raise ValueError("tool_args must be a list of {tool, key, equals}")
+        art, _ = self.load_artifact(case)
+        spans = self.read_spans(project_id, case.source_trace_id) if case.source_trace_id else []
+        if art is None and not spans:
+            raise ValueError("this case has no durable artifact and its source trace is gone — recapture it first")
+
+        case.assertions = {**(case.assertions or {}), **patch}
+        if "match_mode" in patch:
+            case.match_mode = patch["match_mode"]
+        case.version = (case.version or 1) + 1
+        input_text = art.input_text if art else self._root_input(spans)
+        fixtures = art.fixtures if art else FixtureBundle.capture(spans).to_dict()
+        self.snapshot_artifact(case, input_text=input_text, fixtures=fixtures)
+        if spans:
+            quality = self._grade_source_quality(project_id, spans) if (case.assertions.get("quality")) else []
+            self._record_fail_to_pass(case, spans, case.source_trace_id, quality)
+        self.session.commit()
+        return case
+
+    def compare(self, project_id: str, case_id: str, candidate_trace_id: str) -> dict:
+        """Original vs candidate: aligned relevant steps + the candidate's structural verdict
+        (no judge call — the persisted replay carries the full checked outcome)."""
+        case = self.session.get(EvaluationCase, case_id)
+        if not case or case.project_id != project_id:
+            raise NotFound("case not found")
+        spans = self.read_spans(project_id, candidate_trace_id)
+        if not spans:
+            raise NotFound("candidate trace not found")
+        cand = build_trajectory(spans)
+        ref_steps = (case.reference_trajectory or {}).get("steps") or []
+        aligned = align_steps(ref_steps, [s.__dict__ for s in cand.steps])
+        verdict, detail = evaluate_assertions(case.assertions or {}, case.match_mode, cand)
+        answer = next((str(s.get("output") or "") for s in spans if s.get("parent_span_id", "") == "" or s.get("is_app_root")), "")
+        ref_answer = next((str(s.get("output") or "") for s in ref_steps if s.get("parent_span_id", "") == ""), "")
+        return {
+            **aligned,
+            "structural_verdict": verdict,
+            "structural": {k: detail[k] for k in ("missing_tools", "extra_tools", "forbidden_hit", "count_violations", "arg_violations", "run_errors", "tool_errors") if k in detail},
+            "answers": {"reference": ref_answer[:2000], "candidate": answer[:2000]},
+        }
+
+    def candidates(self, project_id: str, case_id: str, limit: int = 20) -> list[dict]:
+        """Recent runs of the case's agent with the SAME input — exact compatible candidates,
+        newest first, each marked source / already-replayed verdict / run id."""
+        case = self.session.get(EvaluationCase, case_id)
+        if not case or case.project_id != project_id:
+            raise NotFound("case not found")
+        art, _ = self.load_artifact(case)
+        text = art.input_text if art else self._root_input(self.read_spans(project_id, case.source_trace_id))
+        if not text:
+            return []
+        replayed = {
+            r.candidate_trace_id: r.verdict
+            for r in self.session.execute(
+                select(CaseReplay).where(CaseReplay.case_id == case.id).order_by(CaseReplay.created_at)
+            ).scalars()
+        }
+        out = []
+        for row in self.trace_reader.traces_with_input(project_id, case.agent_id, text, limit):
+            out.append({
+                **row,
+                "is_source": row["trace_id"] == case.source_trace_id,
+                "replay_verdict": replayed.get(row["trace_id"]),
+            })
+        return out
+
+    # ── durable artifacts (W3) ────────────────────────────────────────────────
+
+    def snapshot_artifact(
+        self, case: EvaluationCase, *, input_text: str, fixtures: dict
+    ) -> CaseArtifact:
+        """Write the artifact for the case's CURRENT version and pin its key + digest on the row
+        (flushed, not committed — the caller owns the transaction). Raises ValueError on an empty
+        input: an artifact that cannot execute is never written."""
+        expected = list(((case.assertions or {}).get("quality") or {}).get("score_names") or [])
+        evaluators = (
+            {s["score_name"]: judge_identity(s) for s in self.eval_service.quality_specs(case.project_id, expected)}
+            if expected
+            else {}
+        )
+        art = CaseArtifact.build(
+            case_id=case.id,
+            case_version=case.version or 1,
+            input_text=input_text,
+            fixtures=fixtures,
+            assertions=case.assertions or {},
+            match_mode=case.match_mode,
+            evaluators=evaluators,
+            provenance={
+                "project_id": case.project_id,
+                "agent_id": case.agent_id,
+                "agent_version_first_failed": case.agent_version_first_failed,
+                "source_trace_id": case.source_trace_id,
+                "source_span_id": case.source_span_id,
+                "input_digest": case.input_digest,
+            },
+        )
+        key = artifact_key(settings.s3_event_prefix, case.project_id, case.id, art.case_version)
+        blobstore.put_blob(key, art.encode(), "application/json")
+        case.artifact_s3_key, case.artifact_digest = key, art.digest()
+        self.session.flush()
+        return art
+
+    def load_artifact(self, case: EvaluationCase) -> tuple[CaseArtifact | None, str | None]:
+        """`(artifact, None)` or `(None, why)` — a missing or corrupt artifact is an explicit
+        incomplete state for the case, never an empty input."""
+        if not case.artifact_s3_key:
+            return None, "no durable artifact for this case yet (run the backfill, or recapture from a trace)"
+        try:
+            return CaseArtifact.decode(blobstore.get_blob(case.artifact_s3_key)), None
+        except Exception as exc:
+            return None, f"case artifact {case.artifact_s3_key} could not be loaded: {exc}"
+
+    def backfill_artifacts(self, project_id: str | None = None) -> dict:
+        """Snapshot every case that has no artifact yet, from whatever still exists: the source
+        trace's spans (input) plus its stored fixture bundle. A case whose source has already
+        expired is left unrecoverable — reported, not invented — and needs `recapture`."""
+        from tracely.infrastructure.db.repositories import cases_without_artifact
+
+        done: list[str] = []
+        unrecoverable: dict[str, str] = {}
+        for case in cases_without_artifact(self.session, project_id):
+            spans = self.trace_reader.read_spans(case.project_id, case.source_trace_id) if case.source_trace_id else []
+            input_text = self._root_input(spans)
+            if not input_text:
+                unrecoverable[case.id] = "source trace no longer available — recapture from a fresh trace with the same input"
+                continue
+            try:
+                fixtures = FixtureBundle.decode(blobstore.get_blob(case.fixture_bundle_s3_key)) if case.fixture_bundle_s3_key else FixtureBundle.capture(spans).to_dict()
+            except Exception:  # bundle unreadable but the source is still here: re-capture it
+                fixtures = FixtureBundle.capture(spans).to_dict()
+            try:
+                self.snapshot_artifact(case, input_text=input_text, fixtures=fixtures)
+                self.session.commit()
+                done.append(case.id)
+            except Exception as exc:
+                self.session.rollback()
+                unrecoverable[case.id] = f"snapshot failed: {exc}"
+        return {"snapshotted": done, "unrecoverable": unrecoverable}
+
+    def recapture(self, project_id: str, case_id: str, trace_id: str) -> CaseArtifact:
+        """Rebuild a case's artifact from a fresh trace of the SAME input (its `input_digest` must
+        match) — the recovery path for a case whose source expired before it was snapshotted.
+        Bumps the case version: the recording changed, so results pinned to the old one stay
+        theirs."""
+        case = self.session.get(EvaluationCase, case_id)
+        if not case or case.project_id != project_id:
+            raise NotFound("case not found")
+        spans = self.trace_reader.read_spans(project_id, trace_id)
+        if not spans:
+            raise NotFound("trace not found")
+        if input_digest(spans) != case.input_digest:
+            raise ValueError("trace input does not match this case's input digest")
+        bundle = FixtureBundle.capture(spans)
+        case.fixture_bundle_s3_key = self._store_fixtures(project_id, case.input_digest, bundle)
+        case.version = (case.version or 1) + 1
+        art = self.snapshot_artifact(case, input_text=self._root_input(spans), fixtures=bundle.to_dict())
+        self.session.commit()
+        return art
 
     def _existing_case(
         self, project_id: str, agent_id: str, digest: str
@@ -261,26 +469,27 @@ class RegressionService:
     def _record_fail_to_pass(
         self,
         case: EvaluationCase,
-        traj: Trajectory,
+        spans: list[dict],
         trace_id: str,
-        quality_failed: bool = False,
+        quality_results: list | None = None,
     ) -> str:
         """The source (failing) trace must currently FAIL the case for it to be PROMOTED — either
-        structurally (the tool/error contract) OR on answer quality (a hallucination whose trace
-        is structurally clean). Otherwise the case is a non-discriminating no-op and stays DRAFT.
+        structurally (the tool/error contract) OR on a required answer-quality judge (a
+        hallucination whose trace is structurally clean). Graded through the SAME contract the
+        gate applies, so a judge the gate would treat as advisory cannot promote a case here.
+        Otherwise the case is a non-discriminating no-op and stays DRAFT.
 
-        Stages the verdict replay + status into the session (no commit — the caller commits the whole
-        promote as one transaction) and returns the recorded verdict so the caller can write the
-        external ClickHouse score row AFTER the commit succeeds."""
-        verdict, detail = self._evaluate(case, traj)
-        recorded = "FAIL" if (verdict == "FAIL" or quality_failed) else verdict
-        if quality_failed and verdict != "FAIL":
-            detail = {**detail, "quality_pass": False, "promoted_on": "quality"}
+        What this establishes is SOURCE-FAILURE evidence only (`detail.evidence`), never that any
+        candidate passed. Stages the verdict replay + status into the session (no commit — the
+        caller commits the whole promote as one transaction) and returns the recorded verdict so
+        the caller can write the external ClickHouse score row AFTER the commit succeeds."""
+        outcome = grade_case(self.eval_service, case, spans, quality_results=quality_results or [])
+        recorded = outcome.verdict
         case.fail_to_pass_validated = recorded == "FAIL"
         case.status = "PROMOTED" if case.fail_to_pass_validated else "DRAFT"
         self.session.add(CaseReplay(
             id=str(uuid.uuid4()), case_id=case.id, candidate_trace_id=trace_id,
-            verdict=recorded, detail={**detail, "validation": True},
+            verdict=recorded, detail={**outcome.detail, "validation": True, "evidence": "source_failure"},
         ))
         self.session.flush()
         return recorded

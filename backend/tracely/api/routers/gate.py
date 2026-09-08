@@ -32,10 +32,15 @@ def _gate_dict(
         "git_ref": g.git_ref,
         "pr_number": g.pr_number,
         "status": g.status,
+        # The execution manifest: which CI run produced the candidates, in which mode. Empty
+        # run_id = paired by input digest, not verified against a specific execution.
+        "run_id": g.run_id or "",
+        "execution_mode": g.execution_mode or "",
         "total": g.total,
         "passed": g.passed,
         "failed": g.failed,
         "skipped": g.skipped,
+        "incomplete": g.incomplete or 0,
         "latency_ms": g.latency_ms,
         "total_tokens": g.total_tokens,
         "warnings": g.warnings or [],
@@ -82,6 +87,11 @@ async def run_gate(
     pr_number = body.get("pr_number")
     candidates = body.get("candidates") or None  # {case_id: trace_id} from `tracely replay`
     case_ids = _ids(body, "case_ids")
+    run_id = str(body.get("run_id") or "")[:64]
+    failed = body.get("failed") or None  # {case_id: reason} — commands that did not complete
+    if failed is not None and not isinstance(failed, dict):
+        raise HTTPException(status_code=400, detail="failed must be a {case_id: reason} object")
+    execution_mode = str(body.get("execution_mode") or "")[:16]
     if not agent_ref:
         raise HTTPException(status_code=400, detail="agent required")
 
@@ -93,7 +103,9 @@ async def run_gate(
                 return ("err", f"agent '{agent_ref}' not found")
             g = gate_svc.run_gate(
                 project_id, aid, env=env, git_ref=git_ref, pr_number=pr_number,
-                candidates=candidates, case_ids=case_ids,
+                candidates=candidates, case_ids=case_ids, run_id=run_id,
+                failed={str(k): str(v) for k, v in (failed or {}).items()} or None,
+                execution_mode=execution_mode,
             )
             agent = s.get(Agent, aid)
             return ("ok", _gate_dict(g, agent.slug if agent else None, _cases(s, g.id)))
@@ -152,6 +164,27 @@ async def run_simulated_gate(
         case_ids, scenario_ids,
     )
     return {"id": gate_id, "status": "RUNNING", "agent": agent_ref, "env": env}
+
+
+@router.get("/gate/run-traces")
+async def gate_run_traces(
+    agent: str, run_id: str, project_id: str = Depends(get_project_id)
+) -> dict:
+    """The traces a CI execution has produced so far (stamped `tracely.replay.run_id`) — what
+    `tracely replay --cmd` polls instead of sleeping a fixed interval."""
+
+    def work():
+        with SyncSessionLocal() as s:
+            gate_svc = GateService(s)
+            aid = gate_svc.resolve_agent_id(project_id, agent)
+            if not aid:
+                return None
+            return {"run_id": run_id, "trace_ids": gate_svc.trace_reader.traces_for_run(project_id, aid, run_id)}
+
+    res = await run_in_threadpool(work)
+    if res is None:
+        raise HTTPException(status_code=404, detail=f"agent '{agent}' not found")
+    return res
 
 
 @router.get("/gate/suite")

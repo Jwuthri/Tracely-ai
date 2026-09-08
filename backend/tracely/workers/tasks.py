@@ -290,6 +290,24 @@ def enforce_retention_task(self) -> dict:
     that half-failed just re-issues the same DELETEs the next tick anyway."""
     from tracely.services.retention_service import enforce
 
+    # Snapshot un-artifacted cases from their sources BEFORE anything is swept — the artifact is
+    # what keeps a case executable once its source trace is gone. Runs whether or not billing
+    # (and so the sweep) is on: a self-hosted ClickHouse TTL expires traces just the same.
+    try:
+        from tracely.infrastructure.db.engine import SyncSessionLocal
+        from tracely.services.regression_service import RegressionService
+
+        with SyncSessionLocal() as s:
+            res = RegressionService(s).backfill_artifacts()
+        if res["snapshotted"] or res["unrecoverable"]:
+            log.info(
+                "case_artifacts_backfilled",
+                snapshotted=len(res["snapshotted"]),
+                unrecoverable=len(res["unrecoverable"]),
+            )
+    except Exception as exc:
+        log.warning("case_artifact_backfill_failed", error=str(exc))
+
     try:
         return enforce()
     except Exception as exc:  # noqa: BLE001 — a missed sweep costs disk, never a grade

@@ -78,6 +78,9 @@ class IngestionService:
             if ev.get("trace_id") and ev.get("internal_kind")
         })
         log.info("ingested", project_id=project_id, key=key, events=len(events))
+        real = [ev for ev in events if ev.get("trace_id") and not ev.get("internal_kind")]
+        if real:
+            self._milestone_first_trace(project_id, real)
         return {
             "events": len(events),
             "trace_ids": list(trace_ids),
@@ -85,6 +88,21 @@ class IngestionService:
         }
 
     # ── internals ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _milestone_first_trace(project_id: str, events: list[dict]) -> None:
+        """`first_trace_received` — from a confirmed ClickHouse insert, not from a request."""
+        try:
+            from tracely.infrastructure.db.engine import SyncSessionLocal
+            from tracely.services import milestones
+
+            with SyncSessionLocal() as s:
+                milestones.record(
+                    s, project_id, "first_trace_received",
+                    sample=milestones.is_sample(events), integration=milestones.integration_of(events),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("milestone_first_trace_failed", error=str(exc))
 
     @staticmethod
     def _attach_costs(events: list[dict]) -> None:

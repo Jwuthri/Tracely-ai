@@ -10,21 +10,23 @@ import { IconActivity, IconBell, IconBolt, IconBook, IconCard, IconDatabase, Ico
 
 type NavItem = { href: string; label: string; Icon: typeof IconGrid; exact?: boolean; external?: boolean };
 
+// Organised around the workflow — Overview → Failures → Tests → Runs — with the routes exactly as
+// they were: every deep link and bookmark keeps working; only the grouping changed (W7).
 const NAV: { group: string; items: NavItem[] }[] = [
   {
-    group: "Observe",
+    group: "Overview",
+    items: [{ href: "/dashboard", label: "Overview", Icon: IconGrid, exact: true }],
+  },
+  {
+    group: "Failures",
     items: [
-      { href: "/dashboard", label: "Dashboard", Icon: IconGrid, exact: true },
+      { href: "/clusters", label: "Failure clusters", Icon: IconLayers },
       { href: "/traces", label: "Traces", Icon: IconActivity },
       { href: "/trends", label: "Trends", Icon: IconTrend },
     ],
   },
   {
-    group: "Triage",
-    items: [{ href: "/clusters", label: "Failure clusters", Icon: IconLayers }],
-  },
-  {
-    group: "Test",
+    group: "Tests",
     items: [
       { href: "/cases", label: "Regression cases", Icon: IconShield },
       { href: "/scenarios", label: "Scenarios", Icon: IconBolt },
@@ -32,7 +34,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
     ],
   },
   {
-    group: "Ship",
+    group: "Runs",
     items: [{ href: "/gates", label: "CI gates", Icon: IconGate }],
   },
   {

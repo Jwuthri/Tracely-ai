@@ -134,3 +134,31 @@ tracely simulate --all                    # or: --agent support-agent,planner
 tracely replay planner --entrypoint my_agent:run
 tracely gate planner --env ci
 ```
+
+### Pairing candidates to *this* run (`mode=gate`)
+
+The action exports `TRACELY_RUN_ID=<github.run_id>-<github.run_attempt>` to the gate step, and
+the Tracely SDK stamps every span emitted under that variable with `tracely.replay.run_id`. The
+gate then only accepts candidate traces carrying **this** run id: a trace from a previous attempt
+with the identical input is reported as `INCOMPLETE — candidate trace was not produced by this
+run`, not silently graded. For that to work, the step that runs *your* agent must export the same
+value:
+
+```yaml
+- name: Run agent on the promoted inputs
+  env:
+    TRACELY_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  run: python ci_run_agent.py
+```
+
+Without it the gate falls back to matching the latest `ci` trace by input digest and carries a
+warning saying so — inspectable, but not verification of this execution. `tracely replay` needs
+no setup: it mints a run id per invocation and stamps it itself.
+
+### Make the check required
+
+The action posts the commit status `tracely/regression-gate` and a PR comment with case-level
+evidence (each case's checks, version and a link to its page). Neither blocks a merge on its own.
+In the repository: **Settings → Branches → Branch protection rule → Require status checks to
+pass → add `tracely/regression-gate`**. The comment repeats this reminder on every run because
+Tracely cannot see branch protection: a green comment is not proof the check is required.

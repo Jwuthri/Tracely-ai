@@ -85,3 +85,7 @@ Open a conversation and the same thread is available in five views, sharing one 
 ## A single trace
 
 `/traces/<trace id>` is one turn on its own: spans, latency, usage totals, the same Table / Timeline tabs — and a **Promote** button when the trace is failing, which turns it into a [regression case](/product/cases).
+
+## Filtering (2026-09)
+
+Every filter on the traces list — time range, agent, sort, **Failing**, **Multi-turn** and the text box — is a server query over the whole workspace, never a pass over the rows already on screen: a matching conversation past the first page is found, the **N matching** count, the empty state and the pages all describe the same result set, and a slow older query can never overwrite a newer one. The text box searches, case-insensitively, the first user input, the last answer, the model id, user metadata (keys and values) and the agent id. The view lives in the URL (`?range=7d&agent=…&filter=failing&q=refund`), so a link reproduces it; *link to this view* under the table copies it. Cross-workspace results cannot appear: every query carries the workspace the ingest key resolves to.

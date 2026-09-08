@@ -31,9 +31,14 @@ Pick the **agent to gate** (the picker is ranked by how many promoted cases each
   | **PASS** | every case and scenario passed |
   | **FAIL** | at least one production failure recurred, or a scenario failed |
   | **NO_COVERAGE** | no candidate trace matched a case — the gate could not check anything, and says so instead of going green |
+  | **INCOMPLETE** | a case ran but could not be fully checked: a required judge returned no result (no LLM key, judge disabled) or the recorded replay did not complete. Nothing failed, nothing was shown to pass |
   | **UNGRADED** | a conversation produced no gradeable scores |
 
-  `NO_COVERAGE` and `UNGRADED` block the merge exactly like `FAIL`: an empty gate is not a passed gate.
+  `NO_COVERAGE`, `INCOMPLETE` and `UNGRADED` block the merge exactly like `FAIL`: an empty or half-checked gate is not a passed gate.
+
+  Each run records its **execution manifest**: the run id that produced the candidates (every trace the CLI emitted is stamped with it), the execution mode, and per case the pairing strategy — `run` (this execution's trace, the only pairing that verifies a candidate), `explicit-unscoped`, or `digest-fallback` (the latest trace with the same input, used when no run id was supplied; the run carries a warning). A candidate that is not this run's, has a different input, was not found, or whose command failed is `INCOMPLETE` with that reason.
+
+  Every case verdict is built from named **checks** — `tools`, `no_error`, and one `quality:<judge>` per judge the case was promoted from — each *required* or *advisory*, each `PASS` / `FAIL` / `UNAVAILABLE`, plus the execution evidence (mode, completed, divergence). A case is `PASS` only when every required check ran and passed under a completed execution; a required check that is unavailable makes it `INCOMPLETE`; a required `FAIL` is `FAIL`. Advisory checks stay visible and never decide. The same contract grades the manual **Replay** on a case page, so the UI, the CLI and CI cannot disagree about one candidate.
 
 - **Warnings** — the candidate's latency and token usage are compared with the last green gate for the same agent; a regression beyond 25 % is a warning. Warnings are **non-blocking** unless the gate is configured to block on them. Fail-to-pass is the only hard rule.
 - **Cases** — one row per case: verdict, the candidate trace it was checked against (click through to the trace), and the assertion that failed.

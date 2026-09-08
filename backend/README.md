@@ -17,7 +17,7 @@ Tracely deliberately mirrors Langfuse's proven write path, reimplemented in Pyth
 |---|---|---|
 | **OLAP** | ClickHouse | `events` (one row per span) + `scores` — the trace + eval substrate. `ReplacingMergeTree` for upsert/dedup. |
 | **OLTP / registry** | Postgres + pgvector | Projects, ingest keys, Agents, AgentVersions, EvaluationSuites/Cases, GateRuns, FailureClusters, Evaluators, Users, Memberships, Invitations, failure embeddings. SQLAlchemy 2.0, Alembic migrations. |
-| **Blobs** | S3 / MinIO | The raw OTLP request body (durable **source of truth**, written *before* anything is queued) + regression fixture bundles. |
+| **Blobs** | S3 / MinIO | The raw OTLP request body (durable **source of truth**, written *before* anything is queued) + regression fixture bundles + the durable case artifacts (`{prefix}cases/{project}/{case}/v{n}.json`). |
 | **Queue** | Redis | Celery broker/result backend. |
 | **Vectors** | pgvector | Failure embeddings for clustering. |
 
@@ -174,8 +174,10 @@ The package is layered: **domain** (pure logic, no I/O), **infrastructure** (DB 
 | `failure/text.py` | `embedding_text` / `summarize_failure` — terse mechanism vs. full-context summaries. |
 | `failure/clustering.py` | `ClusterEngine` — UMAP+HDBSCAN regime selection. |
 | `failure/histogram.py` | Occurrence-over-time bucketing. |
-| `regression/contract.py` | `evaluate_assertions(case, traj)` — pure fail-to-pass evaluation. |
+| `regression/contract.py` | `evaluate_assertions(case, traj)` — pure structural fail-to-pass evaluation. |
+| `regression/outcome.py` | THE case contract: named required/advisory checks + execution evidence → `PASS` / `FAIL` / `INCOMPLETE`; `gate_status` policy table. `services/case_grading.grade_case` is the one path manual replay, promote-time validation and the gate all call. |
 | `regression/fixtures.py` | `FixtureBundle` value object — capture/encode/decode the v2 hermetic-replay bundle. |
+| `regression/artifact.py` | `CaseArtifact` — the durable, versioned case snapshot (input, fixtures, expectations, judge identity, provenance; content digest). `RegressionService.snapshot_artifact` / `backfill_artifacts` / `recapture` write it; `GateService.replay_suite` executes from it. |
 | `gate/warnings.py` | `delta_warnings(latency, tokens, baseline)` — pure % regression check. |
 
 ### `tracely/infrastructure/` — I/O adapters
@@ -219,7 +221,7 @@ The package is layered: **domain** (pure logic, no I/O), **infrastructure** (DB 
 ### `tracely/workers/tasks.py`
 Three Celery tasks, each a thin dispatch into a service class: `ingest_otlp_blob` → `IngestionService` (then debounce-enqueues evaluation), `evaluate_run` → `EvaluationService` (then folds the turn into the thread's `RollingSummaryService`, best-effort), `rebuild_clusters` → `FailureIntelService`.
 
-On Celery beat: `evaluate_monitors` (the *polled* alerts only — see Alerts below) and `selfcheck` every 5 min, and two nightly sweeps. `enforce_retention` deletes traces past their plan's retention window — the ClickHouse TTL is one global expression (90 days) and a plan lives in Postgres, so this is the only place "free keeps a week" can be said; it is a no-op unless `BILLING_ENABLED`, because every org on a self-hosted deployment sits on the default `free` plan (`services/retention_service.py`). `prune_chats` nightly — the last drops judge-conversation checkpoints nothing can read again. LangGraph writes one checkpoint per step and each re-serializes the whole transcript, so a long sequential column grows its storage quadratically and never gives it back; left alone it becomes the largest table in the deployment by an order of magnitude. It keeps every conversation's latest checkpoint and holds an hour's grace on live ones, so it is safe against a running worker (`infrastructure/llm/checkpointer.py`).
+On Celery beat: `evaluate_monitors` (the *polled* alerts only — see Alerts below) and `selfcheck` every 5 min, and two nightly sweeps. `enforce_retention` first backfills durable artifacts for any case that lacks one (`RegressionService.backfill_artifacts`, whether or not billing is on — a self-hosted ClickHouse TTL expires traces just the same), then deletes traces past their plan's retention window — the ClickHouse TTL is one global expression (90 days) and a plan lives in Postgres, so this is the only place "free keeps a week" can be said; it is a no-op unless `BILLING_ENABLED`, because every org on a self-hosted deployment sits on the default `free` plan (`services/retention_service.py`). `prune_chats` nightly — the last drops judge-conversation checkpoints nothing can read again. LangGraph writes one checkpoint per step and each re-serializes the whole transcript, so a long sequential column grows its storage quadratically and never gives it back; left alone it becomes the largest table in the deployment by an order of magnitude. It keeps every conversation's latest checkpoint and holds an hour's grace on live ones, so it is safe against a running worker (`infrastructure/llm/checkpointer.py`).
 
 ### Alerts (`monitors` + `monitor_steps` + `monitor_executions`)
 
@@ -237,8 +239,8 @@ an edge points straight at a row.
 | **polled** | `fail_rate_over`, `score_below`, `trace_failure_rate` | `evaluate_monitors` beat task → `MonitoringService.evaluate_all` | ≤5 min |
 
 The three event hooks are one call each, all best-effort in a try/except: `GateService._notify_gate`
-(after a run finalizes, on `FAIL` **or** `NO_COVERAGE` — the suite that could not run is the
-quietly-green failure), `EvaluationService._notify_trace_failed` (non-advisory FAILs only, so the
+(after a run finalizes, on `FAIL`, `NO_COVERAGE` **or** `INCOMPLETE` — the suite that could not run
+or be fully checked is the quietly-green failure), `EvaluationService._notify_trace_failed` (non-advisory FAILs only, so the
 alert agrees with the badge), and `StructuralClusteringService._notify_new_cluster` (the created
 branch only). An observer must never fail the thing it observes.
 

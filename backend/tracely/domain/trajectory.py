@@ -32,6 +32,7 @@ class TrajectoryStep:
     status: str
     tool_calls: list[str] = field(default_factory=list)
     output: Any = None
+    input: Any = None  # tool args / model input — argument predicates and comparison read it
 
 
 @dataclass
@@ -68,6 +69,7 @@ def build_trajectory(spans: list[dict]) -> Trajectory:
                 status="error" if level == "ERROR" else "ok",
                 tool_calls=list(s.get("tool_call_names") or []),
                 output=s.get("output"),
+                input=s.get("input"),
             )
         )
     return Trajectory(trace_id=trace_id, agent_run_id=run_id or trace_id, steps=steps)

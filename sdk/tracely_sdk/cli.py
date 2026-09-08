@@ -31,7 +31,10 @@ from tracely_sdk.export import download_export
 
 MARKER = "<!-- tracely-gate -->"
 STATUS_CONTEXT = "tracely/regression-gate"
-ICON = {"PASS": "✓", "FAIL": "✗", "ERROR": "✗", "SKIP": "–", "NO_COVERAGE": "⚠", "UNGRADED": "⚠"}
+ICON = {
+    "PASS": "✓", "FAIL": "✗", "ERROR": "✗", "SKIP": "–",
+    "NO_COVERAGE": "⚠", "UNGRADED": "⚠", "INCOMPLETE": "⚠",
+}
 EMOJI = {
     "PASS": "✅",
     "FAIL": "❌",
@@ -39,6 +42,7 @@ EMOJI = {
     "SKIP": "⏭️",
     "NO_COVERAGE": "⚠️",
     "UNGRADED": "⚠️",
+    "INCOMPLETE": "⚠️",
 }
 
 
@@ -73,8 +77,24 @@ def trigger_gate(
     git_ref: str,
     pr: int | None,
     candidates: dict[str, str] | None = None,
+    *,
+    run_id: str | None = None,
+    failed: dict[str, str] | None = None,
+    execution_mode: str | None = None,
+    case_ids: list[str] | None = None,
 ) -> dict:
+    """POST /api/gate. `run_id` scopes candidate pairing to THIS execution (traces stamped
+    `tracely.replay.run_id`), `failed` names cases whose command did not complete so no stale
+    trace can rescue them, `execution_mode` is recorded on the run as what actually ran."""
     body: dict = {"agent": agent, "env": env, "git_ref": git_ref, "pr_number": pr}
+    if run_id:
+        body["run_id"] = run_id
+    if failed:
+        body["failed"] = failed
+    if execution_mode:
+        body["execution_mode"] = execution_mode
+    if case_ids is not None:
+        body["case_ids"] = case_ids
     if candidates:
         body["candidates"] = candidates  # explicit case_id -> trace_id pairing from replay
     return _post_json(f"{api.rstrip('/')}/api/gate", key, body)
@@ -88,6 +108,12 @@ def case_reason(detail: dict) -> str:
     """
     d = detail or {}
     bits: list[str] = []
+    # ── the structured contract (W2): an execution problem or an unavailable required check ──
+    if (d.get("execution") or {}).get("problem"):
+        bits.append(str(d["execution"]["problem"]))
+    for c in d.get("checks") or []:
+        if c.get("status") == "UNAVAILABLE" and c.get("required"):
+            bits.append(f"unavailable: {c.get('name')} — {c.get('reason')}")
     # ── emulated conversation ────────────────────────────────────────────────
     if d.get("error"):  # the endpoint never answered — that IS the failure
         bits.append(str(d["error"]))
@@ -148,14 +174,21 @@ def render_console(data: dict, sha: str) -> None:
             "Either CI emitted no trace matching a promoted case, or every conversation ran "
             "ungraded. Treated as a failure (a gate that tests nothing must not pass)."
         )
+    if data["status"] == "INCOMPLETE":
+        print(
+            f"\n  ⚠ INCOMPLETE — {data.get('incomplete', 0)} case(s) could not be fully checked "
+            "(a required judge returned nothing, or the replay did not complete). Nothing "
+            "failed, but nothing was shown to pass either; the merge blocks until the check "
+            "can run."
+        )
     print(f"\n  Result: {data['status']}\n")
 
 
-_HEAD = {"FAIL": "🔴", "ERROR": "🔴", "PASS": "🟢", "NO_COVERAGE": "🟠"}
+_HEAD = {"FAIL": "🔴", "ERROR": "🔴", "PASS": "🟢", "NO_COVERAGE": "🟠", "INCOMPLETE": "🟠"}
 
 # Worst-wins across agents. Anything that isn't PASS blocks, but the headline should name the most
 # alarming thing that happened, not the first one alphabetically.
-_RANK = ("PASS", "NO_COVERAGE", "FAIL", "ERROR")
+_RANK = ("PASS", "NO_COVERAGE", "INCOMPLETE", "FAIL", "ERROR")
 
 
 def worst_status(results: list[dict]) -> str:
@@ -194,16 +227,37 @@ def mint_share_url(api: str, key: str, web_url: str, gate_id: str) -> str:
         return ""
 
 
+def checks_summary(detail: dict) -> str:
+    """The case's checks as one glanceable string — `✓tools ✓no_error ✗quality:q ?judge` — so a
+    reviewer sees WHAT was checked, not only the verdict. Empty for rows without the contract."""
+    marks = {"PASS": "✓", "FAIL": "✗", "UNAVAILABLE": "?"}
+    checks = (detail or {}).get("checks") or []
+    parts = [f"{marks.get(c.get('status'), '·')}{c.get('name')}" + ("" if c.get("required", True) else "ᵃ") for c in checks]
+    return " ".join(parts)
+
+
+REQUIRED_CHECK_NOTE = (
+    "_To make this block merges, mark `tracely/regression-gate` as a **required status check** "
+    "in the repository's branch protection (Settings → Branches). Tracely does not verify branch "
+    "protection; a green comment here is not proof the check is required._"
+)
+
+
 def render_markdown(data: dict, web_url: str, sha: str) -> str:
     status = data["status"]
     head = _HEAD.get(status, "⚪")
     sha_txt = f"`{sha[:7]}`" if sha else ""
+    counts = f"{data['passed']} passed · {data['failed']} failed · {data['skipped']} skipped"
+    if data.get("incomplete"):
+        counts += f" · {data['incomplete']} incomplete"
+    manifest = ""
+    if data.get("run_id"):
+        manifest = f" · run `{data['run_id']}`" + (f" · {data['execution_mode']}" if data.get("execution_mode") else "")
     lines = [
         MARKER,
         f"### {head} Tracely regression gate — **{status}**",
         "",
-        f"`{data.get('agent')}` · {data['passed']} passed · {data['failed']} failed · "
-        f"{data['skipped']} skipped · env `{data.get('env')}` · {sha_txt}",
+        f"`{data.get('agent')}` · {counts} · env `{data.get('env')}` · {sha_txt}{manifest}",
         "",
         "| | Case | Verdict | Detail |",
         "|---|---|---|---|",
@@ -223,9 +277,14 @@ def render_markdown(data: dict, web_url: str, sha: str) -> str:
         if link_cases and c.get("scenario_id") and c.get("candidate_trace_id"):
             thread = f"{web_url.rstrip('/')}/sessions/{c['candidate_trace_id']}"
             title = f"[{title}]({thread})"
-        lines.append(
-            f"| {EMOJI.get(c['verdict'], '❔')} | {title} | {c['verdict']} | {reason} |"
-        )
+        elif link_cases and c.get("evaluation_case_id"):
+            # The case page is the failure-to-fix workspace: expectations, comparison, receipt.
+            title = f"[{title}]({web_url.rstrip('/')}/cases/{c['evaluation_case_id']})"
+        if detail.get("case_version"):
+            title += f" <sub>v{detail['case_version']}</sub>"
+        evidence = checks_summary(detail)
+        cell = " · ".join(x for x in (reason, evidence and f"`{evidence}`") if x)
+        lines.append(f"| {EMOJI.get(c['verdict'], '❔')} | {title} | {c['verdict']} | {cell} |")
     lines.append("")
     warnings = data.get("warnings") or []
     if warnings:
@@ -236,6 +295,14 @@ def render_markdown(data: dict, web_url: str, sha: str) -> str:
         lines.append(
             "> These regression tests were promoted from **real production failures**. "
             "A FAIL means this change reintroduces — or fails to fix — a known failure."
+        )
+        lines.append("")
+    if status == "INCOMPLETE":
+        lines.append(
+            f"> ⚠️ **Incomplete.** {data.get('incomplete', 0)} case(s) could not be fully "
+            "checked — a required judge returned no result (no LLM key, judge disabled) or the "
+            "replay did not complete. Nothing failed, but nothing was shown to pass either. "
+            "Blocking until the check can actually run."
         )
         lines.append("")
     if status == "NO_COVERAGE":
@@ -249,6 +316,11 @@ def render_markdown(data: dict, web_url: str, sha: str) -> str:
     link = gate_link(data, web_url)
     if link:
         lines.append(f"[View full verdict on Tracely →]({link})")
+    if data.get("cases") and any((c.get("detail") or {}).get("checks") for c in data["cases"]):
+        lines.append("")
+        lines.append("<sub>✓ passed · ✗ failed · ? could not run · ᵃ advisory</sub>")
+    lines.append("")
+    lines.append(REQUIRED_CHECK_NOTE)
     return "\n".join(lines)
 
 
@@ -422,9 +494,9 @@ def post_pr_check(
             d["share_url"] = mint_share_url(api, key, web_url, d["id"])
     # NO_COVERAGE is a blocking non-PASS (the gate exercised nothing) → a failing check, not a
     # transient "error". Exit code is already non-zero for any non-PASS (see cmd_gate/cmd_replay).
-    state = {"PASS": "success", "FAIL": "failure", "NO_COVERAGE": "failure"}.get(
-        worst_status(results), "error"
-    )
+    state = {
+        "PASS": "success", "FAIL": "failure", "NO_COVERAGE": "failure", "INCOMPLETE": "failure",
+    }.get(worst_status(results), "error")
     totals = {k: sum(r[k] for r in results) for k in ("passed", "failed", "skipped")}
     desc = f"{totals['passed']} passed · {totals['failed']} failed · {totals['skipped']} skipped"
     if len(results) > 1:
@@ -483,6 +555,14 @@ def _conn(args: argparse.Namespace) -> tuple[str, str, str, str]:
     return api, key, web_url, agent
 
 
+def exit_code(status: str) -> int:
+    """0 = PASS · 1 = the gate said no (FAIL, NO_COVERAGE) · 2 = no verdict was reached
+    (INCOMPLETE, ERROR, unreachable). All non-zero block the merge; the split says whose fault."""
+    if status == "PASS":
+        return 0
+    return 2 if status in ("INCOMPLETE", "ERROR") else 1
+
+
 def cmd_gate(args: argparse.Namespace) -> int:
     api, key, web_url, agent = _conn(args)
     if not agent:
@@ -496,7 +576,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
     git_ref = sha or os.environ.get("GIT_REF", "")
 
     try:
-        data = trigger_gate(api, key, agent, args.env, git_ref, pr)
+        data = trigger_gate(api, key, agent, args.env, git_ref, pr, run_id=getattr(args, "run_id", None))
     except urllib.error.HTTPError as e:
         detail = e.read().decode()[:300]
         print(f"gate error: {e.code} {detail}{_auth_hint(api, key) if e.code == 401 else ''}")
@@ -508,7 +588,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
     render_console(data, sha)
     write_step_summary(render_markdown(data, web_url, sha))
     post_pr_check(args, [data], web_url, repo, sha, pr, api, key)
-    return 0 if data["status"] == "PASS" else 1
+    return exit_code(data["status"])
 
 
 def start_simulation(
@@ -655,19 +735,67 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     # says whose fault it was.
     if worst_status(results) == "PASS":
         return 0
-    infra = any(r.get("unreachable") or r.get("status") == "ERROR" for r in results)
+    infra = any(
+        r.get("unreachable") or r.get("status") in ("ERROR", "INCOMPLETE") for r in results
+    )
     return 2 if infra else 1
 
 
 def _load_entrypoint(spec: str):
-    """Import a 'module:function' entrypoint from the current working directory."""
+    """Import a 'module:function' entrypoint from the current working directory.
+
+    Supported: a plain function and an `async def` coroutine function (run to completion on a
+    fresh event loop per case). Not supported — and refused up front rather than silently
+    producing a generator object as the "answer": generator / async-generator functions."""
+    import asyncio
     import importlib
+    import inspect
 
     if ":" not in spec:
         raise SystemExit("--entrypoint must be 'module:function' (e.g. my_agent:run)")
     mod_name, fn_name = spec.split(":", 1)
     sys.path.insert(0, os.getcwd())
-    return getattr(importlib.import_module(mod_name), fn_name)
+    func = getattr(importlib.import_module(mod_name), fn_name)
+    if inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func):
+        raise SystemExit(f"--entrypoint {spec} is a generator; replay needs a function that returns the answer")
+    if inspect.iscoroutinefunction(func):
+        def run_sync(user_input):
+            return asyncio.run(func(user_input))
+
+        return run_sync
+    return func
+
+
+def _new_run_id(explicit: str | None) -> str:
+    """The identity of THIS execution. Explicit (`--run-id` / TRACELY_RUN_ID — a workflow sets it
+    around its own agent run so `tracely gate` can pair by it) or minted fresh: a retry is a new
+    run, never the previous attempt's traces."""
+    import uuid
+
+    return (explicit or "").strip() or f"run-{uuid.uuid4().hex[:16]}"
+
+
+def _wait_for_run_traces(api: str, key: str, agent: str, run_id: str, expected: int, timeout: int) -> int:
+    """Poll until `expected` traces stamped with this run have been ingested (or time out).
+    Returns how many were seen — the caller decides what a shortfall means."""
+    import time
+
+    deadline = time.time() + timeout
+    seen = 0
+    while time.time() < deadline:
+        try:
+            seen = len(
+                _get_json(
+                    f"{api.rstrip('/')}/api/gate/run-traces?agent={agent}&run_id={run_id}", key
+                ).get("trace_ids", [])
+            )
+        except Exception:
+            seen = seen
+        if seen >= expected:
+            return seen
+        time.sleep(2)
+    print(f"warning: {seen}/{expected} trace(s) from run {run_id} ingested in {timeout}s; gating anyway")
+    return seen
 
 
 def _wait_for_traces(api: str, key: str, trace_ids: list[str], timeout: int = 45) -> bool:
@@ -692,6 +820,33 @@ def _wait_for_traces(api: str, key: str, trace_ids: list[str], timeout: int = 45
     return not pending
 
 
+def _replay_tag(rep, load_err: str | None) -> str:
+    """One bracketed word saying what actually happened to this case's calls."""
+    if load_err:
+        return "[replay error: fixtures unavailable]"
+    if rep.mode == "live":
+        return "[live]"
+    n = len(rep.served)
+    if rep.mode == "lenient":
+        return f"[lenient · {n} recorded, {len(rep.live)} live]"
+    return f"[recorded · {n} served]" + ("" if rep.clean else " · diverged")
+
+
+def _replay_notes(rep) -> list[str]:
+    """The divergence evidence under a case line: what the recording had that the run never
+    asked for, what was served despite a different input, and what a strict miss said."""
+    notes = []
+    if rep.unused:
+        notes.append(f"unused recorded calls: {', '.join(rep.unused[:6])}")
+    if rep.diverged:
+        notes.append(f"input diverged from recording: {', '.join(e.key for e in rep.diverged[:6])}")
+    if rep.live:
+        notes.append(f"ran live (lenient): {', '.join(rep.live[:6])}")
+    for e in rep.errors[:3]:
+        notes.append(e.message)
+    return notes
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
     api, key, web_url, agent = _conn(args)
     if not agent:
@@ -708,12 +863,22 @@ def cmd_replay(args: argparse.Namespace) -> int:
         print(f"replay error: {e.code} {detail}{_auth_hint(api, key) if e.code == 401 else ''}")
         return 2
     cases = suite.get("cases", [])
+    only = getattr(args, "case", None)
+    if only:
+        cases = [c for c in cases if c["id"] == only or c["id"].startswith(only)]
+        if not cases:
+            print(f"error: no promoted case matching '{only}' for '{agent}'")
+            return 2
     if not cases:
         print(f"no promoted cases for '{agent}' — nothing to replay (promote a failure first)")
         return 0
-    print(f"replaying {len(cases)} case(s) for {agent} (env={args.env})\n")
+    run_id = _new_run_id(getattr(args, "run_id", None))
+    os.environ["TRACELY_RUN_ID"] = run_id  # every span this process (or --cmd child) emits carries it
+    print(f"replaying {len(cases)} case(s) for {agent} (env={args.env}, run={run_id})\n")
 
     pairings: dict[str, str] = {}
+    failed: dict[str, str] = {}
+    execution_mode = "live" if args.live else ("lenient" if args.lenient else "recorded")
     if args.entrypoint:
         func = _load_entrypoint(args.entrypoint)
         import tracely_sdk as t  # lazy: only the replay path needs the tracing stack
@@ -721,25 +886,42 @@ def cmd_replay(args: argparse.Namespace) -> int:
         t.init(endpoint=api, api_key=key, service_name=agent, env=args.env)
         for c in cases:
             bundle = None if args.live else c.get("fixtures")
-            with t.fixtures(bundle), t.agent(agent) as span:  # hermetic unless --live
+            # A recording that could not be loaded is an execution problem: emit the errored
+            # trace WITHOUT running the agent, so the gate fails loudly instead of grading a
+            # live (or "nothing recorded") run as the recorded case.
+            load_err = None if args.live else c.get("fixture_error")
+            with t.fixtures(bundle, strict=not args.lenient) as rep, t.agent(agent) as span:
                 t.set_io(span, input=c["input"])
-                try:
-                    out = func(c["input"])
-                except Exception as exc:  # a crashing agent is itself a failing replay
-                    t.error(span, f"agent raised: {exc}")
-                    out = f"<error: {exc}>"
+                span.set_attribute("tracely.replay.mode", rep.mode)
+                span.set_attribute("tracely.replay.run_id", run_id)
+                span.set_attribute("tracely.replay.case_version", int(c.get("case_version") or 1))
+                if load_err:
+                    t.error(span, f"replay error: {load_err}")
+                    out = f"<replay error: {load_err}>"
+                else:
+                    try:
+                        out = func(c["input"])
+                    except Exception as exc:  # a crashing agent is itself a failing replay
+                        t.error(span, f"agent raised: {exc}")
+                        out = f"<error: {exc}>"
+                    if rep.errors:  # a strict miss the agent swallowed is still a broken replay
+                        t.error(span, f"replay error: {rep.errors[0].message}")
                 t.set_io(span, output=out if isinstance(out, str) else json.dumps(out, default=str))
                 tid = format(span.get_span_context().trace_id, "032x")
-            n_fx = len((bundle or {}).get("tools") or {}) + len((bundle or {}).get("llm") or {})
             pairings[c["id"]] = tid
-            tag = f"  [{n_fx} fixtures]" if n_fx else "  [live]"
-            print(f"  · {c['title']}  ->  {tid[:12]}…{tag}")
+            print(f"  · {c['title']}  ->  {tid[:12]}…  {_replay_tag(rep, load_err)}")
+            for line in _replay_notes(rep):
+                print(f"      {line}")
         t.flush()
         _wait_for_traces(api, key, list(pairings.values()))
     else:
         import subprocess
-        import time
 
+        # ponytail: fixtures are not injected into an external process, so --cmd runs are LIVE
+        # whatever the case recorded. Say so rather than let it read as a recorded replay.
+        print("  note: --cmd runs the agent live (recorded fixtures only apply to --entrypoint)")
+        execution_mode = "live"
+        cmd_timeout = int(getattr(args, "cmd_timeout", 600) or 600)
         for c in cases:
             env = {
                 **os.environ,
@@ -747,22 +929,40 @@ def cmd_replay(args: argparse.Namespace) -> int:
                 "TRACELY_API": api,
                 "TRACELY_KEY": key,
                 "TRACELY_ENV": args.env,
+                "TRACELY_RUN_ID": run_id,
             }
-            subprocess.run(args.cmd, shell=True, env=env, check=False)
-            print(f"  · ran cmd for {c['title']}")
-        time.sleep(8)  # external process emits its own trace; give ingestion a moment
+            # A failed or timed-out command is recorded as such: the gate must not let an older
+            # trace with the same input stand in for the run that never finished.
+            try:
+                rc = subprocess.run(args.cmd, shell=True, env=env, check=False, timeout=cmd_timeout).returncode
+            except subprocess.TimeoutExpired:
+                rc = None
+            if rc is None:
+                failed[c["id"]] = f"command timed out after {cmd_timeout}s"
+                print(f"  · {c['title']}  ->  timed out")
+            elif rc != 0:
+                failed[c["id"]] = f"command exited {rc}"
+                print(f"  · {c['title']}  ->  exited {rc}")
+            else:
+                print(f"  · ran cmd for {c['title']}")
+        # Bounded wait for THIS run's traces (by run id), not a fixed sleep.
+        _wait_for_run_traces(api, key, agent, run_id, len(cases) - len(failed), int(getattr(args, "timeout", 45) or 45))
 
     repo, sha, pr = gh_context()
     sha = args.sha or sha
     if args.pr is not None:
         pr = args.pr
-    # explicit pairing for the entrypoint path; digest matching for the --cmd path
-    data = trigger_gate(api, key, agent, args.env, sha or "", pr, candidates=pairings or None)
+    # explicit pairing for the entrypoint path; digest matching WITHIN this run for --cmd
+    data = trigger_gate(
+        api, key, agent, args.env, sha or "", pr, candidates=pairings or None,
+        run_id=run_id, failed=failed or None, execution_mode=execution_mode,
+        case_ids=[c["id"] for c in cases] if only else None,
+    )
 
     render_console(data, sha)
     write_step_summary(render_markdown(data, web_url, sha))
     post_pr_check(args, [data], web_url, repo, sha, pr, api, key)
-    return 0 if data["status"] == "PASS" else 1
+    return exit_code(data["status"])
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -794,6 +994,13 @@ def _add_common_gate_flags(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--web-url", help="Tracely web base for links (TRACELY_WEB_URL)")
     sp.add_argument("--pr", type=int, help="PR number (else inferred from the Actions event)")
     sp.add_argument("--sha", help="commit SHA (else inferred)")
+    sp.add_argument(
+        "--run-id",
+        default=os.environ.get("TRACELY_RUN_ID"),
+        help="identity of this CI execution (TRACELY_RUN_ID). replay mints one; for `gate`, set the "
+        "same value around your own agent run so candidates are paired to THIS run, not an older "
+        "trace with the same input",
+    )
     sp.add_argument("--github", action="store_true", help="post a commit status + PR comment")
     sp.add_argument(
         "--no-github", action="store_true", help="never touch GitHub even inside Actions"
@@ -826,6 +1033,16 @@ def main(argv: list[str] | None = None) -> int:
         "--live",
         action="store_true",
         help="make real tool/LLM calls instead of serving recorded fixtures",
+    )
+    r.add_argument(
+        "--cmd-timeout", type=int, default=600, help="seconds a --cmd run may take per case"
+    )
+    r.add_argument("--case", help="replay ONE case (id or id prefix) — the case page's command")
+    r.add_argument(
+        "--lenient",
+        action="store_true",
+        help="legacy replay: a call the recording lacks runs live instead of failing the case "
+        "(reported, never counted as a recorded run)",
     )
     _add_common_gate_flags(r)
 

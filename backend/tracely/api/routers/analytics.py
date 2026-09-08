@@ -18,6 +18,18 @@ from tracely.infrastructure.db.engine import SyncSessionLocal
 router = APIRouter(prefix="/api")
 
 
+@router.get("/onboarding/milestones")
+async def onboarding_milestones(project_id: str = Depends(get_project_id)) -> dict:
+    """The workspace's activation milestones — durable, sample-vs-real, with elapsed times."""
+    from tracely.services import milestones
+
+    def work():
+        with SyncSessionLocal() as s:
+            return {"items": milestones.for_project(s, project_id)}
+
+    return await run_in_threadpool(work)
+
+
 @router.get("/ops")
 async def ops(days: int = 14, project_id: str = Depends(get_project_id)) -> dict:
     """Latency / throughput / cost roll-up (the observability panel on Trends)."""

@@ -37,6 +37,46 @@ def run(user_input: str) -> str:
   gate sees the same failure condition. Faithful error-handling replay, for free.
 </Callout>
 
+## Recorded means recorded
+
+`fixtures(None)` is "no replay requested" — everything runs live. Any other bundle, including `{}`
+(an *explicitly empty* recording), is **recorded mode, strict by default**: a call the recording
+cannot answer raises `tracely.ReplayError` instead of running your function, so a recorded
+execution can never quietly become a live one.
+
+| `ReplayError.reason` | When |
+|---|---|
+| `missing` | nothing was recorded under that tool / model name |
+| `exhausted` | every recorded call for that name has already been served |
+| `mismatch` | a **tool** was called with args the recording doesn't have — a different call is never consumed just because the name matches |
+
+Matching lives in one place and is deliberately simple: an entry recorded without args matches by
+order; otherwise both sides are canonicalised (JSON strings parsed, key order and tuple/list
+ignored) and compared for equality. LLM calls are looked up by model id, falling back to the next
+recorded LLM call of any name (auto-instrumentor span names are not model ids). An LLM call whose
+**input** differs from the recording is still served in order but stamped
+`tracely.replay.divergence=input` and reported: recorded-model replay tests your orchestration
+under the recorded conditions, and a changed prompt is exactly the divergence it must show, not
+hide. Recorded model outputs do not prove a changed prompt produces a better answer.
+
+The block yields a `ReplayReport`:
+
+```python
+with tracely.fixtures(bundle) as rep:
+    run(case_input)
+rep.mode      # "recorded" | "lenient" | "live"
+rep.served    # ["tools:get_order", "llm:gpt-4o"]
+rep.unused    # recorded calls the run never asked for — divergence evidence, not auto-fail
+rep.diverged  # served despite a different input
+rep.errors    # the strict misses that were raised
+rep.providers # which SDK create-methods were patched in this process
+rep.clean     # strict run that reproduced the recording exactly
+```
+
+`fixtures(bundle, strict=False)` keeps the pre-0.4.3 lenient behaviour (live fall-through on a
+miss, ordered serve on a mismatch) for callers migrating. Its report says `lenient` — it is never
+presented as a recorded run. `tracely replay --lenient` is the CLI form.
+
 ## No rewrite needed: `@observe` tools and auto-instrumented LLM calls replay too
 
 The `call_tool`/`call_llm` seam is the fully-portable path, but most agents don't need a rewrite:
@@ -44,11 +84,30 @@ The `call_tool`/`call_llm` seam is the fully-portable path, but most agents don'
 - **Tools** — a function decorated `@tracely.observe(as_type="tool")` is transparently hermetic:
   under fixtures it serves the recorded output (or re-raises the recorded failure as
   `tracely.ToolError`) instead of running. Decorate your tools and the tool side replays as-is.
-- **LLM calls** — inside a `fixtures()` block Tracely class-patches **OpenAI `chat.completions`**
-  and **Anthropic `messages`**, so code that calls the SDK directly (under `instrument="auto"`, or
-  via the `wrap_openai` / `wrap_anthropic` drop-ins) is served the recorded completion —
-  reconstructed into a provider-shaped response object — and never hits the network. Other
-  providers' direct calls fall back to live in replay; use `call_llm` there.
+- **LLM calls** — inside a `fixtures()` block Tracely class-patches the provider create-methods
+  below, so code that calls the SDK directly (under `instrument="auto"`, or via the drop-ins) is
+  served the recorded completion — reconstructed into a provider-shaped response object — and never
+  hits the network. A strict miss raises `ReplayError` at the call site, like `call_llm`.
+
+### What is actually intercepted
+
+| Provider | Entry point | Sync / async | Streaming | Served shape | Tested against |
+|---|---|---|---|---|---|
+| OpenAI | `chat.completions.create` | both | **no** — `stream=True` goes live | duck-typed `ChatCompletion` (`choices[0].message.content` / `.tool_calls`; no `usage`) | real `openai` client |
+| Anthropic | `messages.create` | both | **no** — `messages.stream` goes live | duck-typed `Message` (`text` / `tool_use` blocks) | real `anthropic` client |
+| Google GenAI | `models.generate_content` | both | **no** | `.text`, `.function_calls`, `candidates[0].content.parts` | real class when installed |
+| Mistral | `chat.complete` / `complete_async` | both | **no** | OpenAI-shaped | stand-in only |
+| LiteLLM | `completion` / `acompletion` | both | **no** | OpenAI-shaped | stand-in only |
+| Anything else | — | — | — | **live in replay** | — |
+
+<Callout type="warning">
+  A surface outside this table — the OpenAI Responses API, Bedrock, Cohere, a framework's own
+  HTTP client, streaming on any provider — is **live in replay**; the SDK cannot see that call.
+  The report catches it after the fact: recorded calls the run never asked for (`rep.unused`,
+  also logged) mean something went to the network. The SDK does not sandbox Python or deny
+  egress. If you need that guarantee, deny provider/tool egress in the CI executor itself, or use
+  `call_llm` for a provider-agnostic seam.
+</Callout>
 
 ## Activating fixtures manually
 
@@ -61,6 +120,10 @@ with tracely.fixtures(bundle):     # bundle = the case's recorded tool/LLM outpu
 ```
 
 `fixture(kind, name)` peeks the next recorded output for a tool/model without consuming it.
+
+`tracely replay` itself refuses to run a case whose recording cannot be loaded: it emits the
+case's trace **errored** without running your agent, so the gate fails loudly instead of grading a
+live (or "nothing recorded") run as the recorded case.
 
 ## Why this matters
 

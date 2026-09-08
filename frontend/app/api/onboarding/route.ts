@@ -16,7 +16,7 @@ export async function GET() {
       return null;
     }
   };
-  const [stats, evaluators, gates, llm, me, trends, sessions] = await Promise.all([
+  const [stats, evaluators, gates, llm, me, trends, sessions, milestones] = await Promise.all([
     get("/api/stats"),
     get("/api/evaluators"),
     get("/api/gates?limit=1"),
@@ -24,6 +24,7 @@ export async function GET() {
     get("/auth/me"),
     get("/api/trends?days=2"),
     get("/api/sessions?limit=1"),
+    get("/api/onboarding/milestones"),
   ]);
   // UTC day-key, matching the backend's trends buckets — the client uses the same convention
   const today = new Date().toISOString().slice(0, 10);
@@ -43,5 +44,7 @@ export async function GET() {
     failures_today: todayRow?.failures ?? 0,
     gate_today: Boolean(gates?.items?.[0]?.created_at?.startsWith(today)),
     thread_id: sessions?.[0]?.thread ?? null,
+    // durable milestones (W6): the quest's outcome steps read these, sample rows excluded
+    milestones: milestones?.items ?? [],
   });
 }

@@ -197,6 +197,9 @@ def main() -> None:
     if env:
         for sp in spans:
             sp.attributes.append(kv("tracely.env", env))
+    if os.environ.get("TRACELY_SAMPLE"):  # seeded demo data: never the customer's activation
+        for sp in spans:
+            sp.attributes.append(kv("tracely.sample", True))
 
     req = ExportTraceServiceRequest(resource_spans=[
         ResourceSpans(

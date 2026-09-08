@@ -49,7 +49,17 @@ def _case_dict(
         "source_trace_id": c.source_trace_id,
         "input_digest": c.input_digest,
         "match_mode": c.match_mode,
+        # Source-failure evidence (the source trace fails the contract) — NOT a verified fix.
         "fail_to_pass_validated": c.fail_to_pass_validated,
+        "version": c.version or 1,
+        # Candidate-verified evidence: a specific candidate passed, at this case version.
+        "verified_candidate_trace_id": c.verified_candidate_trace_id or "",
+        "verified_case_version": c.verified_case_version,
+        "verified_at": c.verified_at.isoformat() if c.verified_at else None,
+        "verified_by": c.verified_by or "",
+        # The durable artifact (W3): empty key = not yet snapshotted (legacy) → backfill/recapture.
+        "artifact_key": c.artifact_s3_key or "",
+        "artifact_digest": c.artifact_digest or "",
         "assertions": c.assertions,
         "reference_trajectory": c.reference_trajectory,
         "created_at": c.created_at.isoformat() if c.created_at else None,
@@ -135,7 +145,17 @@ async def get_case(case_id: str, project_id: str = Depends(get_project_id)) -> d
             if not c:
                 return None
             a = repo.agent_in_project(s, project_id, c.agent_id)
-            return _case_dict(c, repo.case_replays(s, case_id), a.slug if a else None)
+            d = _case_dict(c, repo.case_replays(s, case_id), a.slug if a else None)
+            lg = repo.case_last_gate(s, case_id)
+            d["last_gate"] = (
+                {
+                    "id": lg[1].id, "status": lg[1].status, "verdict": lg[0].verdict,
+                    "run_id": lg[1].run_id or "", "created_at": lg[1].created_at.isoformat() if lg[1].created_at else None,
+                }
+                if lg
+                else None
+            )
+            return d
 
     res = await run_in_threadpool(work)
     if res is None:
@@ -155,6 +175,104 @@ async def delete_case(case_id: str, project_id: str = Depends(get_project_id)) -
     if not await run_in_threadpool(work):
         raise HTTPException(status_code=404, detail="case not found")
     return {"deleted": case_id}
+
+
+@router.patch("/cases/{case_id}/expectations", dependencies=[Depends(require_user)])
+async def update_expectations(
+    case_id: str, project_id: str = Depends(get_project_id), body: dict = Body(default={})
+) -> dict:
+    """Edit the case's expected behaviour (whitelisted assertion keys). Bumps the version and
+    re-snapshots the artifact; re-validates source failure when the source still exists."""
+
+    def work():
+        with SyncSessionLocal() as s:
+            try:
+                c = RegressionService(s).update_expectations(project_id, case_id, body or {})
+            except NotFound as e:
+                return ("404", str(e))
+            except ValueError as e:
+                return ("400", str(e))
+            return ("ok", _case_dict(c))
+
+    status, payload = await run_in_threadpool(work)
+    if status != "ok":
+        raise HTTPException(status_code=int(status), detail=payload)
+    return payload
+
+
+@router.get("/cases/{case_id}/candidates")
+async def case_candidates(case_id: str, project_id: str = Depends(get_project_id)) -> dict:
+    """Recent runs with exactly this case's input — the compatible candidates to verify."""
+
+    def work():
+        with SyncSessionLocal() as s:
+            try:
+                return RegressionService(s).candidates(project_id, case_id)
+            except NotFound:
+                return None
+
+    res = await run_in_threadpool(work)
+    if res is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    return {"items": res}
+
+
+@router.get("/cases/{case_id}/compare")
+async def case_compare(
+    case_id: str, candidate: str, project_id: str = Depends(get_project_id)
+) -> dict:
+    """Original vs candidate: aligned relevant steps, first divergence, structural verdict."""
+
+    def work():
+        with SyncSessionLocal() as s:
+            try:
+                return RegressionService(s).compare(project_id, case_id, candidate)
+            except NotFound as e:
+                return ("err", str(e))
+
+    res = await run_in_threadpool(work)
+    if isinstance(res, tuple):
+        raise HTTPException(status_code=404, detail=res[1])
+    return res
+
+
+@router.post("/cases/backfill-artifacts", dependencies=[Depends(require_user)])
+async def backfill_artifacts(project_id: str = Depends(get_project_id)) -> dict:
+    """Snapshot every case in this workspace that has no durable artifact yet, from its source
+    trace while that still exists. Cases whose source already expired come back `unrecoverable`
+    with the reason — recapture those from a fresh trace of the same input."""
+
+    def work():
+        with SyncSessionLocal() as s:
+            return RegressionService(s).backfill_artifacts(project_id)
+
+    return await run_in_threadpool(work)
+
+
+@router.post("/cases/{case_id}/recapture", dependencies=[Depends(require_user)])
+async def recapture(
+    case_id: str, project_id: str = Depends(get_project_id), body: dict = Body(default={})
+) -> dict:
+    """Rebuild a case's artifact from a fresh trace with the same input (digest must match);
+    bumps the case version."""
+    trace_id = str(body.get("trace_id") or "")
+    if not trace_id:
+        raise HTTPException(status_code=400, detail="trace_id is required")
+
+    def work():
+        with SyncSessionLocal() as s:
+            try:
+                art = RegressionService(s).recapture(project_id, case_id, trace_id)
+            except NotFound as e:
+                return ("404", str(e))
+            except ValueError as e:
+                return ("409", str(e))
+            return ("ok", {"case_id": case_id, "case_version": art.case_version, "artifact_digest": art.digest()})
+
+    status, payload = await run_in_threadpool(work)
+    if status != "ok":
+        raise HTTPException(status_code=int(status), detail=payload)
+    return payload
 
 
 @router.post("/cases/{case_id}/replay")

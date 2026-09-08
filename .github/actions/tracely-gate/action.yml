@@ -79,6 +79,10 @@ runs:
         GATE_ENV: ${{ inputs.env }}
         MIN_PASS_RATE: ${{ inputs.min-pass-rate }}
         TIMEOUT: ${{ inputs.timeout }}
+        # The identity of THIS workflow attempt. `mode=gate` pairs candidates to traces stamped
+        # with it, so an older trace with the same input can never satisfy this run. Export the
+        # same value (`${{ github.run_id }}-${{ github.run_attempt }}`) around your own agent run.
+        TRACELY_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       # the CLI auto-detects GitHub Actions and posts the status + comment; exit code gates the job
       run: |
         set -euo pipefail

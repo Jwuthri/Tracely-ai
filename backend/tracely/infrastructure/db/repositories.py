@@ -605,18 +605,48 @@ def case_delete(s: Session, project_id: str, case_id: str) -> bool:
     so a historical gate can end up listing fewer cases than its `total`. That's honest: the case
     no longer exists to explain.
 
-    ponytail: leaves the case's S3 fixture bundle. Blobs are cheap and orphaned ones are harmless;
-    add a sweep if storage cost ever shows up.
+    Deleting a case is the deliberate act that removes its durable artifact and fixture bundle
+    from the blob store (best-effort, after the rows are gone) — routine trace retention never
+    touches them. The source trace stays either way.
     """
     c = case_get(s, project_id, case_id)
     if c is None:
         return False
+    fixture_key, project = c.fixture_bundle_s3_key, c.project_id
     s.execute(delete(GateCase).where(GateCase.evaluation_case_id == case_id))
     s.execute(delete(EvaluationSuiteCase).where(EvaluationSuiteCase.case_id == case_id))
     s.execute(delete(CaseReplay).where(CaseReplay.case_id == case_id))
     s.delete(c)
     s.commit()
+    from tracely.config import settings
+    from tracely.domain.regression.artifact import case_blob_prefix
+    from tracely.infrastructure.blob import s3 as blobstore
+
+    blobstore._delete_prefix(case_blob_prefix(settings.s3_event_prefix, project, case_id))
+    if fixture_key:
+        blobstore._delete_prefix(fixture_key)
     return True
+
+
+def case_last_gate(s: Session, case_id: str) -> tuple[GateCase, GateRun] | None:
+    """The most recent CI gate verdict for this case — the workspace's "inspect CI result"."""
+    row = s.execute(
+        select(GateCase, GateRun)
+        .join(GateRun, GateRun.id == GateCase.gate_run_id)
+        .where(GateCase.evaluation_case_id == case_id)
+        .order_by(desc(GateRun.created_at))
+        .limit(1)
+    ).first()
+    return (row[0], row[1]) if row else None
+
+
+def cases_without_artifact(s: Session, project_id: str | None = None) -> list[EvaluationCase]:
+    """Cases that have no durable artifact yet — the backfill's worklist. Deployment-wide when
+    `project_id` is None (the nightly job runs across every workspace before retention sweeps)."""
+    q = select(EvaluationCase).where(EvaluationCase.artifact_s3_key == "")
+    if project_id is not None:
+        q = q.where(EvaluationCase.project_id == project_id)
+    return list(s.execute(q.order_by(EvaluationCase.created_at)).scalars())
 
 
 # ── failure clusters ──────────────────────────────────────────────────────────

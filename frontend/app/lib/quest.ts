@@ -4,6 +4,8 @@
    "go look at a page" steps live in localStorage as visit markers. Dates are UTC day-keys
    ("YYYY-MM-DD") to match the backend's trends buckets. */
 
+export type QuestMilestone = { name: string; first_at: string | null; sample: boolean | null };
+
 export type QuestStatus = {
   traces: number;
   evaluators: number;
@@ -20,6 +22,8 @@ export type QuestStatus = {
   gate_today: boolean;
   /** newest conversation — lets Replay/Fleet steps deep-link instead of describing the path */
   thread_id: string | null;
+  /** Durable activation milestones (W6). Sample rows never tick a step. */
+  milestones?: QuestMilestone[];
 };
 
 export const EMPTY_STATUS: QuestStatus = {
@@ -36,6 +40,7 @@ export const EMPTY_STATUS: QuestStatus = {
   failures_today: 0,
   gate_today: false,
   thread_id: null,
+  milestones: [],
 };
 
 export type QuestDay = { date: string; visited: string[]; credited: string[] };
@@ -86,6 +91,11 @@ export function visitMarker(path: string): string | null {
 
 export function deriveSteps(s: QuestStatus, l: QuestLocal): QuestStep[] {
   const seen = (m: string) => l.visited.includes(m);
+  // A real (non-sample) durable milestone, or — for a workspace from before milestones — the count.
+  const ms = s.milestones ?? [];
+  const legacy = !ms.some((m) => m.first_at);
+  const real = (name: string, fallback: boolean) =>
+    ms.some((m) => m.name === name && !!m.first_at && !m.sample) || (legacy && fallback);
   const conv = (suffix: string) => (s.thread_id ? `/sessions/${s.thread_id}/${suffix}` : "/traces");
   return [
     {
@@ -114,7 +124,7 @@ export function deriveSteps(s: QuestStatus, l: QuestLocal): QuestStep[] {
       detail: "pip install the SDK and point it at this workspace — auto-instrumentation does the rest.",
       href: "/dashboard",
       cta: "Get the snippet",
-      done: s.traces > 0,
+      done: real("first_trace_received", s.traces > 0),
     },
     {
       id: "open",
@@ -154,25 +164,6 @@ export function deriveSteps(s: QuestStatus, l: QuestLocal): QuestStep[] {
       done: seen("replay"),
     },
     {
-      id: "fleet",
-      group: "Explore",
-      title: "Visit the Fleet",
-      detail:
-        "The same script as a pixel office — a desk per agent, skills at the library, tools on the wall, delegations walking over. Next to Replay in the tab strip.",
-      href: conv("fleet"),
-      cta: s.thread_id ? "Open your latest conversation's Fleet" : "Open a conversation → Fleet tab",
-      done: seen("fleet"),
-    },
-    {
-      id: "theme",
-      group: "Explore",
-      title: "Flip the theme",
-      detail: "Dark or light — the sun/moon button in the top bar remembers your pick per browser.",
-      href: "",
-      cta: "",
-      done: !!l.theme_touched,
-    },
-    {
       id: "fail",
       group: "Close the loop",
       title: "Catch a failure",
@@ -188,7 +179,7 @@ export function deriveSteps(s: QuestStatus, l: QuestLocal): QuestStep[] {
       detail: "A failure becomes a fail-to-pass test with the real tool calls recorded — it replays hermetically.",
       href: "/clusters",
       cta: "Promote from a cluster",
-      done: s.cases > 0,
+      done: real("source_failure_confirmed", s.cases > 0),
     },
     {
       id: "gate",
@@ -197,7 +188,7 @@ export function deriveSteps(s: QuestStatus, l: QuestLocal): QuestStep[] {
       detail: "Run the promoted cases against a PR's agent — exits non-zero, so the bug you fixed can't come back.",
       href: "/gates",
       cta: "See gate runs",
-      done: s.gates > 0,
+      done: real("ci_check_completed", s.gates > 0),
     },
   ];
 }

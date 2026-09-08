@@ -29,6 +29,8 @@ _SPAN_COLS = [
     # handoff edge (DELEGATE spans): raw slugs as the SDK recorded them — the replay resolves
     # them to registry agents through its alias map.
     "caller_agent_id", "callee_agent_id",
+    # the span attribute map — replay execution evidence (`tracely.replay.*`) is read from it
+    "metadata",
     # per-span spend, summed in ClickHouse (same idiom as the ops readers) — the replay's
     # cost ticker reads these; harmless extras for every other _SPAN_COLS consumer.
     "toUInt64(arraySum(mapValues(usage_details))) AS tokens",
@@ -124,6 +126,32 @@ class TraceReader:
             "GROUP BY trace_id HAVING countIf(name = 'emulated.turn') = 0 "
             "ORDER BY max(start_time) DESC LIMIT {n:UInt32}",
             parameters={"p": project_id, "a": agent_id, "e": env, "n": limit},
+        ).result_rows
+        return [tid for (tid,) in rows]
+
+    def traces_with_input(self, project_id: str, agent_id: str, input_text: str, limit: int = 20) -> list[dict]:
+        """Recent runs of this agent whose ROOT input is exactly `input_text` — the compatible
+        candidates for a case, newest first: `[{trace_id, env, ts, run_id, level}]`."""
+        rows = self.client.query(
+            "SELECT trace_id, any(env), max(start_time), any(metadata['tracely.replay.run_id']), "
+            "anyIf(level, is_app_root) FROM events FINAL WHERE project_id = {p:String} "
+            "AND agent_id = {a:String} AND internal_kind = '' AND is_app_root AND input = {i:String} "
+            "GROUP BY trace_id ORDER BY max(start_time) DESC LIMIT {n:UInt32}",
+            parameters={"p": project_id, "a": agent_id, "i": input_text, "n": limit},
+        ).result_rows
+        return [
+            {"trace_id": tid, "env": env, "ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts), "run_id": run_id or "", "level": level or ""}
+            for tid, env, ts, run_id, level in rows
+        ]
+
+    def traces_for_run(self, project_id: str, agent_id: str, run_id: str, limit: int = 500) -> list[str]:
+        """Trace ids stamped `tracely.replay.run_id = run_id` for this agent, newest first — the
+        candidates a CI execution actually produced. Internal recordings excluded as above."""
+        rows = self.client.query(
+            "SELECT trace_id FROM events FINAL WHERE project_id = {p:String} AND agent_id = {a:String} "
+            "AND internal_kind = '' AND metadata['tracely.replay.run_id'] = {r:String} "
+            "GROUP BY trace_id ORDER BY max(start_time) DESC LIMIT {n:UInt32}",
+            parameters={"p": project_id, "a": agent_id, "r": run_id, "n": limit},
         ).result_rows
         return [tid for (tid,) in rows]
 

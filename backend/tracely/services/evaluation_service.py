@@ -301,6 +301,7 @@ class EvaluationService:
                 project_id, trace_id, agent_run_id, results, thread_id=thread_id
             )
             self._emit(on_result, results, trace_id=trace_id, thread_id=thread_id)
+            self._milestone_first_check(project_id, spans)
 
         fail_results = [r for r in results if r.verdict == "FAIL"]
         if fail_results and root.get("agent_id"):
@@ -814,6 +815,20 @@ class EvaluationService:
         except Exception as exc:  # table missing / DB hiccup -> no evals
             log.warning("evaluator_load_failed", error=str(exc))
             return []
+
+    @staticmethod
+    def _milestone_first_check(project_id: str, spans: list[dict]) -> None:
+        """`first_check_completed` — a verdict was actually written for a real trace."""
+        try:
+            from tracely.services import milestones
+
+            with SyncSessionLocal() as s:
+                milestones.record(
+                    s, project_id, "first_check_completed",
+                    sample=milestones.is_sample(spans), integration=milestones.integration_of(spans),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("milestone_first_check_failed", error=str(exc))
 
     @staticmethod
     def _notify_trace_failed(project_id: str, trace_id: str, fail_results: list[EvalResult]) -> None:

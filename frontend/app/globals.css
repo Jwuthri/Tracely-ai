@@ -240,6 +240,10 @@
   .btn-ghost {
     @apply inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-fg-muted transition-colors hover:border-signal/40 hover:text-fg disabled:opacity-60;
   }
+  /* Form controls in the failure-to-fix workspace (one idiom, keyboard-visible focus ring). */
+  .input {
+    @apply w-full rounded-lg border border-line bg-ink-900 px-3 py-2 text-[12.5px] text-fg placeholder:text-fg-faint focus:border-signal/50 focus:outline-none focus:ring-1 focus:ring-signal/30;
+  }
 
   /* Assistant replies reuse the shared Markdown renderer, which is sized for the small preview
      panels (11px, muted). In a chat bubble that reads as a footnote next to the 13px question —

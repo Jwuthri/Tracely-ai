@@ -107,7 +107,7 @@ def test_recorded_error_raises_toolerror_and_marks_span(exporter: InMemorySpanEx
     assert _span(exporter, "flaky").status.status_code.name == "ERROR"
 
 
-def test_unrecorded_tool_falls_through_to_live(exporter: InMemorySpanExporter) -> None:
+def test_unrecorded_tool_raises_in_recorded_mode(exporter: InMemorySpanExporter) -> None:
     ran = []
 
     @tracely.observe(as_type="tool")
@@ -115,11 +115,15 @@ def test_unrecorded_tool_falls_through_to_live(exporter: InMemorySpanExporter) -
         ran.append(x)
         return "live-result"
 
-    # bundle has a DIFFERENT tool — other_tool has no recorded entry, so it runs for real.
+    # bundle has a DIFFERENT tool — other_tool has no recorded entry. Recorded mode is strict:
+    # the real fn must NOT run; only the legacy lenient mode falls through (and reports it).
     bundle = {"version": 2, "tools": [{"name": "some_other", "args": None, "output": "x", "error": None}]}
-    with tracely.fixtures(bundle):
+    with tracely.fixtures(bundle), pytest.raises(tracely.ReplayError):
+        other_tool("y")
+    assert ran == []
+    with tracely.fixtures(bundle, strict=False) as rep:
         assert other_tool("y") == "live-result"
-    assert ran == ["y"]
+    assert ran == ["y"] and rep.live == ["tools:other_tool"]
 
 
 def test_non_tool_observe_is_not_bridged(exporter: InMemorySpanExporter) -> None:

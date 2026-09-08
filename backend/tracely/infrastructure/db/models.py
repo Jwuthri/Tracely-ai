@@ -347,13 +347,42 @@ class EvaluationCase(Base):
     source_span_id: Mapped[str] = mapped_column(String(64), default="")
     agent_version_first_failed: Mapped[str | None] = mapped_column(String(36), nullable=True)
     fixture_bundle_s3_key: Mapped[str] = mapped_column(String(512), default="")
+    # The durable artifact (W3, migration 0034): input + fixtures + expectations + judge identity
+    # + provenance for THIS case version, so the case executes after its source trace expires.
+    # Empty = no artifact yet (a legacy case, or one whose source was gone before backfill).
+    artifact_s3_key: Mapped[str] = mapped_column(String(512), default="")
+    artifact_digest: Mapped[str] = mapped_column(String(64), default="")
     reference_trajectory: Mapped[dict] = mapped_column(JSON, default=dict)
     assertions: Mapped[dict] = mapped_column(JSON, default=dict)
     match_mode: Mapped[str] = mapped_column(String(16), default="superset")
+    # SOURCE-FAILURE evidence only: the source trace fails the contract (W4 renamed the meaning,
+    # not the column). It never says a fix was observed.
     fail_to_pass_validated: Mapped[bool] = mapped_column(Boolean, default=False)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # CANDIDATE-VERIFIED evidence (0035): a specific candidate execution passed the contract at
+    # `verified_case_version`. Stale once the case version moves on; never backfilled from
+    # `fail_to_pass_validated`.
+    verified_candidate_trace_id: Mapped[str] = mapped_column(String(64), default="")
+    verified_case_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by: Mapped[str] = mapped_column(String(64), default="")  # "gate:<id>" | "replay"
     created_by: Mapped[str] = mapped_column(String(128), default="ui")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProjectMilestone(Base):
+    """First-time activation outcomes per workspace (W6, migration 0036) — see
+    `services/milestones.py`. One row per (project, milestone); the first occurrence wins."""
+
+    __tablename__ = "project_milestones"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(48), primary_key=True)
+    first_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sample: Mapped[bool] = mapped_column(Boolean, default=False)  # seeded demo, not the customer's agent
+    integration: Mapped[str] = mapped_column(String(64), default="")
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)  # since first_trace_received
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class EvaluationSuiteCase(Base):
@@ -371,7 +400,7 @@ class CaseReplay(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("evaluation_cases.id"), index=True)
     candidate_trace_id: Mapped[str] = mapped_column(String(64))
-    verdict: Mapped[str] = mapped_column(String(8))
+    verdict: Mapped[str] = mapped_column(String(16))  # PASS | FAIL | INCOMPLETE (0033 widened)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -385,11 +414,17 @@ class GateRun(Base):
     env: Mapped[str] = mapped_column(String(16), default="ci")
     git_ref: Mapped[str] = mapped_column(String(80), default="")
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(String(12), default="RUNNING")
+    status: Mapped[str] = mapped_column(String(16), default="RUNNING")
+    # The execution manifest (0035): which CI run produced the candidates (traces stamped
+    # `tracely.replay.run_id`) and under which mode. Empty run_id = legacy digest pairing.
+    run_id: Mapped[str] = mapped_column(String(64), default="")
+    execution_mode: Mapped[str] = mapped_column(String(16), default="")
     total: Mapped[int] = mapped_column(Integer, default=0)
     passed: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
     skipped: Mapped[int] = mapped_column(Integer, default=0)
+    # cases graded INCOMPLETE (a required check could not run) — blocking, not a pass (0033)
+    incomplete: Mapped[int] = mapped_column(Integer, default=0)
     latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     warnings: Mapped[list] = mapped_column(JSON, default=list)
@@ -412,7 +447,7 @@ class GateCase(Base):
     )
     scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"), nullable=True)
     candidate_trace_id: Mapped[str] = mapped_column(String(64), default="")
-    verdict: Mapped[str] = mapped_column(String(12))
+    verdict: Mapped[str] = mapped_column(String(16))
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
 
 

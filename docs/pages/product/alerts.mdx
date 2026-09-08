@@ -22,7 +22,7 @@ Click the **When** node to choose it. Two families:
 | **Event** | the moment it happens, inline in the pipeline | a gate failing on a PR, a live conversation breaking, a failure mode nobody has seen before |
 | **Threshold** | evaluated every 5 minutes over a sliding window | quality sliding after a deploy, a rate creeping up |
 
-**CI gate failed** — a [gate run](/product/gates) finished `FAIL` or `NO_COVERAGE`. `NO_COVERAGE`
+**CI gate failed** — a [gate run](/product/gates) finished `FAIL`, `NO_COVERAGE` or `INCOMPLETE`. `NO_COVERAGE`
 counts on purpose: a suite that *could not run* is the quietly-green failure nobody notices.
 Filters: `env`, and text (matches the gate summary and its soft warnings).
 

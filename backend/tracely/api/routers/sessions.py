@@ -36,6 +36,9 @@ async def list_sessions(
     sort: str = "recent",
     order: str = "desc",
     agent: str = "",
+    failing: bool | None = None,
+    multi: bool | None = None,
+    q: str = "",
     project_id: str = Depends(get_project_id),
 ) -> list[dict]:
     """Traces grouped into threads by conversation/session (a trace with no conversation is its
@@ -55,7 +58,11 @@ async def list_sessions(
     saved link because a column was renamed is worse than showing the default order.
 
     `agent` (a registry agent id) keeps only that agent's threads. Each row also carries `agent`
-    (the slug) — the conversation's agent, i.e. the tenant when the SDK declared one."""
+    (the slug) — the conversation's agent, i.e. the tenant when the SDK declared one.
+
+    `failing` / `multi` / `q` filter server-side over every thread (see
+    `async_reader.session_filter_clauses` for exactly what `q` searches); `GET /sessions/count`
+    with the same parameters returns how many match."""
     advisory = await advisory_score_names(project_id)
     rows = await async_reader.sessions_overview(
         project_id,
@@ -68,7 +75,11 @@ async def list_sessions(
         sort=sort,
         order=order,
         agent_id=agent,
+        failing=failing,
+        multi=multi,
+        q=q,
     )
+    assert isinstance(rows, list)
     conv_scores = await async_reader.conversation_scores_by_thread(
         project_id, [r["thread"] for r in rows]
     )
@@ -88,6 +99,27 @@ async def list_sessions(
         slug = slug_of.get(r.get("agent_id") or "", "")
         r["agent"] = slug or ("" if r.get("internal_kind") else settings.default_agent_slug)
     return rows
+
+
+@router.get("/sessions/count")
+async def count_sessions(
+    from_ts: str | None = None,
+    to_ts: str | None = None,
+    evals: bool = False,
+    agent: str = "",
+    failing: bool | None = None,
+    multi: bool | None = None,
+    q: str = "",
+    project_id: str = Depends(get_project_id),
+) -> dict:
+    """How many threads match the same filters `GET /sessions` takes — so the list's empty state,
+    its displayed count and its pages describe one result set."""
+    advisory = await advisory_score_names(project_id)
+    total = await async_reader.sessions_overview(
+        project_id, 0, 0, from_ts, to_ts, advisory, include_internal=evals, agent_id=agent,
+        failing=failing, multi=multi, q=q, count_only=True,
+    )
+    return {"total": int(total)}
 
 
 @router.get("/sessions/{thread_id}/export")

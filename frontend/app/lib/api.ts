@@ -145,17 +145,36 @@ export type SessionsQuery = {
   sort?: SessionSort;
   order?: SortOrder;
   agent?: string; // registry agent id — only that agent's conversations
+  failing?: boolean; // only threads a non-advisory evaluator failed (server-side, whole set)
+  multi?: boolean; // only multi-turn threads
+  q?: string; // case-insensitive text over first input / last output / model / metadata / agent id
 };
 
-export async function getSessions(opts: SessionsQuery = {}): Promise<Thread[]> {
-  const { limit = 50, offset = 0, from, to, sort, order, agent } = opts;
+function sessionsParams(opts: SessionsQuery): URLSearchParams {
+  const { limit = 50, offset = 0, from, to, sort, order, agent, failing, multi, q } = opts;
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (from) qs.set("from_ts", from);
   if (to) qs.set("to_ts", to);
   if (sort) qs.set("sort", sort);
   if (order) qs.set("order", order);
   if (agent) qs.set("agent", agent);
-  return getJson<Thread[]>(`/api/sessions?${qs.toString()}`);
+  if (failing) qs.set("failing", "true");
+  if (multi) qs.set("multi", "true");
+  if (q) qs.set("q", q);
+  return qs;
+}
+
+export async function getSessions(opts: SessionsQuery = {}): Promise<Thread[]> {
+  return getJson<Thread[]>(`/api/sessions?${sessionsParams(opts).toString()}`);
+}
+
+/** How many threads match `opts` — the same filters, counted server-side. */
+export async function getSessionsCount(opts: SessionsQuery = {}): Promise<number> {
+  const qs = sessionsParams(opts);
+  qs.delete("limit");
+  qs.delete("offset");
+  const r = await getJsonOrNull<{ total: number }>(`/api/sessions/count?${qs.toString()}`);
+  return r?.total ?? 0;
 }
 
 export type ThreadTurn = {
@@ -234,12 +253,24 @@ export type EvalCase = {
   source_trace_id: string;
   input_digest: string;
   match_mode: string;
+  /** Source-failure evidence: the source trace fails the contract. NOT a verified fix. */
   fail_to_pass_validated: boolean;
+  version?: number;
+  /** Candidate-verified evidence: a specific candidate passed, at `verified_case_version`. */
+  verified_candidate_trace_id?: string;
+  verified_case_version?: number | null;
+  verified_at?: string | null;
+  verified_by?: string;
+  /** Durable artifact (input + fixtures + expectations); empty = legacy, not yet snapshotted. */
+  artifact_key?: string;
+  artifact_digest?: string;
   assertions: Record<string, unknown>;
   reference_trajectory: { steps: { kind: string; name: string; level: string }[] };
   created_at: string | null;
   last_verdict?: string | null;
   replays?: Replay[];
+  /** The most recent CI gate verdict for this case, if any. */
+  last_gate?: { id: string; status: string; verdict: string; run_id: string; created_at: string | null } | null;
 };
 
 /** A page of a growing table, plus how many rows exist in total. Lists that only ever grow
@@ -259,6 +290,51 @@ export async function getCases(
 
 export async function getCase(caseId: string): Promise<EvalCase | null> {
   return getJsonOrNull<EvalCase>(`/api/cases/${caseId}`);
+}
+
+/** A durable activation milestone (W6): the first time a real outcome happened in this workspace. */
+export type Milestone = {
+  name: string;
+  first_at: string | null;
+  sample: boolean | null;
+  integration: string;
+  elapsed_ms: number | null;
+};
+
+export async function getMilestones(): Promise<Milestone[]> {
+  const r = await getJsonOrNull<{ items: Milestone[] }>("/api/onboarding/milestones");
+  return r?.items ?? [];
+}
+
+/** A run with exactly this case's input — a compatible candidate (W5). */
+export type CaseCandidate = {
+  trace_id: string;
+  env: string;
+  ts: string;
+  run_id: string;
+  level: string;
+  is_source: boolean;
+  replay_verdict: string | null;
+};
+
+export async function getCaseCandidates(caseId: string): Promise<CaseCandidate[]> {
+  const r = await getJsonOrNull<{ items: CaseCandidate[] }>(`/api/cases/${caseId}/candidates`);
+  return r?.items ?? [];
+}
+
+export type CompareStep = { kind: string; name: string; input: unknown; output: unknown; error: boolean };
+export type CaseCompare = {
+  rows: { ref: CompareStep | null; cand: CompareStep | null; op: string; divergence: string | null }[];
+  first_divergence: number | null;
+  reference_steps: number;
+  candidate_steps: number;
+  structural_verdict: string;
+  structural: Record<string, string[]>;
+  answers: { reference: string; candidate: string };
+};
+
+export async function getCaseCompare(caseId: string, candidate: string): Promise<CaseCompare | null> {
+  return getJsonOrNull<CaseCompare>(`/api/cases/${caseId}/compare?candidate=${encodeURIComponent(candidate)}`);
 }
 
 /** The case this trace was promoted into, or null — drives promote vs. remove on the trace page. */
@@ -502,10 +578,15 @@ export type GateRun = {
   git_ref: string;
   pr_number: number | null;
   status: string;
+  /** Which CI execution produced the candidates (empty = paired by input digest, unverified). */
+  run_id?: string;
+  execution_mode?: string;
   total: number;
   passed: number;
   failed: number;
   skipped: number;
+  /** Cases whose required checks could not run (judge unavailable, replay did not complete). */
+  incomplete?: number;
   latency_ms: number;
   total_tokens: number;
   warnings: string[];

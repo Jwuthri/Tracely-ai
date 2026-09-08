@@ -108,70 +108,33 @@ _fs = GateService._final_status
 
 def test_all_skip_is_no_coverage_not_pass():
     # THE bug this guards: cases exist but the run exercised none -> a gate that tested nothing.
-    assert _fs(passed=0, failed=0, skipped=3, total=3, warnings=[]) == "NO_COVERAGE"
+    assert _fs(passed=0, failed=0, skipped=3, incomplete=0, total=3, warnings=[]) == "NO_COVERAGE"
 
 
 def test_no_cases_at_all_passes_vacuously():
     # no promoted suite for this agent yet -> nothing to protect, don't block every PR.
-    assert _fs(passed=0, failed=0, skipped=0, total=0, warnings=[]) == "PASS"
+    assert _fs(passed=0, failed=0, skipped=0, incomplete=0, total=0, warnings=[]) == "PASS"
 
 
 def test_any_pass_with_partial_skip_passes_by_default():
-    assert _fs(passed=2, failed=0, skipped=1, total=3, warnings=[]) == "PASS"
+    assert _fs(passed=2, failed=0, skipped=1, incomplete=0, total=3, warnings=[]) == "PASS"
 
 
 def test_all_pass_passes():
-    assert _fs(passed=3, failed=0, skipped=0, total=3, warnings=[]) == "PASS"
+    assert _fs(passed=3, failed=0, skipped=0, incomplete=0, total=3, warnings=[]) == "PASS"
 
 
 def test_any_fail_fails():
-    assert _fs(passed=1, failed=1, skipped=1, total=3, warnings=[]) == "FAIL"
+    assert _fs(passed=1, failed=1, skipped=1, incomplete=0, total=3, warnings=[]) == "FAIL"
 
 
 def test_partial_skip_blocks_when_full_coverage_required(monkeypatch):
     from tracely.services import gate_service as gs
 
     monkeypatch.setattr(gs.settings, "gate_require_full_coverage", True)
-    assert _fs(passed=2, failed=0, skipped=1, total=3, warnings=[]) == "NO_COVERAGE"
+    assert _fs(passed=2, failed=0, skipped=1, incomplete=0, total=3, warnings=[]) == "NO_COVERAGE"
     # full coverage still passes
-    assert _fs(passed=3, failed=0, skipped=0, total=3, warnings=[]) == "PASS"
-
-
-# ── apply_quality (judge-in-the-gate: a bad answer FAILs a structurally-clean case) ──
-from tracely.domain.regression.contract import apply_quality  # noqa: E402
-
-
-def test_quality_failure_flips_a_structurally_passing_case_to_fail():
-    q = [{"score_name": "tracely.run.quality", "verdict": "FAIL", "value": 0.2, "comment": "hallucinated"}]
-    verdict, detail = apply_quality("PASS", {"tools_ok": True}, q, blocks=True)
-    assert verdict == "FAIL"
-    assert detail["quality_pass"] is False
-    assert detail["quality_score"] == 0.2 and detail["quality_reason"] == "hallucinated"
-
-
-def test_quality_failure_is_advisory_when_not_blocking():
-    q = [{"score_name": "tracely.run.quality", "verdict": "FAIL", "value": 0.2, "comment": "bad"}]
-    verdict, detail = apply_quality("PASS", {}, q, blocks=False)
-    assert verdict == "PASS"  # recorded but not blocking
-    assert detail["quality_pass"] is False and detail["quality_checked"] is True
-
-
-def test_quality_pass_keeps_structural_verdict():
-    q = [{"score_name": "tracely.run.quality", "verdict": "PASS", "value": 0.9, "comment": "good"}]
-    verdict, detail = apply_quality("PASS", {}, q, blocks=True)
-    assert verdict == "PASS" and detail["quality_pass"] is True
-
-
-def test_no_quality_results_is_unchecked_not_a_pass_or_fail():
-    verdict, detail = apply_quality("PASS", {"tools_ok": True}, [], blocks=True)
-    assert verdict == "PASS" and detail["quality_checked"] is False
-
-
-def test_quality_cannot_rescue_a_structural_fail():
-    # a structural FAIL stays FAIL even if the answer quality is fine
-    q = [{"score_name": "tracely.run.quality", "verdict": "PASS", "value": 0.9, "comment": "good"}]
-    verdict, _ = apply_quality("FAIL", {"missing_tools": ["get_weather"]}, q, blocks=True)
-    assert verdict == "FAIL"
+    assert _fs(passed=3, failed=0, skipped=0, incomplete=0, total=3, warnings=[]) == "PASS"
 
 
 # ── the gate grades with everything, not a sampled subset ────────────────────
