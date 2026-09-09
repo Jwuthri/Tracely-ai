@@ -384,6 +384,16 @@ async def answer_stream(
                 "start a new conversation to keep going."
             )
             reply = f"{reply}\n\n_{note}_" if reply else note
+        if stopped == "calls":
+            # Hit the per-turn step cap. Unlike the budget stop this one is resumable: the chat's
+            # history is saved either way, so the next turn starts from what it managed to say.
+            # `reply` here is the last thing the model actually said before the cap, which is
+            # usually its narration of what it was in the middle of.
+            note = (
+                "I hit my step limit for a single turn, so I paused here — "
+                "say **keep going** and I'll carry on from this point."
+            )
+            reply = f"{reply}\n\n_{note}_" if reply else note
         if not reply:
             raise RuntimeError("the model finished without an answer")
 

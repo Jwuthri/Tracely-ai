@@ -452,6 +452,46 @@ async def test_a_budget_stop_mid_loop_is_an_answer_not_an_error(db, monkeypatch)
     assert "spend limit" in out["reply"]
 
 
+async def test_a_step_cap_stop_offers_to_continue_instead_of_leaking_the_sentinel(db, monkeypatch):
+    """The step cap is resumable, unlike the budget one — so it must read as a pause the user can
+    lift, not as a failure. The raw middleware string must never reach them."""
+    monkeypatch.setattr(svc.provider, "use_server_key", contextlib.nullcontext)
+    monkeypatch.setattr(svc.provider, "llm_enabled", lambda: True)
+    monkeypatch.setattr(
+        svc.provider, "stream_agent",
+        lambda *a, **k: _stream(
+            {"type": "tool", "name": "create_scenario", "args": {}},
+            {"type": "final", "text": "Reading the agent's turns…", "usage": {}, "stopped": "calls"},
+        ),
+    )
+    out = await turn("p1", "u1", chat_id=None, message="build me a scenario")
+    assert out["type"] == "done"
+    assert "keep going" in out["reply"]
+    assert "Reading the agent's turns" in out["reply"]  # the partial work survives
+    assert "Model call limits exceeded" not in out["reply"]
+
+
+async def test_the_call_limit_sentinel_never_becomes_the_answer(monkeypatch):
+    """`stream_agent` reads the last AI message as the answer, and ModelCallLimitMiddleware ends
+    the run by injecting one. Without the guard the assistant literally replies "Model call
+    limits exceeded: run limit (12/12)"."""
+    from langchain_core.messages import AIMessage
+
+    sentinel = AIMessage(content="Model call limits exceeded: run limit (50/50)")
+    monkeypatch.setattr(provider, "get_chat_model", lambda *a, **k: _fake_chat_model())
+
+    class _Agent:
+        async def astream(self, *a, **k):
+            yield "updates", {"model": {"messages": [AIMessage(content="Looking that up…")]}}
+            yield "updates", {"model": {"messages": [sentinel]}}
+
+    monkeypatch.setattr("langchain.agents.create_agent", lambda *a, **k: _Agent())
+    frames = [f async for f in provider.stream_agent("hi", tools=[], model="x/y")]
+    final = frames[-1]
+    assert final["stopped"] == "calls"
+    assert final["text"] == "Looking that up…"
+
+
 # ---------------------------------------------------------------- the tool picker
 
 

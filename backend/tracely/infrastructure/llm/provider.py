@@ -908,6 +908,10 @@ def _cached_tool_selector(**kw):
     return CachedToolSelector(**kw)
 
 
+# `langchain.agents.middleware.model_call_limit._build_limit_exceeded_message` builds this.
+_CALL_LIMIT_PREFIX = "Model call limits exceeded:"
+
+
 def agent_middleware(
     *,
     selector_model: str = "",
@@ -1047,6 +1051,16 @@ def stream_agent(
                                         "name": getattr(msg, "name", "") or "",
                                         "ok": getattr(msg, "status", "success") != "error",
                                     }
+                                    continue
+                                # ponytail: ModelCallLimitMiddleware's `end` behaviour injects an
+                                # AIMessage and jumps to the end, and that message carries no
+                                # marker but its own text — so matching the string is the only
+                                # seam there is. Left unhandled it becomes `text`, i.e. the
+                                # assistant answers "Model call limits exceeded: run limit
+                                # (12/12)". Report it as a stop reason and let the caller phrase
+                                # it; upgrade to a custom middleware if langchain ever tags it.
+                                if _message_text(msg).startswith(_CALL_LIMIT_PREFIX):
+                                    stopped = "calls"
                                     continue
                                 ai_messages.append(msg)
                                 text = _message_text(msg) or text

@@ -168,8 +168,11 @@ class Settings(BaseSettings):
     assistant_tool_selector_model: str = "openai/gpt-oss-120b"
     assistant_max_tools: int = 8  # per turn, after selection; 0 disables selection entirely
     # Runaway guard: a model that keeps calling tools without concluding. `end` stops the loop
-    # and lets it answer with what it has, rather than erroring the turn away.
-    assistant_max_model_calls: int = 12
+    # and lets it answer with what it has, rather than erroring the turn away. Sized for the
+    # work, not for safety — building a scenario is a dozen reads and writes before the agent has
+    # anything to say, and 12 cut those turns off mid-thought. `assistant_budget_usd` is the real
+    # backstop; this one only has to stop an infinite loop.
+    assistant_max_model_calls: int = 50
     # What one CONVERSATION may spend of our credit, in USD. Cumulative across its turns — at
     # roughly half a cent a turn this is ~200 turns, so it catches a loop, not a heavy user.
     # Enforced before a turn starts AND mid-stream, because one turn's tool loop can run away
