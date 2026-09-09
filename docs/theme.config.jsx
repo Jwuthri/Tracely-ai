@@ -35,7 +35,7 @@ const config = {
   nextThemes: { defaultTheme: "dark", forcedTheme: "dark" },
   navigation: { prev: true, next: true },
   // Docs sit on their own subdomain, so "back to the product" has to be a link — there is no
-  // shared shell to climb out through. The footer already carries one; this is the visible one.
+  // shared shell to climb out through. With the footer gone this is the only one, on every page.
   navbar: {
     extraContent: (
       <a href={SITE} className="tracely-site-link">
@@ -43,16 +43,9 @@ const config = {
       </a>
     ),
   },
-  footer: {
-    content: (
-      <span style={{ fontSize: 13 }}>
-        {/* Links back to the marketing origin on every page: docs pages are the ones that earn
-            inbound links, and this is how that authority reaches tracely-ai.com. */}
-        <a href={SITE}>Tracely</a> — trace-native CI/CD for AI agents · the recorded run{" "}
-        <em>is</em> the test.
-      </span>
-    ),
-  },
+  // No footer. `component: null` drops Nextra's whole footer slot, not just its content — a
+  // `content`-only override would still leave the empty bordered bar behind.
+  footer: { component: null },
   // Overriding `head` REPLACES Nextra's default, which is the only thing that emits <title> and
   // <meta description> — the previous static fragment silently shipped every docs page with no
   // title at all. Anything set here must therefore cover those too.

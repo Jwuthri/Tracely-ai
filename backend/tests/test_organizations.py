@@ -528,12 +528,26 @@ async def test_leaving_lands_you_in_your_remaining_workspace(client, hosted):
     assert [o["id"] for o in after["organizations"]] == [personal["organization_id"]]
 
 
-async def test_leaving_your_only_organization_is_refused(client, hosted):
-    """An invited-only account has nowhere else to sign in to."""
+async def test_leaving_your_only_organization_lands_you_in_a_personal_one(client, hosted):
+    """An account created BY INVITE has no personal org, so "leave" used to 409 — which meant the
+    people most likely to want out (invited teammates) were the ones who couldn't get out. They
+    get a personal org on the way through instead."""
     owner = await _company_token(client)
     mtoken, muid = await _invite_and_accept(client, owner, "teammate@x.test")
+    before = (await client.get("/auth/me", headers=_bearer(mtoken))).json()
+
     r = await client.delete(f"/auth/members/{muid}", headers=_bearer(mtoken))
-    assert r.status_code == 409 and "only organization" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+
+    after = (await client.get("/auth/me", headers=_bearer(mtoken))).json()
+    orgs = after["organizations"]
+    assert len(orgs) == 1 and orgs[0]["id"] != before["organization_id"]
+    # and the handed-back workspace is one they can actually reach
+    assert r.json()["switch_to"] == after["project_id"]
+
+    # the company they left no longer counts them as a seat
+    members = (await client.get("/auth/members", headers=_bearer(owner))).json()
+    assert muid not in [m["user_id"] for m in members]
 
 
 async def test_the_last_owner_cannot_leave_or_be_removed(client, hosted):

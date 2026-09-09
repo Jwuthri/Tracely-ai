@@ -9,8 +9,8 @@ import type { Member } from "@/app/lib/auth/types";
  *  removing someone: the seat IS the access.
  *
  *  Leaving and removing are the same button pointed at a different row, because they are the same
- *  backend call. The refusals (last owner, your only org) are the server's — it holds the counts,
- *  so we surface its message rather than second-guessing it here. */
+ *  backend call. The refusals (last owner, personal account) are the server's — it holds the
+ *  counts, so we surface its message rather than second-guessing it here. */
 export function MembersList({
   meId,
   local,
@@ -38,7 +38,7 @@ export function MembersList({
   async function remove(m: Member) {
     const self = m.user_id === meId;
     const what = self
-      ? "Leave this organization? You'll lose access to all of its workspaces."
+      ? "Leave this organization? You'll lose access to all of its workspaces. If it's the only one you belong to, you'll land in a fresh personal workspace."
       : `Remove ${m.display_name || m.email}? They lose access to every workspace in this organization.`;
     if (!window.confirm(what)) return;
     setBusy(m.user_id);

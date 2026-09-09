@@ -451,9 +451,10 @@ async def remove_member(
     re-upserts the row from the verified JWT on the very next request, so a delete here would
     silently undo itself.
 
-    Three refusals, all about not stranding someone: an org must keep an OWNER (a sole owner who
-    wants out deletes the org instead), a personal account is your own login, and leaving your
-    only org would leave you with nothing to sign in to.
+    Two refusals, both about not stranding someone: an org must keep an OWNER (a sole owner who
+    wants out deletes the org instead), and a personal account is your own login. Leaving your
+    only org is NOT a refusal — an account created by invite has no personal org, so refusing
+    there meant an invited teammate could never leave. They get one on the way out instead.
     """
     org = await _require_org(principal, session)
     members = await queries.organization_members(session, org.id)
@@ -478,8 +479,8 @@ async def remove_member(
 
     switch_to: str | None = None
     if is_self:
-        # Where the caller lands afterwards; also proves they aren't leaving their only way in.
-        # Read before the delete, while the membership still resolves the workspaces.
+        # Where the caller lands afterwards. Read before the delete, while the membership still
+        # resolves the workspaces.
         switch_to = next(
             (
                 p.id
@@ -489,11 +490,15 @@ async def remove_member(
             None,
         )
         if switch_to is None:
-            raise HTTPException(
-                409,
-                "this is your only organization — leaving would leave you with no workspace "
-                "to sign in to",
+            # Nowhere to land: an invited teammate never got a personal org, so this company is
+            # their whole account. Give them one rather than trapping them in it.
+            me = await queries.get_user(session, user_id)
+            landing = await provisioning.create_personal_org(
+                session,
+                user_id=user_id,
+                name=((me.display_name if me else "") or (me.email if me else "").split("@")[0]),
             )
+            switch_to = landing.id
 
     await queries.remove_organization_member(session, org.id, user_id)
     log.info(

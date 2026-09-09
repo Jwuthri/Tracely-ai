@@ -199,14 +199,28 @@ body::before {
   font-weight: 600;
 }
 
-/* Folder headings get the app's mono/uppercase/tracked treatment. Scoped to the collapse <button>
- * so it can't leak onto the active page link, which also carries _font-semibold. */
-.nextra-sidebar-container .nextra-menu-desktop > li > button {
+/* Section labels get the app's mono/uppercase/tracked treatment. These are `_meta.js` separators,
+ * which Nextra renders as a childless <li> — matching on the <li> itself (rather than on any
+ * descendant) is what keeps the treatment off real nav items. A folder's collapse <button> used to
+ * be caught here too, which stacked a second heading-looking row right under the separator. */
+.nextra-sidebar-container .nextra-menu-desktop li:not(:has(a, button)) {
   font-family: var(--font-mono);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.2em;
   color: var(--fg-faint) !important;
+  margin-bottom: 0.35rem !important;
+}
+
+/* Folders read as ordinary nav rows; only the state differs from a page link. */
+.nextra-sidebar-container li > button {
+  color: var(--fg-muted) !important;
+  font-size: 13.5px;
+  border-radius: 8px !important;
+}
+.nextra-sidebar-container li > button:hover {
+  color: var(--fg) !important;
+  background: rgba(255, 255, 255, 0.03) !important;
 }
 
 .nextra-sidebar-footer {
@@ -443,10 +457,43 @@ div[class*="nextra-code"] .\_bg-primary-700\/5 {
   color: var(--fg-faint);
 }
 
-/* prev / next */
-.nextra-content > div:last-child a[class*="_text-gray-600"],
-a[class*="_flex"][class*="_gap-1"][class*="_py-8"] {
+/* prev / next — Nextra ships these as two bare links on a hairline, which at the end of a long page
+ * reads as leftover text. Give them the app's card surface so the next step is an obvious target. */
+.nextra-content main > div[class*="_border-t"][class*="_pt-8"] {
+  border-color: var(--line) !important;
+  gap: 0.75rem;
+}
+.nextra-content main > div[class*="_border-t"][class*="_pt-8"] > a {
+  flex: 1;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(15, 19, 27, 0.5);
   color: var(--fg-muted) !important;
+  font-size: 14px;
+  text-decoration: none;
+  transition:
+    border-color 0.15s,
+    color 0.15s,
+    background-color 0.15s;
+}
+.nextra-content main > div[class*="_border-t"][class*="_pt-8"] > a:hover {
+  border-color: rgba(34, 211, 238, 0.35);
+  background: rgba(34, 211, 238, 0.05);
+  color: var(--fg) !important;
+}
+
+/* The `#` permalink is invisible until you're on the heading — same restraint as the app. */
+.nextra-content .subheading-anchor::after {
+  color: var(--fg-faint);
+}
+.nextra-content :is(h2, h3, h4):hover .subheading-anchor::after {
+  color: var(--signal) !important;
+}
+
+/* The footer used to be the page's bottom margin. Without it, give the last block its own room. */
+.nextra-content main {
+  padding-bottom: 2rem;
 }
 
 /* ─── search ─────────────────────────────────────────────────────────────── */
@@ -482,16 +529,6 @@ a[class*="_flex"][class*="_gap-1"][class*="_py-8"] {
 .nextra-search-results li.active > a {
   background: rgba(34, 211, 238, 0.1) !important;
   color: var(--fg) !important;
-}
-
-/* ─── footer ─────────────────────────────────────────────────────────────── */
-
-.nextra-content footer,
-footer.nextra-\_footer,
-body > div > footer {
-  border-top: 1px solid var(--line);
-  color: var(--fg-faint);
-  font-size: 13px;
 }
 
 /* focus ring, app-style */

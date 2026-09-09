@@ -327,6 +327,30 @@ async def bootstrap_owner(
     return project, user
 
 
+async def create_personal_org(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    name: str,
+    workspace_name: str = "",
+) -> Project:
+    """A personal org with exactly one workspace, owned by `user_id`.
+
+    Two callers, one reason: this is the floor of the account model — somewhere that is yours
+    alone and that nobody can take away. Public signup starts you here, and leaving your only
+    company org drops you back here rather than being refused.
+
+    Deliberately not behind `assert_can_create_organization`: that cap counts COMPANY orgs, and
+    this org is empty by construction (no seats, no traces, free plan)."""
+    org = await create_organization(
+        session, name=name, kind=KIND_PERSONAL, owner_user_id=user_id
+    )
+    project, _key = await create_workspace(
+        session, name=(workspace_name or "My workspace"), organization_id=org.id
+    )
+    return project
+
+
 async def signup_personal(
     session: AsyncSession,
     *,
@@ -340,14 +364,11 @@ async def signup_personal(
     user = _new_local_user(email, password_hash, display_name)
     session.add(user)
     await session.flush()
-    org = await create_organization(
+    project = await create_personal_org(
         session,
+        user_id=user.id,
         name=(display_name or email.split("@")[0]),
-        kind=KIND_PERSONAL,
-        owner_user_id=user.id,
-    )
-    project, _key = await create_workspace(
-        session, name=(workspace_name or "My workspace"), organization_id=org.id
+        workspace_name=workspace_name,
     )
     return project, user
 
