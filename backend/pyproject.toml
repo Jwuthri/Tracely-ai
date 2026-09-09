@@ -48,7 +48,7 @@ dependencies = [
   "httpx>=0.27",
   # MCP server mounted at /mcp (api/mcp_server.py) — lets an agent drive the workspace with
   # the same ingest key the SDK uses. Small, pure-Python, and already in the lock file.
-  "mcp>=1.27",
+  "mcp>=2.1.1",
   # Hosted-cloud billing (services/billing_service.py). Pure-Python and small; self-hosters
   # carry the wheel but the code paths are dead unless BILLING_ENABLED + Stripe keys are set.
   "stripe>=11",
