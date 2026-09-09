@@ -12,7 +12,7 @@ package = false
 dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=0.23",
-  "ruff>=0.16.5",
+  "ruff>=0.16.6",
   "tracely-ai[all]",
   "python-dotenv>=1.2.3",   # sdk/examples/* load .env so provider keys work without a manual export
   "aiosqlite>=0.20",      # hermetic async DB for the auth test suite (no Postgres required)
