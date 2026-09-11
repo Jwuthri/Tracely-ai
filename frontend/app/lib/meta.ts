@@ -7,8 +7,10 @@ const META_PREFIX = "tracely.metadata.";
 function coerce(v: string): unknown {
   if (v === "true") return true;
   if (v === "false") return false;
-  if (v !== "" && !Number.isNaN(Number(v))) return Number(v);
   const t = v.trim();
+  // only coerce when the number round-trips exactly — `"0098231"`, `"1.0"`, `"0x10"`, `"1e3"` are
+  // ids/versions the user set, and rewriting them breaks both display and the search haystack.
+  if (t !== "" && String(Number(t)) === t) return Number(t);
   if (t.startsWith("{") || t.startsWith("[")) {
     try {
       return JSON.parse(t);
