@@ -49,8 +49,8 @@ export default async function GatesPage({
     getCases(PICKER_CASES),
     getScenarios(),
   ]);
-  // Offer the agents that can actually gate something first — an agent with no promoted cases
-  // only ever returns NO_COVERAGE. Counts come from the server's GROUP BY, not from tallying the
+  // Default the launcher to an agent that can actually gate something — an agent with no promoted
+  // cases only ever returns NO_COVERAGE. (The picker itself lists agents A–Z.) Counts come from the server's GROUP BY, not from tallying the
   // case list, which is now one page.
   const caseCounts = cases.by_agent;
   // Only what the picker renders — an EvaluationCase carries assertions and a reference

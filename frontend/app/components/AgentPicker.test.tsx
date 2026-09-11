@@ -20,10 +20,10 @@ describe("AgentPicker", () => {
     expect(rows()).toEqual(["All agents", "agent_2", "agent_10", "Beta"]);
   });
 
-  it("keeps the caller's order when sort is off", async () => {
-    render(<AgentPicker agents={AGENTS} value="" onChange={() => {}} sort={false} />);
+  it("sorts even when the caller hands in a ranked list", async () => {
+    render(<AgentPicker agents={AGENTS} value="i1" onChange={() => {}} />);
     await userEvent.click(box());
-    expect(rows()).toEqual(["agent_10", "agent_2", "Beta"]);
+    expect(rows()).toEqual(["agent_2", "agent_10", "Beta"]);
   });
 
   it("filters on a substring, not just a prefix", async () => {
@@ -68,6 +68,15 @@ describe("AgentPicker", () => {
     await userEvent.click(box());
     await userEvent.click(screen.getByRole("option", { name: "All agents" }));
     expect(onChange).toHaveBeenCalledWith("");
+  });
+
+  it("hangs the panel off the right edge when it would overflow the viewport", async () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect");
+    rect.mockReturnValue({ right: window.innerWidth + 100 } as DOMRect);
+    render(<AgentPicker agents={AGENTS} value="" onChange={() => {}} />);
+    await userEvent.click(box());
+    expect(screen.getByRole("listbox")).toHaveClass("right-0");
+    rect.mockRestore();
   });
 
   it("a half-typed search never survives the panel closing", async () => {

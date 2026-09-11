@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentRow } from "@/app/lib/api";
 
 /** The project's agent registry as a searchable combobox.
@@ -21,7 +21,6 @@ export function AgentPicker({
   by = "id",
   allLabel,
   hint,
-  sort = true,
   id,
   ariaLabel,
   className,
@@ -33,7 +32,6 @@ export function AgentPicker({
   by?: "id" | "slug"; // which field the caller stores
   allLabel?: string; // the "no filter" row; omitted = a pick is required
   hint?: (a: AgentRow) => string; // secondary text on the row (a count)
-  sort?: boolean; // off where the caller curates the order (e.g. agents with cases first)
   id?: string;
   ariaLabel?: string;
   className?: string;
@@ -44,16 +42,15 @@ export function AgentPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const [flip, setFlip] = useState(false);
 
   const selected = agents.find((a) => a[by] === value);
 
-  // Natural order, so agent_2 sorts before agent_10 instead of after it.
+  // Natural order, so agent_2 sorts before agent_10 instead of after it. Every picker sorts —
+  // a caller's ranking only decides the default pick, never the list order.
   const ordered = useMemo(
-    () =>
-      sort
-        ? [...agents].sort((a, b) => a.slug.localeCompare(b.slug, undefined, { numeric: true, sensitivity: "base" }))
-        : agents,
-    [agents, sort],
+    () => [...agents].sort((a, b) => a.slug.localeCompare(b.slug, undefined, { numeric: true, sensitivity: "base" })),
+    [agents],
   );
 
   const needle = query.trim().toLowerCase();
@@ -76,6 +73,14 @@ export function AgentPicker({
   // Closing is always a full reset: the box shows what is actually selected, never a stale search.
   useEffect(() => {
     if (!open) setQuery("");
+  }, [open]);
+
+  // The panel grows to fit the longest slug, so opened near the right edge (the gate launcher
+  // sits there) it would push the page sideways — hang it off the input's right edge instead.
+  // Measured once on open, before paint: filtering only ever narrows it.
+  useLayoutEffect(() => {
+    const r = open ? listRef.current?.getBoundingClientRect() : undefined;
+    setFlip(!!r && r.right > window.innerWidth - 16);
   }, [open]);
 
   // Keep the highlighted row in view while arrowing through a long registry.
@@ -133,6 +138,7 @@ export function AgentPicker({
         disabled={disabled}
         placeholder={selected ? selected.slug : allLabel ?? "Search agents…"}
         aria-label={ariaLabel ?? "Agent"}
+        title={selected?.slug}
         className={clsx(className, "pr-7")}
       />
       {/* A chevron, so the box still reads as a picker rather than a text field. */}
@@ -154,7 +160,12 @@ export function AgentPicker({
           role="listbox"
           // Keep focus in the input: a blur before the click would close the panel under the cursor.
           onMouseDown={(e) => e.preventDefault()}
-          className="absolute left-0 top-full z-50 mt-2 max-h-72 w-full min-w-[17rem] overflow-y-auto rounded-xl border border-line bg-ink-800/95 p-1 shadow-panel backdrop-blur-md"
+          // Sized to the longest slug (never narrower than the input), capped to the viewport;
+          // past the cap a name wraps rather than truncates, so it is always readable in full.
+          className={clsx(
+            "absolute top-full z-50 mt-2 max-h-72 w-max min-w-[max(100%,17rem)] max-w-[min(40rem,calc(100vw_-_2rem))] overflow-y-auto rounded-xl border border-line bg-ink-800/95 p-1 shadow-panel backdrop-blur-md",
+            flip ? "right-0" : "left-0",
+          )}
         >
           {rows.length === 0 && (
             <div className="px-2.5 py-3 text-center text-[12px] text-fg-faint">No agent matches “{query}”</div>
@@ -187,7 +198,7 @@ export function AgentPicker({
                 >
                   ✓
                 </span>
-                <span className={clsx("min-w-0 flex-1 truncate", a ? "font-mono text-[12px]" : "text-[12.5px]")}>
+                <span className={clsx("min-w-0 flex-1 [overflow-wrap:anywhere]", a ? "font-mono text-[12px]" : "text-[12.5px]")}>
                   {a ? highlight(a.slug, needle) : allLabel}
                 </span>
                 {a && hint && (

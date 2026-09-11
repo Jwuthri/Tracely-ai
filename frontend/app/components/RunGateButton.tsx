@@ -16,8 +16,8 @@ export type GateScenarioPick = GatePick & { kind: "SCRIPTED" | "ADVERSARIAL" };
  *
  *  Two endpoints behind one button: with no scenario picked this is the synchronous replay gate
  *  (`/api/gate`), with one it's the two-phase simulated gate (`/api/gate/simulate`), which also
- *  replays the picked cases. `agents` comes from the project's registry (ordered by the page so
- *  agents that actually have promoted cases come first) — no hardcoded slug, which is what used to
+ *  replays the picked cases. `agents` comes from the project's registry (ranked by the page so the
+ *  default pick is the agent with the most promoted cases; the picker lists them A–Z) — no hardcoded slug, which is what used to
  *  make this button 404 with "agent 'planner' not found" on every fresh project. */
 export function RunGateButton({
   agents,
@@ -127,7 +127,6 @@ export function RunGateButton({
               setOff(new Set()); // a pick belongs to the agent it was made for
             }}
             hint={(a) => `${caseCounts[a.id] ?? 0} cases`}
-            sort={false}
             id="gate-agent"
             ariaLabel="Agent to gate"
             className="w-52 rounded-lg border border-line bg-ink-700 px-2.5 py-2 font-mono text-[12.5px] text-fg transition-colors hover:border-line-bright focus:border-signal/50 focus:outline-none"

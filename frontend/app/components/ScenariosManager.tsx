@@ -137,7 +137,6 @@ export function ScenariosManager({
             value={agentId}
             onChange={setAgentId}
             hint={(a) => `${counts[a.id] ?? 0} scenarios`}
-            sort={false}
             className="mt-1 block w-56 rounded-lg border border-line bg-ink-700 px-2.5 py-2 font-mono text-[12.5px] text-fg transition-colors hover:border-line-bright focus:border-signal/50 focus:outline-none"
           />
         </div>
