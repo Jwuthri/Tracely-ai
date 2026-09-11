@@ -10,7 +10,7 @@ import { FloatingPanel, IconBox, JsonPill, Pill, Plain } from "../JsonView";
 import { IconCheck, IconCopy } from "../icons";
 import { TypeChip } from "../ui";
 import { AgentBadge, MessageContent, ModelBadge, RoleBadge, StateCell, stateWritesOf, TurnMessage } from "./content";
-import { asRoleMessage, deriveTitle, durationMs, fmtDateTime, fmtMs, fmtPanelOutput, fmtScoreValue, jsonResultLabel, nearestAgentLabel, selfMs } from "./format";
+import { asRoleMessage, deriveTitle, durationMs, lastTurnMessage, fmtDateTime, fmtMs, fmtPanelOutput, fmtScoreValue, jsonResultLabel, nearestAgentLabel, selfMs } from "./format";
 import type { Col } from "./columns";
 import { EvalViewContext, RollingSummaryContext, useLiveScore } from "./contexts";
 
@@ -116,11 +116,21 @@ export function CopyConvButton({ thread }: { thread: string }) {
 // IS the trace id and `session_turns` matches on either.
 export const convHref = (conv: ConvNode) => `/sessions/${encodeURIComponent(conv.thread)}`;
 
+// Roughly what the 260px column shows of a title before clipping it.
+const TITLE_FITS = 32;
+
 function ConvTitleCell({ conv }: { conv: ConvNode }) {
   const href = convHref(conv);
   const kind = conv.internal_kind;
+  const title = deriveTitle(conv.first_input);
+  // Past what fits, the title reads as the opening message's pill — the one the Content column
+  // shows — rather than a clipped line. (A list with no user message has no pill to show.)
+  const pill = title.length > TITLE_FITS && lastTurnMessage(conv.first_input, "user") !== null;
   return (
-    <a href={href} className="flex max-w-full items-center gap-2 text-sm font-medium text-fg transition-colors hover:text-fg" title={conv.subject_id ? `${kind} of ${conv.subject_id}` : conv.thread}>
+    // `w-0` + a floor: the table is auto-layout, so a cell's widest unbreakable run sets its
+    // column's width — one pasted URL stretched this column across the screen. Sized to nothing,
+    // it holds the column's 260px (less padding) and still grows when the table has room to spare.
+    <div className="flex w-0 min-w-[max(100%,236px)] items-center gap-2" title={conv.subject_id ? `${kind} of ${conv.subject_id}` : conv.thread}>
       {kind ? (
         <span className={clsx("shrink-0 rounded border px-1.5 py-[1px] font-mono text-[9.5px] font-semibold uppercase tracking-wide", INTERNAL_TAG[kind] ?? INTERNAL_TAG.eval)}>
           {kind}
@@ -128,8 +138,14 @@ function ConvTitleCell({ conv }: { conv: ConvNode }) {
       ) : (
         <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", conv.failing ? "bg-fail" : "bg-ok/70")} />
       )}
-      <span className="truncate hover:underline">{deriveTitle(conv.first_input)}</span>
-    </a>
+      {pill ? (
+        <TurnMessage raw={conv.first_input} role="user" />
+      ) : (
+        <a href={href} className="truncate text-sm font-medium text-fg hover:underline">
+          {title}
+        </a>
+      )}
+    </div>
   );
 }
 
