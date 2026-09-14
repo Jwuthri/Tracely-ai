@@ -322,3 +322,32 @@ def test_auth_hint_separates_a_missing_key_from_a_stale_one():
     stale = _auth_hint("https://api.example.com", "tk_rotated")
     assert "rotated" in stale
     assert "unset" not in stale, "a key that IS set must not be reported as missing"
+
+
+# ── GitHub API timeout ──────────────────────────────────────────────────────
+
+
+def test_github_call_passes_the_socket_timeout(monkeypatch):
+    """Without a timeout a hung GitHub connection hangs the CI job forever with no output
+    and no exit code (issue #90) — every `GitHub._call` must carry `_HTTP_TIMEOUT_S`."""
+    import io
+
+    calls = {}
+
+    class _Resp(io.BytesIO):
+        length = 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, **kw):
+        calls.update(kw)
+        return _Resp(b"{}")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+
+    assert cli.GitHub("tok")._call("POST", "/repos/o/r/statuses/abc", {"state": "success"}) == {}
+    assert calls.get("timeout") == cli._HTTP_TIMEOUT_S == 60
