@@ -3399,7 +3399,7 @@ wheels = [
 
 [[package]]
 name = "openinference-instrumentation-anthropic"
-version = "1.0.6"
+version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "openinference-instrumentation" },
@@ -3410,9 +3410,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/47/19/4dbfd34d997ab3a9fa02b985130282b7be1ca40a138b2520a5fb7fab8f3a/openinference_instrumentation_anthropic-1.0.6.tar.gz", hash = "sha256:da4cb6e8784d5b5f568f430ab2e81cbc61be2e7c87b97eacea34d9b3a3336bf6", size = 16031, upload-time = "2026-06-02T16:37:21.863Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3c/a6/c27a9415c53195b4706214e1ee4ad76bd82bcaf3250f133d98e48163508d/openinference_instrumentation_anthropic-2.1.2.tar.gz", hash = "sha256:348d69b90cc468adca57d2a6754c7db996327ec1396337137d5279515ad9ed4d", size = 15880, upload-time = "2026-09-04T20:16:10.672Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/74/2263a8139b72760c88bad4af3f6f3c7e29dad2c93b977c6cb69a6b01f207/openinference_instrumentation_anthropic-1.0.6-py3-none-any.whl", hash = "sha256:e9834c0bf65523e541204168ec6f1c0a1ad49bfb20edda1f511e3d5a540f7d2f", size = 19307, upload-time = "2026-06-02T16:37:20.671Z" },
+    { url = "https://files.pythonhosted.org/packages/34/d3/da17a2c76108e23f585b0d7c013e91ad3b19a8cab464e0925368ee072c1c/openinference_instrumentation_anthropic-2.1.2-py3-none-any.whl", hash = "sha256:bd364f80edccc2dedb934d2814fc527e7d43f8b462a73deb9a7ba1c47550234b", size = 19214, upload-time = "2026-09-04T20:16:09.641Z" },
 ]
 
 [[package]]
@@ -5765,7 +5765,7 @@ requires-dist = [
     { name = "openai", marker = "extra == 'openrouter-openai'", specifier = ">=1.0" },
     { name = "openai", marker = "extra == 'xai'", specifier = ">=1.0" },
     { name = "openai-agents", marker = "extra == 'openai-agents'" },
-    { name = "openinference-instrumentation-anthropic", marker = "extra == 'anthropic'", specifier = ">=0.1.0" },
+    { name = "openinference-instrumentation-anthropic", marker = "extra == 'anthropic'", specifier = ">=2.1.2" },
     { name = "openinference-instrumentation-bedrock", marker = "extra == 'bedrock'", specifier = ">=0.1.0" },
     { name = "openinference-instrumentation-claude-agent-sdk", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.1.0" },
     { name = "openinference-instrumentation-crewai", marker = "extra == 'crewai'", specifier = ">=0.1.0" },
