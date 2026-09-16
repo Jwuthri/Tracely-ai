@@ -261,13 +261,18 @@ def payload(rec: Recording) -> dict[str, dict]:
 _NAMESPACE = uuid.UUID("6e0f1b9a-6e5c-5a3f-9f2a-1c0d5b7e4a21")
 
 
+def stable_trace_id(project_id: str, kind: str, subject_id: str, level: str) -> str:
+    """The hex trace id a stable recording lands on — so a reader (the UI asking "what prompt
+    produced this score?") can address the recording without storing a pointer to it."""
+    return uuid.uuid5(_NAMESPACE, f"{project_id}:{kind}:{subject_id}:{level}").hex
+
+
 def _trace_id(rec: Recording, level: str) -> bytes:
     """Random, unless the recording replaces its predecessor — then the id IS the identity of
     (project, kind, subject, level), so re-recording lands on the same trace."""
     if not rec.stable:
         return uuid.uuid4().bytes
-    key = f"{rec.project_id}:{rec.kind}:{rec.subject_id}:{level}"
-    return uuid.uuid5(_NAMESPACE, key).bytes
+    return uuid.UUID(hex=stable_trace_id(rec.project_id, rec.kind, rec.subject_id, level)).bytes
 
 
 def _one(

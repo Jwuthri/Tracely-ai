@@ -211,6 +211,63 @@ function LabelChip({ label }: { label: string }) {
   );
 }
 
+// The judge's own LLM calls for this cell, lazily fetched from the eval recording (the internal
+// trace Tracely writes about its own work). Collapsed by default: the prompt is thousands of
+// characters and the panel's job is still the verdict.
+function JudgePrompt({ subject, level, name }: { subject: string; level: string; name: string }) {
+  const [open, setOpen] = useState(false);
+  const [steps, setSteps] = useState<Array<{ name: string; model: string; input: string; output: string }> | null>(null);
+  useEffect(() => {
+    if (!open || steps) return;
+    let alive = true;
+    const q = new URLSearchParams({ subject, level, name });
+    fetch(`/api/evaluations/prompt?${q}`)
+      .then((r) => r.json())
+      .then((d) => alive && setSteps(d.steps ?? []))
+      .catch(() => alive && setSteps([]));
+    return () => {
+      alive = false;
+    };
+  }, [open, steps, subject, level, name]);
+  if (!subject) return null;
+  return (
+    <div className="border-t border-line pt-2">
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="text-[11px] text-fg-muted transition-colors hover:text-fg"
+      >
+        {open ? "▾" : "▸"} LLM prompt &amp; answer
+      </button>
+      {open &&
+        (steps === null ? (
+          <p className="pt-2 text-[11px] text-fg-faint">loading…</p>
+        ) : steps.length === 0 ? (
+          <p className="pt-2 text-[11px] text-fg-faint">No LLM call — this column is a structural check.</p>
+        ) : (
+          steps.map((st, i) => (
+            <div key={i} className="space-y-1 pt-2">
+              <div className="text-[10px] uppercase tracking-wider text-fg-faint">
+                {st.name}
+                {st.model ? ` · ${st.model}` : ""}
+              </div>
+              {([["Prompt", st.input], ["Answer", st.output]] as Array<[string, string]>).map(([k, v]) => (
+                <div key={k}>
+                  <div className="text-[10px] text-fg-muted">{k}</div>
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-ink-800 p-2 font-mono text-[10.5px] text-fg/90">
+                    {fmtPanelOutput(v || "")}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          ))
+        ))}
+    </div>
+  );
+}
+
 const EvalSpinner = () => (
   <span className="inline-flex items-center gap-1.5 text-[11px] text-fg-faint">
     <span className="h-3 w-3 animate-spin rounded-full border-2 border-line border-t-signal" />
@@ -220,7 +277,7 @@ const EvalSpinner = () => (
 
 // One metric result in a cell: verdict chip + value (or reason teaser), click → floating
 // detail panel with the judge's full reasoning.
-function EvalScorePill({ score, evaluator, busy }: { score: EvalScore; evaluator: EvaluatorDef; busy: boolean }) {
+function EvalScorePill({ score, evaluator, busy, subject, level }: { score: EvalScore; evaluator: EvaluatorDef; busy: boolean; subject: string; level: string }) {
   // Label first: with the intent in the badge, the pill beside it carries the judge's reason
   // instead of repeating the label.
   const label = score.verdict ? null : jsonResultLabel(score.string_value ?? "");
@@ -274,6 +331,7 @@ function EvalScorePill({ score, evaluator, busy }: { score: EvalScore; evaluator
                     </span>
                   </div>
                 ))}
+                <JudgePrompt subject={subject} level={level} name={score.name} />
               </div>
             </FloatingPanel>
           )}
@@ -324,7 +382,11 @@ function EvalColumnCell({ evaluator, ctx }: { evaluator: EvaluatorDef; ctx: RowC
     busy = busy || view.busyRows.has(`tr:${ctx.turn.trace_id}`);
   }
   if (!score) return busy ? <EvalSpinner /> : <span className="text-fg-faint">—</span>;
-  return <EvalScorePill score={score} evaluator={evaluator} busy={busy} />;
+  // What the eval recording filed this grade under: the thread for a conversation pass, the
+  // trace otherwise (see `_dispatch_specs`).
+  const subject = ctx.level === "C" ? ctx.conv.thread : ctx.turn.trace_id;
+  const level = ctx.level === "C" ? "conv" : ctx.level === "M" ? "msg" : "step";
+  return <EvalScorePill score={score} evaluator={evaluator} busy={busy} subject={subject} level={level} />;
 }
 
 // ── row context + per-column dispatch ───────────────────────────────────────────

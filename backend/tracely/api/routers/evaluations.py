@@ -30,6 +30,8 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_project_id
+from tracely.domain import introspection
+from tracely.infrastructure.clickhouse import async_reader
 from tracely.services.evaluation_service import EvaluationService
 
 log = structlog.get_logger()
@@ -149,3 +151,34 @@ async def run_evaluations(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/evaluations/prompt")
+async def evaluation_prompt(
+    subject: str,
+    level: str,
+    name: str,
+    project_id: str = Depends(get_project_id),
+) -> dict:
+    """The LLM calls behind one score cell: the judge's prompt and what came back.
+
+    No pointer is stored on the score — the eval recording's trace id IS the identity of
+    (project, eval, subject, level), so it is re-derived here. `subject` is the trace id for a
+    msg/step score and the thread id for a conv score (what `_dispatch_specs` recorded under).
+    A structural evaluator made no call and returns no steps.
+    """
+    trace_id = introspection.stable_trace_id(project_id, introspection.EVAL, subject, level)
+    spans = await async_reader.trace_spans(project_id, trace_id)
+    return {
+        "trace_id": trace_id,
+        "steps": [
+            {
+                "name": s["name"],
+                "model": s["model_id"],
+                "input": s["input"],
+                "output": s["output"],
+            }
+            for s in spans
+            if s["step_name"] == name and s["type"] == "GENERATION"
+        ],
+    }

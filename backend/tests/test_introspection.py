@@ -536,3 +536,16 @@ def test_chained_grade_records_the_earlier_steps():
     )
     assert rec.context == ""  # consumed: it describes one call
 
+
+
+def test_stable_trace_id_matches_the_emitted_trace_key():
+    """The UI re-derives this id to find the judge prompt behind a score — if it drifts from the
+    id the emitter uses, the panel silently shows no prompt."""
+    rec = introspection.Recording(
+        kind=introspection.EVAL, subject_id="trace-1", name="eval · {level}",
+        project_id="p1", stable=True,
+    )
+    rec.label = "tone"
+    rec.describe(input="{}", output="PASS", meta={"level": "msg"})
+    keys = list(introspection.payload(rec))
+    assert keys == [introspection.stable_trace_id("p1", introspection.EVAL, "trace-1", "msg")]
