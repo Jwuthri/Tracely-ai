@@ -158,6 +158,7 @@ async def evaluation_prompt(
     subject: str,
     level: str,
     name: str,
+    step: str = "",
     project_id: str = Depends(get_project_id),
 ) -> dict:
     """The LLM calls behind one score cell: the judge's prompt and what came back.
@@ -165,20 +166,40 @@ async def evaluation_prompt(
     No pointer is stored on the score — the eval recording's trace id IS the identity of
     (project, eval, subject, level), so it is re-derived here. `subject` is the trace id for a
     msg/step score and the thread id for a conv score (what `_dispatch_specs` recorded under).
+
+    `step` narrows a step-level column to the one span the cell is about: a judge grading 10 spans
+    records 10 calls under the same evaluator, and a TOOL row must not show the other nine. It is
+    matched against the recorded call's name (`llm_judge` names each one `"<TYPE> <span name>"`);
+    an unmatched value falls back to every call rather than to nothing, so a drift in that label
+    costs precision, not the panel.
+
     A structural evaluator made no call and returns no steps.
     """
     trace_id = introspection.stable_trace_id(project_id, introspection.EVAL, subject, level)
     spans = await async_reader.trace_spans(project_id, trace_id)
+    calls = [s for s in spans if s["step_name"] == name and s["type"] == "GENERATION"]
+    if step:
+        calls = [s for s in calls if s["name"] == step] or calls
     return {
         "trace_id": trace_id,
         "steps": [
             {
                 "name": s["name"],
                 "model": s["model_id"],
-                "input": s["input"],
-                "output": s["output"],
+                "input": _clip(s["input"]),
+                "output": _clip(s["output"]),
             }
-            for s in spans
-            if s["step_name"] == name and s["type"] == "GENERATION"
+            for s in calls
         ],
     }
+
+
+# A judge prompt is a few KB; a judge prompt that pasted a 2MB tool result is not something a
+# popover can show, and shipping it to the browser helps no one. The full text is always one
+# click away in the eval trace itself.
+PROMPT_CHARS = 20_000
+
+
+def _clip(text: str) -> str:
+    text = text or ""
+    return text if len(text) <= PROMPT_CHARS else text[:PROMPT_CHARS] + "\n… (truncated)"

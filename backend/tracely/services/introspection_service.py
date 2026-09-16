@@ -125,8 +125,10 @@ def _emit(rec: Recording) -> None:
             if rec.stable:
                 # Replace, not append: this recording re-runs over the same subject and reuses its
                 # trace id, so the previous spans have to go. ReplacingMergeTree can't do it for
-                # us — its sort key carries `start_time`, and this run has its own.
-                deletes.delete_trace(rec.project_id, trace_id)
+                # us — its sort key carries `start_time`, and this run has its own. Scoped to the
+                # groups THIS recording carries: the trace is shared by every column graded at
+                # that level, and a per-column run must not erase its siblings.
+                deletes.delete_trace(rec.project_id, trace_id, introspection.step_names(body))
             raw = json.dumps(body).encode()
             key = blobstore.event_blob_key(rec.project_id, uuid.uuid4().hex, "application/json")
             blobstore.put_blob(key, raw, "application/json")

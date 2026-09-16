@@ -214,21 +214,40 @@ function LabelChip({ label }: { label: string }) {
 // The judge's own LLM calls for this cell, lazily fetched from the eval recording (the internal
 // trace Tracely writes about its own work). Collapsed by default: the prompt is thousands of
 // characters and the panel's job is still the verdict.
-function JudgePrompt({ subject, level, name }: { subject: string; level: string; name: string }) {
+type PromptCall = { name: string; model: string; input: string; output: string };
+type PromptState = { steps: PromptCall[]; trace_id: string } | { error: string } | null;
+
+export function JudgePrompt({
+  subject,
+  level,
+  name,
+  step,
+}: {
+  subject: string;
+  level: string;
+  name: string;
+  step: string;
+}) {
   const [open, setOpen] = useState(false);
-  const [steps, setSteps] = useState<Array<{ name: string; model: string; input: string; output: string }> | null>(null);
+  const [state, setState] = useState<PromptState>(null);
   useEffect(() => {
-    if (!open || steps) return;
+    if (!open || state) return;
     let alive = true;
-    const q = new URLSearchParams({ subject, level, name });
+    const q = new URLSearchParams({ subject, level, name, ...(step ? { step } : {}) });
     fetch(`/api/evaluations/prompt?${q}`)
-      .then((r) => r.json())
-      .then((d) => alive && setSteps(d.steps ?? []))
-      .catch(() => alive && setSteps([]));
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!alive) return;
+        // Surfaced, not swallowed: a 401/500 rendered as "no recording" sent the reader looking
+        // for a missing trace instead of a broken request.
+        if (!r.ok) setState({ error: d.detail ? String(d.detail) : `request failed (${r.status})` });
+        else setState({ steps: d.steps ?? [], trace_id: d.trace_id ?? "" });
+      })
+      .catch((e) => alive && setState({ error: String(e?.message ?? e) }));
     return () => {
       alive = false;
     };
-  }, [open, steps, subject, level, name]);
+  }, [open, state, subject, level, name, step]);
   if (!subject) return null;
   return (
     <div className="border-t border-line pt-2">
@@ -241,29 +260,51 @@ function JudgePrompt({ subject, level, name }: { subject: string; level: string;
       >
         {open ? "▾" : "▸"} LLM prompt &amp; answer
       </button>
-      {open &&
-        (steps === null ? (
-          <p className="pt-2 text-[11px] text-fg-faint">loading…</p>
-        ) : steps.length === 0 ? (
-          <p className="pt-2 text-[11px] text-fg-faint">No LLM call — this column is a structural check.</p>
-        ) : (
-          steps.map((st, i) => (
-            <div key={i} className="space-y-1 pt-2">
-              <div className="text-[10px] uppercase tracking-wider text-fg-faint">
-                {st.name}
-                {st.model ? ` · ${st.model}` : ""}
-              </div>
-              {([["Prompt", st.input], ["Answer", st.output]] as Array<[string, string]>).map(([k, v]) => (
-                <div key={k}>
-                  <div className="text-[10px] text-fg-muted">{k}</div>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-ink-800 p-2 font-mono text-[10.5px] text-fg/90">
-                    {fmtPanelOutput(v || "")}
-                  </pre>
+      {open && state === null && <p className="pt-2 text-[11px] text-fg-faint">loading…</p>}
+      {open && state && "error" in state && (
+        <p className="pt-2 text-[11px] text-fail">Couldn&apos;t load the prompt: {state.error}</p>
+      )}
+      {open && state && "steps" in state && (
+        <>
+          {state.steps.length === 0 ? (
+            <p className="pt-2 text-[11px] text-fg-faint">
+              No recording for this grade — it predates the eval recording, or ran with
+              <code className="px-1">INTROSPECTION_ENABLED=false</code>. Re-run the column to
+              capture it.
+            </p>
+          ) : (
+            state.steps.map((st, i) => (
+              <div key={i} className="space-y-1 pt-2">
+                <div className="text-[10px] uppercase tracking-wider text-fg-faint">
+                  {st.name}
+                  {st.model ? ` · ${st.model}` : ""}
                 </div>
-              ))}
-            </div>
-          ))
-        ))}
+                {([["Prompt", st.input], ["Answer", st.output]] as Array<[string, string]>).map(([k, v]) => (
+                  <div key={k}>
+                    <div className="text-[10px] text-fg-muted">{k}</div>
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-ink-800 p-2 font-mono text-[10.5px] text-fg/90">
+                      {fmtPanelOutput(v || "")}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
+          {state.trace_id && state.steps.length > 0 && (
+            // The panel clips long prompts; the recording itself has everything, in the viewer
+            // that already renders traces.
+            <a
+              href={`/traces/${state.trace_id}`}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="mt-2 inline-block text-[11px] text-signal hover:underline"
+            >
+              open the eval trace ↗
+            </a>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -277,7 +318,7 @@ const EvalSpinner = () => (
 
 // One metric result in a cell: verdict chip + value (or reason teaser), click → floating
 // detail panel with the judge's full reasoning.
-function EvalScorePill({ score, evaluator, busy, subject, level }: { score: EvalScore; evaluator: EvaluatorDef; busy: boolean; subject: string; level: string }) {
+function EvalScorePill({ score, evaluator, busy, subject, level, step }: { score: EvalScore; evaluator: EvaluatorDef; busy: boolean; subject: string; level: string; step: string }) {
   // Label first: with the intent in the badge, the pill beside it carries the judge's reason
   // instead of repeating the label.
   const label = score.verdict ? null : jsonResultLabel(score.string_value ?? "");
@@ -331,7 +372,10 @@ function EvalScorePill({ score, evaluator, busy, subject, level }: { score: Eval
                     </span>
                   </div>
                 ))}
-                <JudgePrompt subject={subject} level={level} name={score.name} />
+                {/* Only an llm_judge has a prompt; a structural column is deterministic code. */}
+                {evaluator.kind === "llm_judge" && (
+                  <JudgePrompt subject={subject} level={level} name={score.name} step={step} />
+                )}
               </div>
             </FloatingPanel>
           )}
@@ -386,7 +430,19 @@ function EvalColumnCell({ evaluator, ctx }: { evaluator: EvaluatorDef; ctx: RowC
   // trace otherwise (see `_dispatch_specs`).
   const subject = ctx.level === "C" ? ctx.conv.thread : ctx.turn.trace_id;
   const level = ctx.level === "C" ? "conv" : ctx.level === "M" ? "msg" : "step";
-  return <EvalScorePill score={score} evaluator={evaluator} busy={busy} subject={subject} level={level} />;
+  // A step-level judge records one call per graded span, all under the same evaluator — this is
+  // the one the cell is about (mirrors the label `llm_judge` gives it).
+  const step = ctx.level === "S" ? `${ctx.span.type} ${ctx.span.name || ctx.span.span_id}` : "";
+  return (
+    <EvalScorePill
+      score={score}
+      evaluator={evaluator}
+      busy={busy}
+      subject={subject}
+      level={level}
+      step={step}
+    />
+  );
 }
 
 // ── row context + per-column dispatch ───────────────────────────────────────────

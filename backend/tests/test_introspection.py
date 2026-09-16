@@ -549,3 +549,17 @@ def test_stable_trace_id_matches_the_emitted_trace_key():
     rec.describe(input="{}", output="PASS", meta={"level": "msg"})
     keys = list(introspection.payload(rec))
     assert keys == [introspection.stable_trace_id("p1", introspection.EVAL, "trace-1", "msg")]
+
+
+def test_step_names_lists_the_groups_a_payload_replaces():
+    """A per-column re-run must delete only its own group: the eval trace is shared by every
+    column graded at that level (see `deletes.delete_trace`)."""
+    rec = introspection.Recording(
+        kind=introspection.EVAL, subject_id="trace-1", name="eval · {level}",
+        project_id="p1", stable=True,
+    )
+    rec.label = "on_topic"
+    rec.describe(input="{}", output="PASS", meta={"level": "msg"})
+    rec.add("gpt-x", input="prompt", output="PASS", model="gpt-x")
+    body = next(iter(introspection.payload(rec).values()))
+    assert introspection.step_names(body) == ["on_topic"]

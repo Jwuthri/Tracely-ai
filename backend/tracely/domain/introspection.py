@@ -261,6 +261,23 @@ def payload(rec: Recording) -> dict[str, dict]:
 _NAMESPACE = uuid.UUID("6e0f1b9a-6e5c-5a3f-9f2a-1c0d5b7e4a21")
 
 
+def step_names(body: dict) -> list[str]:
+    """The evaluator groups one emitted payload covers.
+
+    A stable recording shares its trace id with every OTHER column graded at the same level, so
+    replacing it wholesale is what made a per-column re-run erase the sibling columns' prompts.
+    The emitter deletes only these groups instead — see `introspection_service._emit`.
+    """
+    names = set()
+    for rs in body.get("resourceSpans", []):
+        for ss in rs.get("scopeSpans", []):
+            for sp in ss.get("spans", []):
+                for a in sp.get("attributes", []):
+                    if a.get("key") == "tracely.step.name":
+                        names.add(a.get("value", {}).get("stringValue", ""))
+    return sorted(n for n in names if n)
+
+
 def stable_trace_id(project_id: str, kind: str, subject_id: str, level: str) -> str:
     """The hex trace id a stable recording lands on — so a reader (the UI asking "what prompt
     produced this score?") can address the recording without storing a pointer to it."""

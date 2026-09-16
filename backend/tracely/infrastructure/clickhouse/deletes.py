@@ -10,28 +10,30 @@ from __future__ import annotations
 from tracely.infrastructure.clickhouse.client import get_async_client, get_client
 
 
-def delete_trace(project_id: str, trace_id: str) -> None:
+def delete_trace(project_id: str, trace_id: str, step_names: list[str] | None = None) -> None:
     """Drop one trace's spans, synchronously — the worker's half of this module.
 
     Used to *replace* a re-recorded internal run (`Recording.stable`): the recording keeps its
     trace id, so the previous spans have to go before the new ones land.
+
+    `step_names` narrows that to the evaluator groups being re-recorded (plus the root, which
+    carries no group). One eval trace holds EVERY column graded at that level, and a per-column
+    re-run records only its own — wiping the whole trace erased the other columns' prompts, so the
+    UI could only ever show the judge prompt of whichever column ran last.
 
     Reads before it deletes, because the common case is that there is nothing there — a first
     grading. ClickHouse runs a mutation for a `DELETE` that matches no rows just the same, and one
     mutation per evaluated message is the kind of thing that quietly wrecks a table.
     """
     client = get_client()
-    params = {"p": project_id, "t": trace_id}
-    res = client.query(
-        "SELECT count() FROM events WHERE project_id = {p:String} AND trace_id = {t:String}",
-        parameters=params,
+    params = {"p": project_id, "t": trace_id, "n": step_names or []}
+    where = "project_id = {p:String} AND trace_id = {t:String}" + (
+        " AND (step_name IN {n:Array(String)} OR step_name = '')" if step_names else ""
     )
+    res = client.query(f"SELECT count() FROM events WHERE {where}", parameters=params)
     if not res.result_rows or not int(res.result_rows[0][0]):
         return
-    client.command(
-        "DELETE FROM events WHERE project_id = {p:String} AND trace_id = {t:String}",
-        parameters=params,
-    )
+    client.command(f"DELETE FROM events WHERE {where}", parameters=params)
 
 
 async def delete_threads(project_id: str, threads: list[str]) -> int:
