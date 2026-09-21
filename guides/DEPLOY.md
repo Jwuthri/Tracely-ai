@@ -237,6 +237,14 @@ Confirm it took: `/health/queue` reports `beat_age_s` — a null or a growing nu
 is scheduling. It read `null` in production until 2026-09-06, so `evaluate_monitors`,
 `selfcheck` and `prune_chats` had never run there.
 
+Beat is also what keeps the store off its own disk: `cap_system_logs` runs nightly and puts a
+`CH_SYSTEM_LOG_TTL_DAYS`-day TTL (default 3) on ClickHouse's own `system.*` log tables, which ship
+with none and are never read by Tracely — on a small box they outgrow every customer trace
+combined. It is idempotent (a table that already has a TTL is skipped), and `0` turns it off if
+you want to keep a long `query_log` while debugging. `/health/queue` also reports `disk_free_pct`,
+and the self-check degrades below 15% free — the warning that gives you room to act. To see the
+whole picture on demand: `uv run python scripts/storage_report.py`.
+
 ---
 
 ## 4. Backups (the only P0 we can't automate)

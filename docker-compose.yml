@@ -12,6 +12,10 @@ x-app-env: &app-env
   CLICKHOUSE_USER: default
   CLICKHOUSE_PASSWORD: ""
   CLICKHOUSE_DATABASE: tracely
+  # ClickHouse's own telemetry (query_log, trace_log, …) ships with NO TTL and is never read by
+  # Tracely — left alone it outgrows every customer trace on a small box. A nightly beat sweep
+  # caps it; 0 turns the sweep off (keep your query_log when debugging).
+  CH_SYSTEM_LOG_TTL_DAYS: ${CH_SYSTEM_LOG_TTL_DAYS:-3}
   REDIS_URL: redis://redis:6379/0
   # Celery worker pool — solo/1 for local (numba/UMAP/HDBSCAN are fork-fragile). Prod sets these
   # to prefork / >=2 in the deploy env. Also forwarded to the worker command above.

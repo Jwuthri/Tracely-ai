@@ -58,6 +58,12 @@ celery_app.conf.update(
             "task": "tracely.enforce_retention",
             "schedule": crontab(hour="4", minute="47"),
         },
+        # ClickHouse's own logs have no TTL and outgrow the product's data on a small box. Same
+        # nightly window, offset again so the solo worker takes one sweep at a time.
+        "tracely.cap_system_logs-nightly": {
+            "task": "tracely.cap_system_logs",
+            "schedule": crontab(hour="5", minute="7"),
+        },
     },
     timezone="UTC",
 )

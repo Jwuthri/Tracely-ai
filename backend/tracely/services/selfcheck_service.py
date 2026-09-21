@@ -69,7 +69,7 @@ async def snapshot() -> Snapshot:
     except Exception as exc:  # noqa: BLE001 — Redis down IS the finding, not a crash
         log.warning("selfcheck_redis_unreachable", error=str(exc))
 
-    last_trace_age = None
+    last_trace_age = disk_free_pct = None
     try:
         from tracely.infrastructure.clickhouse.client import get_async_client
 
@@ -79,6 +79,15 @@ async def snapshot() -> Snapshot:
         if isinstance(newest, datetime):
             newest = newest if newest.tzinfo else newest.replace(tzinfo=timezone.utc)
             last_trace_age = (datetime.now(timezone.utc) - newest).total_seconds()
+        # The store's own disk. One query, same connection: a full disk is the failure mode that
+        # takes ClickHouse down entirely, and it arrives gradually enough to be caught.
+        disks = (
+            await ch.query(
+                "SELECT free_space, total_space FROM system.disks ORDER BY total_space DESC LIMIT 1"
+            )
+        ).result_rows
+        if disks and disks[0][1]:
+            disk_free_pct = 100.0 * float(disks[0][0]) / float(disks[0][1])
     except Exception as exc:  # noqa: BLE001
         log.warning("selfcheck_clickhouse_unreachable", error=str(exc))
 
@@ -91,6 +100,7 @@ async def snapshot() -> Snapshot:
         # traffic and no new traces is a weekend, traffic and no new traces is an outage.
         accepted_recently=last_accept is not None and last_accept < 60 * 60,
         beat_age_s=beat,
+        disk_free_pct=disk_free_pct,
     )
 
 
@@ -125,6 +135,7 @@ async def run() -> dict:
         "last_task_age_s": snap.last_task_age_s,
         "last_trace_age_s": snap.last_trace_age_s,
         "beat_age_s": snap.beat_age_s,
+        "disk_free_pct": snap.disk_free_pct,
         "degraded": verdict.degraded,
         "problems": verdict.problems,
     }

@@ -79,3 +79,15 @@ def test_problems_are_summarized_for_one_line_alerts():
     )
     assert len(v.problems) == 2
     assert "; " in summarize(v)
+
+
+def test_a_filling_disk_is_an_incident_before_it_is_full():
+    """The one resource whose exhaustion takes ClickHouse down with it — and the one that fills
+    from ClickHouse's own logs rather than from customer traffic."""
+    from tracely.domain.ops.selfcheck import DISK_FREE_PCT
+
+    assert not evaluate(Snapshot(disk_free_pct=DISK_FREE_PCT + 1)).degraded
+    v = evaluate(Snapshot(disk_free_pct=4.0))
+    assert v.degraded and "disk is 4% free" in summarize(v)
+    # Unmeasurable (old ClickHouse, restricted user) must not read as an empty disk.
+    assert not evaluate(Snapshot(disk_free_pct=None)).degraded

@@ -315,6 +315,22 @@ def enforce_retention_task(self) -> dict:
         return {"error": str(exc)}
 
 
+@celery_app.task(name="tracely.cap_system_logs", bind=True, max_retries=0)
+def cap_system_logs_task(self) -> dict:
+    """Cap ClickHouse's own telemetry tables with a TTL (beat, nightly).
+
+    The database fills its disk with `query_log` / `trace_log` / `part_log` long before customer
+    traces get near it, and nothing reads those. Idempotent — once a table carries a TTL this is
+    a few reads. Never retried: reclaiming space is not correctness, and the next night retries."""
+    from tracely.infrastructure.clickhouse.maintenance import cap_system_logs
+
+    try:
+        return cap_system_logs()
+    except Exception as exc:  # noqa: BLE001 — a missed sweep costs disk, never a grade
+        log.warning("cap_system_logs_failed", error=str(exc))
+        return {"error": str(exc)}
+
+
 @celery_app.task(name="tracely.selfcheck", bind=True, max_retries=0)
 def selfcheck_task(self) -> dict:
     """Watch our own deployment (beat, every 5 min). Tracely's failure modes are quiet — a dead

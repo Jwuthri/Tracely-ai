@@ -282,6 +282,14 @@ class Settings(BaseSettings):
     # high-volume projects.
     introspection_enabled: bool = True
 
+    # ── ClickHouse housekeeping ───────────────────────────────────────────────────
+    # ClickHouse's own telemetry (`system.query_log`, `trace_log`, …) has NO TTL by default and is
+    # never read by Tracely — on a small deployment it outgrows every customer trace combined and
+    # the disk bill is the whole deployment's bill. A nightly sweep caps it
+    # (`infrastructure/clickhouse/maintenance.py`). 0 disables it: a self-hoster debugging a slow
+    # query wants their query_log.
+    ch_system_log_ttl_days: int = 3
+
     # Durable judge conversations: a SEQUENTIAL evaluator holds one chat with the model (rubric →
     # item → verdict → item …), checkpointed in Postgres so turn 6 resumes what turn 5 left. The
     # prefix is byte-identical between calls, so the provider serves it from its prompt cache.

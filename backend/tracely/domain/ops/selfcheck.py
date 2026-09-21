@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 QUEUE_BACKLOG = 500  # tasks waiting on the default queue
 WORKER_SILENT_S = 15 * 60  # no task has finished in this long, while work is queued
 INGEST_STALE_S = 60 * 60  # nothing reached ClickHouse in this long, while spans were accepted
+# Disk is the one resource whose exhaustion takes the store down with it, and ClickHouse fills it
+# with its own telemetry long before customer traces do (`clickhouse/maintenance.py` caps that
+# nightly). Warn with enough room left to act — a full disk is a restore, not a fix.
+DISK_FREE_PCT = 15.0
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,7 @@ class Snapshot:
     last_trace_age_s: float | None = None
     accepted_recently: bool = False
     beat_age_s: float | None = None
+    disk_free_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,14 @@ def evaluate(s: Snapshot) -> Verdict:
     if s.accepted_recently and (s.last_trace_age_s is None or s.last_trace_age_s > INGEST_STALE_S):
         age = "never" if s.last_trace_age_s is None else f"{int(s.last_trace_age_s / 60)}m ago"
         problems.append(f"spans were accepted but the last trace stored was {age}")
+
+    # Running out of disk ends the deployment, and the nightly sweeps (system-log TTL, plan
+    # retention, chat prune) only help if someone hears about it while there is still room.
+    if s.disk_free_pct is not None and s.disk_free_pct < DISK_FREE_PCT:
+        problems.append(
+            f"ClickHouse disk is {s.disk_free_pct:.0f}% free — check `system.*` log growth "
+            "(scripts/storage_report.py) and the nightly cap"
+        )
 
     # Beat drives the monitors; when it dies, alerting dies silently — including this check.
     if s.beat_age_s is not None and s.beat_age_s > 3 * 60 * 60:
