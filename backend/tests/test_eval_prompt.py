@@ -64,23 +64,70 @@ async def test_clips_a_huge_prompt(spans):
     assert len(out["steps"][0]["input"]) < evaluations.PROMPT_CHARS + 50
 
 
-def test_delete_trace_scopes_to_the_recorded_groups(monkeypatch):
-    """A per-column re-run must not erase the sibling columns' prompts from the shared eval trace."""
-    sent: list[tuple[str, dict]] = []
+from datetime import datetime, timezone  # noqa: E402
+
+from tracely.infrastructure.clickhouse.events_schema import EVENT_COLUMNS  # noqa: E402
+
+
+def _fake_deletes(monkeypatch, doomed):
+    """Capture what `delete_trace` issues: the SQL it reads with, the rows it inserts, and — the
+    point of the exercise — any `command()` it runs, because that would be a mutation."""
+    read: list[tuple[str, dict]] = []
+    commands: list[str] = []
+    inserted: list[list] = []
 
     class FakeClient:
         def query(self, sql, parameters=None):
-            sent.append((sql, parameters or {}))
-            return type("R", (), {"result_rows": [(1,)]})()
+            read.append((sql, parameters or {}))
+            return type("R", (), {"result_rows": doomed})()
 
         def command(self, sql, parameters=None):
-            sent.append((sql, parameters or {}))
+            commands.append(sql)
 
     monkeypatch.setattr(deletes, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(deletes, "insert_rows", lambda c, t, cols, rows: inserted.extend(rows))
+    return read, commands, inserted
+
+
+def test_delete_trace_scopes_to_the_recorded_groups(monkeypatch):
+    """A per-column re-run must not erase the sibling columns' prompts from the shared eval trace."""
+    ts = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    read, _, _ = _fake_deletes(monkeypatch, [("s1", ts, "eval")])
+
     deletes.delete_trace("p1", "t1", ["on_topic"])
-    sql, params = sent[-1]
+    sql, params = read[-1]
     assert "step_name IN" in sql and params["n"] == ["on_topic"]
 
-    sent.clear()
+    read.clear()
     deletes.delete_trace("p1", "t1")  # no groups → the old whole-trace replace
-    assert "step_name" not in sent[-1][0]
+    assert "step_name" not in read[-1][0]
+
+
+def test_delete_trace_tombstones_instead_of_mutating(monkeypatch):
+    """One mutation per evaluated message is what filled ClickHouse's RAM: each `DELETE FROM`
+    rewrites every active part and orphans its mark-cache entries. The replacement writes a
+    `ReplacingMergeTree` tombstone instead — an ordinary INSERT, no mutation at all."""
+    ts = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    _, commands, inserted = _fake_deletes(monkeypatch, [("s1", ts, "eval"), ("s2", ts, "eval")])
+
+    deletes.delete_trace("p1", "t1", ["on_topic"])
+
+    assert commands == [], f"delete_trace issued a mutation: {commands}"
+    assert len(inserted) == 2
+    col = EVENT_COLUMNS.index
+    for row, span in zip(inserted, ("s1", "s2")):
+        assert row[col("is_deleted")] == 1
+        # the sort key must be reproduced exactly or FINAL cannot collapse the pair
+        assert row[col("project_id")] == "p1"
+        assert row[col("trace_id")] == "t1"
+        assert row[col("span_id")] == span
+        assert row[col("start_time")] == ts
+        # carried over: it is what keeps these rows out of the `_REAL` listings
+        assert row[col("internal_kind")] == "eval"
+
+
+def test_delete_trace_writes_nothing_when_there_is_no_previous_recording(monkeypatch):
+    """The common case is a first grading — it must not cost an INSERT either."""
+    _, commands, inserted = _fake_deletes(monkeypatch, [])
+    deletes.delete_trace("p1", "t1", ["on_topic"])
+    assert commands == [] and inserted == []

@@ -68,7 +68,7 @@ class TraceReader:
             # every by-trace/by-thread read below.
             f"SELECT {', '.join(_SPAN_COLS)} FROM events FINAL "
             "PREWHERE trace_id = {t:String} "
-            "WHERE project_id = {p:String} ORDER BY start_time",
+            "WHERE project_id = {p:String} AND is_deleted = 0 ORDER BY start_time",
             parameters={"p": project_id, "t": trace_id},
         )
         return [dict(zip(res.column_names, row)) for row in res.result_rows]
@@ -80,7 +80,7 @@ class TraceReader:
         res = self.client.query(
             f"SELECT {', '.join(_SPAN_COLS)} FROM events FINAL "
             "PREWHERE (conversation_id = {th:String} OR trace_id = {th:String}) "
-            "WHERE project_id = {p:String} "
+            "WHERE project_id = {p:String} AND is_deleted = 0 "
             "ORDER BY start_time",
             parameters={"p": project_id, "th": thread_id},
         )
@@ -91,7 +91,7 @@ class TraceReader:
         rows = self.client.query(
             "SELECT trace_id FROM events FINAL "
             "PREWHERE (conversation_id = {th:String} OR trace_id = {th:String}) "
-            "WHERE project_id = {p:String} "
+            "WHERE project_id = {p:String} AND is_deleted = 0 "
             "GROUP BY trace_id ORDER BY min(start_time)",
             parameters={"p": project_id, "th": thread_id},
         ).result_rows
@@ -111,7 +111,7 @@ class TraceReader:
             "dateDiff('millisecond', min(start_time), max(coalesce(end_time, start_time))) AS lat, "
             "toUInt64(sum(arraySum(mapValues(usage_details)))) AS toks "
             "FROM events FINAL PREWHERE trace_id IN {t:Array(String)} "
-            "WHERE project_id = {p:String} "
+            "WHERE project_id = {p:String} AND is_deleted = 0 "
             "GROUP BY trace_id",
             parameters={"p": project_id, "t": uniq},
         ).result_rows
@@ -248,7 +248,7 @@ class TraceReader:
             return 0
         rows = self.client.query(
             "SELECT count() FROM events FINAL WHERE project_id = {p:String} "
-            "AND trace_id IN {t:Array(String)}",
+            "AND trace_id IN {t:Array(String)} AND is_deleted = 0",
             parameters={"p": project_id, "t": uniq},
         ).result_rows
         return int(rows[0][0]) if rows else 0
@@ -265,7 +265,8 @@ class TraceReader:
             return []
         rows = self.client.query(
             "SELECT min(start_time) AS ts FROM events FINAL "
-            "WHERE project_id = {p:String} AND trace_id IN {t:Array(String)} GROUP BY trace_id",
+            "WHERE project_id = {p:String} AND trace_id IN {t:Array(String)} "
+            "AND is_deleted = 0 GROUP BY trace_id",
             parameters={"p": project_id, "t": uniq},
         ).result_rows
         return [r[0] for r in rows]
@@ -290,7 +291,7 @@ class TraceReader:
             "argMinIf(coalesce(status_message, ''), start_time, "
             "  coalesce(status_message, '') != '') AS err "
             "FROM events FINAL PREWHERE trace_id IN {t:Array(String)} "
-            "WHERE project_id = {p:String} "
+            "WHERE project_id = {p:String} AND is_deleted = 0 "
             "GROUP BY trace_id",
             parameters={"p": project_id, "t": uniq},
         ).result_rows

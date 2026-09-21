@@ -176,3 +176,53 @@ def test_by_trace_span_reads_use_prewhere():
         ("async_reader.py", "trace_spans"),
     ):
         assert "PREWHERE" in _fn_body(_CH_DIR / filename, fn), f"{filename}:{fn} lost its PREWHERE"
+
+
+# ── tombstoned spans must not come back ───────────────────────────────────────
+# `deletes.delete_trace` replaces a re-recorded internal run by writing a `ReplacingMergeTree`
+# tombstone (`is_deleted = 1`) rather than running a `DELETE FROM` mutation — see its docstring for
+# why (one mutation per evaluated message rewrote every part of the table and was the single
+# largest source of ClickHouse's memory use). FINAL collapses the pair down to the tombstone, so a
+# read that does not drop `is_deleted = 1` shows the spans the re-recording was meant to replace.
+#
+# Tombstones only ever land on internal recordings, so a read already scoped to `internal_kind = ''`
+# can never see one. Everything else must say so explicitly.
+
+
+def _events_queries(path: Path) -> list[tuple[int, str]]:
+    """Each `FROM events FINAL` in the file, paired with the query text that follows it."""
+    src = path.read_text()
+    out = []
+    for m in re.finditer(r"FROM events FINAL", src):
+        tail = src[m.start() : m.start() + 800]
+        cut = tail.find("parameters=")
+        out.append((src[: m.start()].count("\n") + 1, tail[:cut] if cut > 0 else tail))
+    return out
+
+
+def test_every_events_read_excludes_tombstones_or_internal_runs():
+    offenders = [
+        f"{f}:{line}"
+        for f in ("trace_reader.py", "async_reader.py")
+        for line, q in _events_queries(_CH_DIR / f)
+        if "is_deleted" not in q and "internal_kind" not in q and "_REAL" not in q
+    ]
+    assert offenders == [], (
+        "these reads would show spans a re-recording replaced — add `AND is_deleted = 0` "
+        f"(in WHERE, never PREWHERE): {offenders}"
+    )
+
+
+def test_is_deleted_is_never_pushed_into_prewhere():
+    """PREWHERE runs BEFORE FINAL collapses the row versions, so filtering `is_deleted = 0` there
+    discards the tombstone and hands back the very row it was written to hide. The by-trace
+    PREWHEREs are safe because `trace_id`/`conversation_id` are identical in both versions."""
+    for f in ("trace_reader.py", "async_reader.py"):
+        for line, q in _events_queries(_CH_DIR / f):
+            pre = q.find("PREWHERE")
+            if pre < 0:
+                continue
+            where = q.find("WHERE", pre + 8)
+            assert "is_deleted" not in q[pre : where if where > 0 else len(q)], (
+                f"{f}:{line} filters is_deleted in PREWHERE — it must sit in WHERE"
+            )

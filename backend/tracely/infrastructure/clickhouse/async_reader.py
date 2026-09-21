@@ -120,7 +120,7 @@ async def trace_spans(project_id: str, trace_id: str) -> list[dict]:
                toFloat64(arraySum(mapValues(cost_details)))               AS cost
         FROM events FINAL
         PREWHERE trace_id = {t:String}
-        WHERE project_id = {p:String}
+        WHERE project_id = {p:String} AND is_deleted = 0
         ORDER BY start_time
         """,
         parameters={"p": project_id, "t": trace_id},
@@ -137,7 +137,7 @@ async def thread_spans_full(project_id: str, thread_id: str) -> list[dict]:
     res = await client.query(
         f"SELECT {', '.join(_SPAN_COLS)} FROM events FINAL "
         "PREWHERE (conversation_id = {th:String} OR trace_id = {th:String}) "
-        "WHERE project_id = {p:String} "
+        "WHERE project_id = {p:String} AND is_deleted = 0 "
         "ORDER BY start_time",
         parameters={"p": project_id, "th": thread_id},
     )
@@ -559,7 +559,7 @@ async def sessions_overview(
               (groupArrayArray(mapKeys(mapFilter((k, v) -> startsWith(k, 'tracely.metadata.'), CAST(metadata, 'Map(String, String)')))),
                groupArrayArray(mapValues(mapFilter((k, v) -> startsWith(k, 'tracely.metadata.'), CAST(metadata, 'Map(String, String)'))))),
               'Map(String, String)')                                      AS t_meta
-          FROM events FINAL WHERE project_id = {{p:String}}{time_clause}{internal_clause}
+          FROM events FINAL WHERE project_id = {{p:String}} AND is_deleted = 0{time_clause}{internal_clause}
           GROUP BY trace_id
           {agent_clause}
         )
@@ -681,7 +681,7 @@ async def session_turns(
           -- O(project) per page view. A thread's traces either carry its conversation_id or ARE it
           -- (a trace with no conversation is its own 1-turn thread) — same predicate the sync
           -- reader's `read_thread_spans` uses, and the bloom filter on conversation_id covers it.
-          FROM events FINAL WHERE project_id = {{p:String}}
+          FROM events FINAL WHERE project_id = {{p:String}} AND is_deleted = 0
             AND (conversation_id = {{th:String}} OR trace_id = {{th:String}})
           GROUP BY trace_id
         )
@@ -796,7 +796,7 @@ async def agent_ids_with_spans(project_id: str) -> set[str]:
     client = await get_async_client()
     res = await client.query(
         "SELECT DISTINCT agent_id FROM events FINAL "
-        "WHERE project_id = {p:String} AND agent_id != ''",
+        "WHERE project_id = {p:String} AND agent_id != '' AND is_deleted = 0",
         parameters={"p": project_id},
     )
     return {r[0] for r in res.result_rows}

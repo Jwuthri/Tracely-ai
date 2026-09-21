@@ -7,7 +7,8 @@ UI reflects a delete on the next fetch without waiting for a mutation.
 
 from __future__ import annotations
 
-from tracely.infrastructure.clickhouse.client import get_async_client, get_client
+from tracely.infrastructure.clickhouse.client import get_async_client, get_client, insert_rows
+from tracely.infrastructure.clickhouse.events_schema import EVENT_COLUMNS, to_rows
 
 
 def delete_trace(project_id: str, trace_id: str, step_names: list[str] | None = None) -> None:
@@ -21,19 +22,47 @@ def delete_trace(project_id: str, trace_id: str, step_names: list[str] | None = 
     re-run records only its own — wiping the whole trace erased the other columns' prompts, so the
     UI could only ever show the judge prompt of whichever column ran last.
 
-    Reads before it deletes, because the common case is that there is nothing there — a first
-    grading. ClickHouse runs a mutation for a `DELETE` that matches no rows just the same, and one
-    mutation per evaluated message is the kind of thing that quietly wrecks a table.
+    Tombstones, not `DELETE FROM`. A lightweight DELETE is still a ClickHouse *mutation*, and a
+    mutation rewrites every active part of the table — at one per evaluated message that is what
+    "quietly wrecks a table" turns out to mean in practice: prod reached mutation #263,470 with
+    3,008 inactive parts against 11 active ones, and the mark-cache entries for all those dead
+    parts (6.35M of them, for 1.6 MiB of live marks) were the single largest consumer of
+    ClickHouse's RAM.
+
+    So instead: re-insert each doomed row's SORT KEY with `is_deleted = 1` and a fresh `event_ts`.
+    `events` is `ReplacingMergeTree(event_ts, is_deleted)`, so FINAL collapses the pair down to
+    the tombstone and the reads drop it on `is_deleted = 0` — an ordinary batched INSERT, zero
+    mutations. `internal_kind` is carried over because it is what keeps these rows out of the
+    `_REAL` listings; every other column can default, the row is gone.
+
+    The sort key is (project_id, toStartOfMinute(start_time), xxHash32(trace_id), span_id,
+    start_time), so span_id + the EXACT start_time are what the tombstone has to reproduce.
+
+    Reads first, because the common case is that there is nothing there — a first grading.
     """
     client = get_client()
     params = {"p": project_id, "t": trace_id, "n": step_names or []}
     where = "project_id = {p:String} AND trace_id = {t:String}" + (
         " AND (step_name IN {n:Array(String)} OR step_name = '')" if step_names else ""
     )
-    res = client.query(f"SELECT count() FROM events WHERE {where}", parameters=params)
-    if not res.result_rows or not int(res.result_rows[0][0]):
+    doomed = client.query(
+        f"SELECT span_id, start_time, internal_kind FROM events FINAL "
+        f"WHERE {where} AND is_deleted = 0",
+        parameters=params,
+    ).result_rows
+    if not doomed:
         return
-    client.command(f"DELETE FROM events WHERE {where}", parameters=params)
+    insert_rows(client, "events", EVENT_COLUMNS, to_rows([
+        {
+            "project_id": project_id,
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "start_time": start_time,
+            "internal_kind": internal_kind,
+            "is_deleted": 1,
+        }
+        for span_id, start_time, internal_kind in doomed
+    ]))
 
 
 async def delete_threads(project_id: str, threads: list[str]) -> int:
