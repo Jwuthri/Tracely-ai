@@ -144,3 +144,35 @@ def test_the_order_is_total():
             clause = session_order_clause(key, order)
             assert clause.endswith(", thread ASC")
             assert clause[: -len(", thread ASC")].count("thread") == 0
+
+
+# ── by-trace reads must PREWHERE ──────────────────────────────────────────────
+# `events` is ordered by (project_id, toStartOfMinute(start_time), xxHash32(trace_id), …), so a
+# lookup by bare `trace_id`/`conversation_id` can use neither the primary key nor a skip index —
+# it reads every row. With `input`/`output`/`metadata` in the SELECT that is the whole table
+# decompressed to return one trace. PREWHERE evaluates the filter on that one narrow column first
+# and only then materializes the blobs. ClickHouse will not do this for us: with FINAL the move is
+# gated behind `optimize_move_to_prewhere_if_final` (default 0), and forcing that on still leaves a
+# non-PK column in the WHERE. Measured on prod: 961 MiB -> 11.9 MiB read, 322 MiB -> 8.2 MiB RAM.
+
+
+def _fn_body(path: Path, name: str) -> str:
+    src = path.read_text()
+    body = src[src.index(f"def {name}(") :]
+    nxt = re.search(r"\n(?:async def |def |    def )", body[1:])
+    return body[: nxt.start()] if nxt else body
+
+
+def test_by_trace_span_reads_use_prewhere():
+    """A plain WHERE here is not a bug you can see — it is a query that still returns the right
+    spans while reading the entire table, ~30k times a day, until ClickHouse runs out of RAM."""
+    for filename, fn in (
+        ("trace_reader.py", "read_spans"),
+        ("trace_reader.py", "read_thread_spans"),
+        ("trace_reader.py", "thread_trace_ids"),
+        ("trace_reader.py", "candidate_metrics"),
+        ("trace_reader.py", "member_meta"),
+        ("async_reader.py", "thread_spans_full"),
+        ("async_reader.py", "trace_spans"),
+    ):
+        assert "PREWHERE" in _fn_body(_CH_DIR / filename, fn), f"{filename}:{fn} lost its PREWHERE"

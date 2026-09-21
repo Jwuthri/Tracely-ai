@@ -59,8 +59,16 @@ class TraceReader:
     def read_spans(self, project_id: str, trace_id: str) -> list[dict]:
         """All spans for one trace, ordered by start_time, with the columns services need."""
         res = self.client.query(
+            # PREWHERE, not WHERE: `trace_id` is neither a primary-key prefix (the key hashes
+            # it behind toStartOfMinute(start_time)) nor a skip index, so a plain WHERE
+            # decompresses `input`/`output` for EVERY row in the table to return ~40. ClickHouse
+            # will not move it itself — `optimize_move_to_prewhere_if_final` defaults to 0 and,
+            # even forced on, its cost model leaves a non-PK column alone. Measured on prod:
+            # 961 MiB -> 11.9 MiB read, 322 MiB -> 8.2 MiB RAM, 329 ms -> 12 ms. Same rule for
+            # every by-trace/by-thread read below.
             f"SELECT {', '.join(_SPAN_COLS)} FROM events FINAL "
-            "WHERE project_id = {p:String} AND trace_id = {t:String} ORDER BY start_time",
+            "PREWHERE trace_id = {t:String} "
+            "WHERE project_id = {p:String} ORDER BY start_time",
             parameters={"p": project_id, "t": trace_id},
         )
         return [dict(zip(res.column_names, row)) for row in res.result_rows]
@@ -71,8 +79,8 @@ class TraceReader:
         1-turn thread (`thread_id == trace_id`) — mirror of the sessions API's grouping."""
         res = self.client.query(
             f"SELECT {', '.join(_SPAN_COLS)} FROM events FINAL "
+            "PREWHERE (conversation_id = {th:String} OR trace_id = {th:String}) "
             "WHERE project_id = {p:String} "
-            "AND (conversation_id = {th:String} OR trace_id = {th:String}) "
             "ORDER BY start_time",
             parameters={"p": project_id, "th": thread_id},
         )
@@ -81,8 +89,9 @@ class TraceReader:
     def thread_trace_ids(self, project_id: str, thread_id: str) -> list[str]:
         """The trace ids (turns) inside one thread, oldest first."""
         rows = self.client.query(
-            "SELECT trace_id FROM events FINAL WHERE project_id = {p:String} "
-            "AND (conversation_id = {th:String} OR trace_id = {th:String}) "
+            "SELECT trace_id FROM events FINAL "
+            "PREWHERE (conversation_id = {th:String} OR trace_id = {th:String}) "
+            "WHERE project_id = {p:String} "
             "GROUP BY trace_id ORDER BY min(start_time)",
             parameters={"p": project_id, "th": thread_id},
         ).result_rows
@@ -101,7 +110,8 @@ class TraceReader:
             "SELECT trace_id, "
             "dateDiff('millisecond', min(start_time), max(coalesce(end_time, start_time))) AS lat, "
             "toUInt64(sum(arraySum(mapValues(usage_details)))) AS toks "
-            "FROM events FINAL WHERE project_id = {p:String} AND trace_id IN {t:Array(String)} "
+            "FROM events FINAL PREWHERE trace_id IN {t:Array(String)} "
+            "WHERE project_id = {p:String} "
             "GROUP BY trace_id",
             parameters={"p": project_id, "t": uniq},
         ).result_rows
@@ -279,7 +289,8 @@ class TraceReader:
             "argMinIf(input, start_time, input != '') AS inp, "
             "argMinIf(coalesce(status_message, ''), start_time, "
             "  coalesce(status_message, '') != '') AS err "
-            "FROM events FINAL WHERE project_id = {p:String} AND trace_id IN {t:Array(String)} "
+            "FROM events FINAL PREWHERE trace_id IN {t:Array(String)} "
+            "WHERE project_id = {p:String} "
             "GROUP BY trace_id",
             parameters={"p": project_id, "t": uniq},
         ).result_rows

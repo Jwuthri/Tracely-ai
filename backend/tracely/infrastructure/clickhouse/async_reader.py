@@ -119,7 +119,8 @@ async def trace_spans(project_id: str, trace_id: str) -> list[dict]:
                toUInt64(arraySum(mapValues(usage_details)))               AS tokens,
                toFloat64(arraySum(mapValues(cost_details)))               AS cost
         FROM events FINAL
-        WHERE project_id = {p:String} AND trace_id = {t:String}
+        PREWHERE trace_id = {t:String}
+        WHERE project_id = {p:String}
         ORDER BY start_time
         """,
         parameters={"p": project_id, "t": trace_id},
@@ -135,8 +136,8 @@ async def thread_spans_full(project_id: str, thread_id: str) -> list[dict]:
     client = await get_async_client()
     res = await client.query(
         f"SELECT {', '.join(_SPAN_COLS)} FROM events FINAL "
+        "PREWHERE (conversation_id = {th:String} OR trace_id = {th:String}) "
         "WHERE project_id = {p:String} "
-        "AND (conversation_id = {th:String} OR trace_id = {th:String}) "
         "ORDER BY start_time",
         parameters={"p": project_id, "th": thread_id},
     )
