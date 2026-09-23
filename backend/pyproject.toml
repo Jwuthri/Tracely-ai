@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.13.5",
   "pydantic-settings>=2.3",
-  "sqlalchemy>=2.0.30",
+  "sqlalchemy>=2.0.54",
   "greenlet>=3.0",
   "asyncpg>=0.29",
   "psycopg[binary]>=3.3.5",
