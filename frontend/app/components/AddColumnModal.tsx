@@ -17,6 +17,7 @@ import {
   type EvaluatorTemplate,
   type JudgeModelOption,
   type JudgeModels,
+  type RunIfCondition,
   isDecisionOutput,
 } from "../lib/evaluators";
 import { extractVariablesFromPrompt, hasTemplateVariables } from "../lib/templateVariables";
@@ -32,6 +33,7 @@ import {
   type DecisionFields,
 } from "./DecisionQuestionEditor";
 import { OutputSchemaBuilder } from "./OutputSchemaBuilder";
+import { RunIfEditor, runIfProblem } from "./RunIfEditor";
 import { PromptPreview } from "./PromptPreview";
 
 // ── Add Evaluation Column ───────────────────────────────────────────────────────
@@ -148,6 +150,7 @@ type FormState = {
   outputType: (typeof OUTPUT_OPTIONS)[number]["value"];
   executionMode: "batch" | "sequential";
   dependsOn: string[]; // score_names of evaluators whose results are injected as context
+  runIf: RunIfCondition[]; // grade only when these hold on the Depends On results
   threshold: string;
   spanTypes: string[]; // SPAN-level judges: which step types to grade (config.span_types)
   outputSchema?: Record<string, unknown>;
@@ -164,7 +167,7 @@ type FormState = {
 
 const EMPTY_FORM: FormState = {
   name: "", description: "", kind: "llm_judge", level: "AGENT_RUN", prompt: "", model: "",
-  outputType: "score", executionMode: "batch", dependsOn: [], threshold: "0.6",
+  outputType: "score", executionMode: "batch", dependsOn: [], runIf: [], threshold: "0.6",
   spanTypes: DEFAULT_SPAN_TYPES, outputSchema: undefined, fallbackModel: "", decision: EMPTY_DECISION,
   paramsJson: "", enabled: true,
 };
@@ -183,6 +186,7 @@ function formFromConfig(
     outputType: (outputType as FormState["outputType"]) ?? "score",
     executionMode: config.execution_mode === "sequential" ? "sequential" : "batch",
     dependsOn: config.depends_on ?? [],
+    runIf: config.run_if ?? [],
     spanTypes: (config.span_types ?? []).length ? config.span_types! : DEFAULT_SPAN_TYPES,
     // no-threshold configs stay threshold-less (informational metrics keep their no-verdict
     // semantics through install/edit round-trips) — only brand-new forms default to 0.6
@@ -250,8 +254,12 @@ function configFromForm(f: FormState, previous?: EvaluatorConfig): EvaluatorConf
   // SPAN level, so only persist it there (and drop it if the metric moved to a coarser level).
   if (S_LEVELS.has(f.level)) config.span_types = f.spanTypes;
   else delete config.span_types;
-  if (f.dependsOn.length > 0) config.depends_on = f.dependsOn;
+  // a condition's column must run first — it joins Depends On (the backend does the same)
+  const deps = [...f.dependsOn, ...f.runIf.map((c) => c.column).filter((c) => !f.dependsOn.includes(c))];
+  if (deps.length > 0) config.depends_on = [...new Set(deps)];
   else delete config.depends_on;
+  if (f.runIf.length > 0) config.run_if = f.runIf;
+  else delete config.run_if;
   return config;
 }
 
@@ -344,6 +352,20 @@ export function AddColumnModal({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editing, prefill]);
+
+  // A brand-new column starts on the workspace default model. When that is a decision model the
+  // form has to open on its question types — the rubric output types can't run on it. Only an
+  // untouched new form moves (never an edit, a template, or an AI draft), and the pristine
+  // baseline moves with it so this doesn't count as unsaved work.
+  useEffect(() => {
+    if (!open || editing || prefill || !judgeModels) return;
+    if (!isDecisionModelId(judgeModels.models, judgeModels.default)) return;
+    setForm((f) => {
+      if (f.model || isDecisionOutput(f.outputType) || JSON.stringify(f) !== seededForm.current) return f;
+      return seed({ ...f, outputType: "decision_binary", threshold: "0.5" });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, judgeModels, editing, prefill]);
 
   useEffect(() => {
     if (open && step === "library" && templates === null) {
@@ -441,6 +463,11 @@ export function AddColumnModal({
       setError("Evaluation prompt is required.");
       return;
     }
+    const condProblem = runIfProblem(form.runIf);
+    if (form.kind === "llm_judge" && condProblem) {
+      setError(condProblem);
+      return;
+    }
     if (form.kind === "llm_judge" && S_LEVELS.has(form.level) && form.spanTypes.length === 0) {
       setError("Select at least one step type to grade.");
       return;
@@ -502,17 +529,22 @@ export function AddColumnModal({
   const levelSegment: EvaluatorLevel = S_LEVELS.has(form.level) ? "SPAN" : form.level;
   const levelColors = LEVEL_COLORS[levelSegment] ?? LEVEL_COLORS.AGENT_RUN;
   const saveLabel = editing ? "Save Changes" : "Create Column";
-  const defaultModelLabel = judgeModels?.default ? `Default — ${judgeModels.default}` : "Default judge model";
-  const modelOptions = judgeModels?.models ?? [];
-  const decisionModel = isDecisionModelId(modelOptions, form.model);
   const isDecisionCol = isDecisionOutput(form.outputType);
-  const primaryInfo = modelOptions.find((m) => m.id === (form.model || judgeModels?.default));
+  // "" = the default for this KIND of column: a decision column runs on the decision default
+  // (Jev), an LLM column on the text default — the backend resolves it the same way.
+  const defaultId = (isDecisionCol ? judgeModels?.default : judgeModels?.text_default ?? judgeModels?.default) ?? "";
+  const defaultModelLabel = defaultId ? `Default — ${defaultId}` : "Default judge model";
+  const modelOptions = judgeModels?.models ?? [];
+  // "" = the workspace default, which is the decision model when one is reachable
+  const effectiveModel = form.model || defaultId;
+  const decisionModel = isDecisionModelId(modelOptions, effectiveModel);
+  const primaryInfo = modelOptions.find((m) => m.id === effectiveModel);
   // Fallback candidates: text models that can read MORE than the primary (all of them when the
   // primary's context is unknown), never the primary itself.
   const fallbackOptions = modelOptions.filter(
     (m) =>
       m.kind !== "decision" &&
-      m.id !== (form.model || judgeModels?.default) &&
+      m.id !== effectiveModel &&
       (!primaryInfo?.context_tokens || !m.context_tokens || m.context_tokens > primaryInfo.context_tokens),
   );
 
@@ -521,7 +553,8 @@ export function AddColumnModal({
   // backend rejects (a rubric output on Jev, a decision question on an LLM).
   function pickModel(id: string) {
     setForm((f) => {
-      const toDecision = isDecisionModelId(modelOptions, id);
+      // "Default" keeps the column's kind (its default is of that kind); a named model decides it
+      const toDecision = id ? isDecisionModelId(modelOptions, id) : isDecisionOutput(f.outputType);
       if (toDecision && !isDecisionOutput(f.outputType)) {
         return { ...f, model: id, outputType: "decision_binary", threshold: "0.5" };
       }
@@ -1136,6 +1169,8 @@ export function AddColumnModal({
                                       dependsOn: checked
                                         ? f.dependsOn.filter((n) => n !== e.score_name)
                                         : [...f.dependsOn, e.score_name],
+                                      // unchecking a column drops the conditions that read it
+                                      runIf: checked ? f.runIf.filter((c) => c.column !== e.score_name) : f.runIf,
                                     }))
                                   }
                                   className="accent-signal"
@@ -1147,6 +1182,18 @@ export function AddColumnModal({
                               </label>
                             );
                           })}
+                        </div>
+                        <div className="mt-3">
+                          <RunIfEditor
+                            candidates={candidates}
+                            value={form.runIf}
+                            onChange={(runIf) => setForm((f) => ({
+                              ...f,
+                              runIf,
+                              // a column a condition reads is checked in Depends On too
+                              dependsOn: [...new Set([...f.dependsOn, ...runIf.map((c) => c.column)])],
+                            }))}
+                          />
                         </div>
                       </div>
                     );

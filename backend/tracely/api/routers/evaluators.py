@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_project_id, require_user
-from tracely.domain.evaluation import decision
+from tracely.domain.evaluation import conditions, decision
 from tracely.domain.evaluation.evaluators import TEMPLATES
 from tracely.domain.evaluation.evaluators.llm_judge import OUTPUT_TYPES
 from tracely.domain.evaluation.generation import generate_evaluator_config
@@ -105,6 +105,9 @@ def _validate_evaluator(kind: str, level: str, config: dict[str, Any]) -> None:
     ):
         raise HTTPException(status_code=400, detail="depends_on must be a list of score names")
     _validate_models(output_type, config)
+    problem = conditions.validate(config.get("run_if"))
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
     if output_type == "json" and config.get("output_schema") is not None:
         try:
             compiled = model_from_json_schema(config["output_schema"])
@@ -142,11 +145,7 @@ def _validate_models(output_type: str, config: dict[str, Any]) -> None:
                     f"{model} is an LLM — use score/number/boolean/text/json with it"
                 ),
             )
-        if not model:
-            raise HTTPException(
-                status_code=400,
-                detail=f"output_type {output_type} needs `model` set to a decision model (e.g. typesafe/jev-1.13)",
-            )
+        # no model = the column default (`settings.column_default_model`, a decision model)
         problem = decision.validate(config)
         if problem:
             raise HTTPException(status_code=400, detail=problem)
@@ -161,6 +160,33 @@ def _validate_models(output_type: str, config: dict[str, Any]) -> None:
             )
         if fallback.strip() == model:
             raise HTTPException(status_code=400, detail="fallback_model must differ from the column's model")
+
+
+def _with_condition_deps(config: dict[str, Any]) -> dict[str, Any]:
+    """Every column a `run_if` reads joins `depends_on` — that is what runs it first and hands its
+    result over, so a condition on a column outside it could never be true."""
+    needed = conditions.columns(config.get("run_if"))
+    if not needed:
+        return config
+    deps = list(config.get("depends_on") or [])
+    return {**config, "depends_on": deps + [n for n in needed if n not in deps]}
+
+
+def _check_condition_columns(s, project_id: str, config: dict[str, Any], own_score_name: str = "") -> None:
+    """A `run_if` naming a column that doesn't exist here would read "no result" forever and the
+    column would silently never run — reject it with the names that do exist."""
+    needed = conditions.columns(config.get("run_if"))
+    if not needed:
+        return
+    known = {e.score_name: e for e in repo.evaluators_list(s, project_id)}
+    missing = [n for n in needed if n not in known]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"run_if reads {missing}, which are not columns here; existing: {sorted(known)}",
+        )
+    if own_score_name and own_score_name in needed:
+        raise HTTPException(status_code=400, detail="a column's run_if cannot read the column itself")
 
 
 def _stamp_advanced(config: dict[str, Any]) -> dict[str, Any]:
@@ -246,7 +272,13 @@ async def list_judge_models(project_id: str = Depends(get_project_id)) -> dict:
             return list_models()
 
     models = await run_in_threadpool(work)
-    return {"default": default_model_id(), "models": models}
+    def defaults():
+        with provider.use_project_key(project_id):
+            return provider.default_column_model_id()
+
+    # `default` = what a new column starts on (Jev when reachable); `text_default` = what an LLM
+    # column with no model runs on, and what pickers needing a text model should label "Default".
+    return {"default": await run_in_threadpool(defaults), "text_default": default_model_id(), "models": models}
 
 
 @router.get("/evaluators/cost")
@@ -387,11 +419,12 @@ async def create_evaluator(
     if body.level not in VALID_LEVELS:
         raise HTTPException(status_code=400, detail=f"level must be one of {sorted(VALID_LEVELS)}")
 
-    config = _stamp_advanced(body.config or {})
+    config = _with_condition_deps(_stamp_advanced(body.config or {}))
     _validate_evaluator(body.kind, body.level, config)
 
     def work():
         with SyncSessionLocal() as s:
+            _check_condition_columns(s, project_id, config)
             e = repo.evaluator_create(
                 s, project_id,
                 name=body.name, description=body.description, kind=body.kind,
@@ -416,7 +449,7 @@ async def update_evaluator(
             # Only recompute advanced-ness when the config (hence the prompt) is actually being
             # changed — an untouched config must not be clobbered by exclude_unset.
             if isinstance(patch.get("config"), dict):
-                patch["config"] = _stamp_advanced(patch["config"])
+                patch["config"] = _with_condition_deps(_stamp_advanced(patch["config"]))
             existing = repo.evaluator_get(s, project_id, evaluator_id)
             if existing is None:
                 return None
@@ -424,6 +457,9 @@ async def update_evaluator(
                 existing.kind,
                 patch.get("level", existing.level),
                 patch.get("config", existing.config or {}),
+            )
+            _check_condition_columns(
+                s, project_id, patch.get("config", existing.config or {}), existing.score_name
             )
             e = repo.evaluator_update(s, project_id, evaluator_id, patch)
             return None if e is None else _evaluator_dict(e)

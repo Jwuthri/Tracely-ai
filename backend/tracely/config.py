@@ -140,7 +140,12 @@ class Settings(BaseSettings):
     llm_max_output_tokens: int = 4096
     # judge model + legacy direct-endpoint fallback (used only when no OpenRouter key is set,
     # so existing deployments keep their judge until they switch keys)
-    llm_judge_model: str = "openai/gpt-5.4-nano"
+    # The default TEXT model — every call that needs generated text and names no model (the column
+    # generator, attackers, a rubric column saved without a model). Must be a chat model.
+    llm_judge_model: str = "openai/gpt-6-luna"
+    # The model a new evaluation column starts on, and what a decision column (`decision_*`
+    # output) with no `model` runs on. A classifier: see `provider._DECISION_MODELS`.
+    column_default_model: str = "typesafe/jev-1.13"
     llm_judge_api_key: str = ""
     llm_judge_base_url: str = "https://api.openai.com/v1"
 
@@ -201,7 +206,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1024
-    agent_model: str = "gpt-5.4-mini"
+    agent_model: str = "openai/gpt-6-luna"
     # cluster directly on cosine distance below this many failures; UMAP-denoise at/above it
     # (UMAP needs a large, diverse set — on few/near-duplicate points it invents structure).
     fi_umap_min_n: int = 50
@@ -218,13 +223,13 @@ class Settings(BaseSettings):
     # evaluator scores. The stats (Spearman, z-score) are deterministic Python; only the prose
     # synthesis is an LLM call — a slightly larger model than the per-cell judge is worth it here
     # since it reasons over the whole metric set at once. Goes through provider.run_structured_agent.
-    meta_analysis_model: str = "openai/gpt-5-mini"
+    meta_analysis_model: str = "openai/gpt-6-sol"
 
     # Rolling summary: the per-span accumulating conversation summary that backs @HISTORY / the
     # conversation judge (compressed history instead of the raw transcript). A step whose components
     # fit under `rolling_summary_step_max_tokens` is kept VERBATIM (no LLM, no information loss);
     # only larger steps are summarized by the model. The summarizer goes through the provider seam.
-    rolling_summary_model: str = "openai/gpt-5.4-nano"
+    rolling_summary_model: str = "openai/gpt-6-luna"
     rolling_summary_step_max_tokens: int = 512
     # Whole-summary budget: when the accumulated summary exceeds this many tokens, the older items
     # (everything but the last 2, which stay verbatim) are recursively compacted into one block.

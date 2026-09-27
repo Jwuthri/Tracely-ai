@@ -78,24 +78,24 @@ def _extract_usage(result: dict, model: str | None) -> dict:
 # only what you see when the catalog is unreachable). Grouped cheap/fast → expensive per provider
 # for reading, but `list_models` sorts by label before serving — the pickers show it alphabetically.
 _CURATED_MODELS: list[tuple[str, str]] = [
-    # OpenAI
-    ("openai/gpt-5.6-luna", "OpenAI GPT-5.6 Luna"),
-    ("openai/gpt-5.4-nano", "OpenAI GPT-5.4 Nano"),
-    ("openai/gpt-5.4-mini", "OpenAI GPT-5.4 Mini"),
-    ("openai/gpt-5.6-terra", "OpenAI GPT-5.6 Terra"),
-    ("openai/gpt-5.4", "OpenAI GPT-5.4"),
-    ("openai/gpt-5.6-sol", "OpenAI GPT-5.6 Sol"),
+    # OpenAI — GPT-6 (Luna → Sol → Astra; `-pro` = the same tier with extended reasoning)
+    ("openai/gpt-6-luna", "OpenAI GPT-6 Luna"),
+    ("openai/gpt-6-luna-pro", "OpenAI GPT-6 Luna Pro"),
+    ("openai/gpt-6-sol", "OpenAI GPT-6 Sol"),
+    ("openai/gpt-6-sol-pro", "OpenAI GPT-6 Sol Pro"),
+    ("openai/gpt-6-astra", "OpenAI GPT-6 Astra"),
+    ("openai/gpt-6-astra-pro", "OpenAI GPT-6 Astra Pro"),
     # Google
     ("google/gemini-3.5-flash-lite", "Google Gemini 3.5 Flash Lite"),
-    ("google/gemini-3.6-flash", "Google Gemini 3.6 Flash"),
+    ("google/gemini-3.8-flash", "Google Gemini 3.8 Flash"),
     ("google/gemini-3.1-pro-preview", "Google Gemini 3.1 Pro"),
     # Anthropic
     ("anthropic/claude-haiku-4.5", "Anthropic Claude Haiku 4.5"),
     ("anthropic/claude-sonnet-5", "Anthropic Claude Sonnet 5"),
-    ("anthropic/claude-opus-5", "Anthropic Claude Opus 5"),
+    ("anthropic/claude-opus-5.5", "Anthropic Claude Opus 5.5"),
+    ("anthropic/claude-fable-5.1", "Anthropic Claude Fable 5.1"),
     # xAI
-    ("x-ai/grok-4.3", "xAI Grok 4.3"),
-    ("x-ai/grok-4.5", "xAI Grok 4.5"),
+    ("x-ai/grok-4.7", "xAI Grok 4.7"),
     # Open-weights / low cost
     ("inclusionai/ling-3.0-flash:free", "Ling 3.0 Flash (free)"),
     ("openai/gpt-oss-120b", "OpenAI GPT-OSS 120B"),
@@ -118,33 +118,43 @@ _STRUCTURED_OUTPUT_INCOMPATIBLE = ("qwen/qwen3.7-flash", "meta/muse-spark-1.1")
 # Live pricing always wins when the catalog is reachable. Generated from OpenRouter's catalog on
 # 2026-07-30 — exact at that date, so re-pull rather than hand-editing when it drifts.
 _FALLBACK_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+    # ── the curated dropdown (re-pulled 2026-09-27) ──
+    "openai/gpt-6-luna":               (0.10,  0.50),
+    "openai/gpt-6-luna-pro":           (0.10,  0.50),
+    "openai/gpt-6-sol":                (2.00, 10.00),
+    "openai/gpt-6-sol-pro":            (2.00, 10.00),
+    "openai/gpt-6-astra":              (10.00, 50.00),
+    "openai/gpt-6-astra-pro":          (10.00, 50.00),
+    "openai/gpt-oss-120b":             (0.037, 0.17),
+    "google/gemini-3.5-flash-lite":    (0.30,  2.50),
+    "google/gemini-3.8-flash":         (0.75,  3.75),
+    "google/gemini-3.1-pro-preview":   (2.00, 12.00),
+    "anthropic/claude-haiku-4.5":      (1.00,  5.00),
+    "anthropic/claude-sonnet-5":       (2.00, 10.00),
+    "anthropic/claude-opus-5.5":       (4.00, 20.00),
+    "anthropic/claude-fable-5.1":      (10.00, 50.00),
+    "x-ai/grok-4.7":                   (1.60,  4.80),
+    "inclusionai/ling-3.0-flash:free": (0.00,  0.00),
+    "qwen/qwen3-32b":                  (0.08,  0.28),
+    "minimax/minimax-m2.7":            (0.25,  1.00),
+    # ── no longer offered, still priced ──
+    # Columns saved before the 2026-09-27 refresh keep their pinned model, and every score
+    # recorded with one is priced from here when the catalog is unreachable — dropping a row
+    # silently turns that history into $0.00.
     "openai/gpt-5.6-luna":             (0.10,  0.60),
     "openai/gpt-5.4-nano":             (0.20,  1.25),
     "openai/gpt-5.4-mini":             (0.75,  4.50),
     "openai/gpt-5.6-terra":            (1.00,  6.00),
     "openai/gpt-5.4":                  (2.50, 15.00),
     "openai/gpt-5.6-sol":              (5.00, 30.00),
-    "openai/gpt-oss-120b":             (0.037, 0.17),
-    "google/gemini-3.5-flash-lite":    (0.30,  2.50),
+    "openai/gpt-5-mini":               (0.25,  2.00),
     "google/gemini-3.6-flash":         (1.50,  7.50),
-    # Not in the dropdown either, but it is the shipped `assistant_model` — and the assistant's
-    # spend cap is priced from this table when the catalog is unreachable. Unpriced would mean a
-    # cap that silently never fires, so this row is load-bearing, not decorative.
     "google/gemini-3.7-flash":         (0.75,  3.75),
-    "google/gemini-3.1-pro-preview":   (2.00, 12.00),
-    "anthropic/claude-haiku-4.5":      (1.00,  5.00),
-    "anthropic/claude-sonnet-5":       (2.00, 10.00),
     "anthropic/claude-opus-5":         (5.00, 25.00),
     "x-ai/grok-4.3":                   (1.25,  2.50),
     "x-ai/grok-4.5":                   (2.00,  6.00),
-    "inclusionai/ling-3.0-flash:free": (0.00,  0.00),
     "qwen/qwen3.7-flash":              (0.03,  0.13),
-    "qwen/qwen3-32b":                  (0.08,  0.28),
-    "minimax/minimax-m2.7":            (0.25,  1.00),
     "meta/muse-spark-1.1":             (1.25,  4.25),
-    # Not in the dropdown, but shipped as a `Settings` default (`meta_analysis_model`), so it can
-    # show up in a score's recorded model and must still price correctly.
-    "openai/gpt-5-mini":               (0.25,  2.00),
     # Decision model (see `_DECISION_MODELS`): billed per input token only, output is free.
     "typesafe/jev-1.13":               (0.042, 0.00),
 }
@@ -384,8 +394,21 @@ def _normalize_model(model: str) -> str:
 
 
 def default_model_id() -> str:
-    """The judge model used when an evaluator doesn't pick one (normalized OpenRouter id)."""
+    """The default TEXT model (normalized OpenRouter id): what any call that needs generated text
+    uses when it names no model — the column generator, scenario attackers, a rubric column saved
+    without a model. Never a decision model, which produces no text."""
     return _normalize_model(settings.llm_judge_model.strip())
+
+
+def default_column_model_id() -> str:
+    """The model a NEW evaluation column starts on, and what a decision column with no `model`
+    runs on: the configured decision model (TypeSafe Jev) — when a Decisions API is reachable,
+    i.e. an OpenRouter key is in scope. Without one the text default, so the form never offers a
+    model that cannot run."""
+    column = _normalize_model(settings.column_default_model.strip())
+    if effective_openrouter_key() and column in _DECISION_MODELS:
+        return column
+    return default_model_id()
 
 
 def _per_mtok(raw: Any) -> float | None:

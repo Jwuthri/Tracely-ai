@@ -73,6 +73,34 @@ The built-in library (Browse Library in Add Column) is written for Jev: every te
 question with labels, and the old JSON sub-fields (severity, detected type) became the labels
 themselves. Each keeps its score name, so existing gates and alerts that reference it keep working.
 
+## Chaining columns: Depends On and Run only when
+
+**Depends On** runs other columns first and hands their result for the same item to this one —
+as context in a basic prompt, or through `@DEPENDENCIES` in a template. Each result carries its
+`label`, `value`, `verdict` and `reason`.
+
+**Run only when** grades an item only when conditions on those results hold (all of them). A
+condition reads a column's **label** (a multi-class label, or any multi-label label), its
+**verdict** (PASS / FAIL / NONE) or its **value** (≥, >, ≤, <). Items that don't match show
+**Not run**: no verdict, no model call.
+
+The cheap-first pattern: let a Jev column classify every turn, and run the expensive LLM only
+where it flagged something — explain the turns labelled `refund_cancellation`, or diagnose only
+the turns where Answer quality FAILED:
+
+```json
+{
+  "model": "openai/gpt-6-luna",
+  "output_type": "text",
+  "prompt": "Explain how the agent handled this refund request.",
+  "run_if": [{"column": "tracely.run.intent", "field": "label", "op": "in", "values": ["refund_cancellation"]}]
+}
+```
+
+A condition's column joins Depends On automatically. If it has no result for an item, the
+condition is false and the column doesn't run. The in-app assistant knows this pattern — ask it
+for "an LLM explanation only when the intent is refund".
+
 ## Long items and model context
 
 Every column is checked against its model's context window before a call is made (Jev reads at

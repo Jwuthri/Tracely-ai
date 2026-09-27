@@ -44,12 +44,14 @@ def chain_payload(
 
     A `json` column's result keeps its schema shape (the user's own fields, with the
     score/verdict/reason envelope re-attached where absent); every other output type collapses
-    to `{value, verdict, reason}` minus empty fields."""
+    to `{label, value, verdict, reason}` minus empty fields."""
+    label = None
     if string_value:
         try:
             parsed = json.loads(string_value)
         except ValueError:
             parsed = None
+            label = string_value  # not JSON at all → a label (see below)
         if isinstance(parsed, dict):
             out = dict(parsed)
             if value is not None:
@@ -59,7 +61,16 @@ def chain_payload(
             if comment:
                 out.setdefault("reason", comment)
             return out
-    payload = {"value": value, "verdict": verdict or None, "reason": comment or None}
+    # A plain (non-JSON) string_value is a decision column's label — `order_status`, or a
+    # multi-label column's `refund, complaint`. It is the whole answer of that column, so it rides
+    # as its own field: a dependent's prompt reads it and a `run_if` label condition gates on it
+    # (`domain/evaluation/conditions.py`). Left in the comment only, it was prose to be parsed.
+    payload = {
+        "label": label,
+        "value": value,
+        "verdict": verdict or None,
+        "reason": comment or None,
+    }
     return {k: v for k, v in payload.items() if v is not None}
 
 

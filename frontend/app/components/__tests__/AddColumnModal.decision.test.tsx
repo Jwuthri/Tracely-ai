@@ -9,9 +9,10 @@ vi.mock("@/app/lib/evaluators", async (orig) => ({
   listTemplates: vi.fn(async () => []),
   createEvaluator: (body: unknown) => createEvaluator(body),
   listJudgeModels: vi.fn(async () => ({
-    default: "openai/gpt-5.4-nano",
+    default: "typesafe/jev-1.13",
+    text_default: "openai/gpt-6-luna",
     models: [
-      { id: "openai/gpt-5.4-nano", label: "GPT-5.4 Nano", kind: "llm", context_tokens: 400000 },
+      { id: "openai/gpt-6-luna", label: "GPT-6 Luna", kind: "llm", context_tokens: 1050000 },
       { id: "google/gemini-3.6-flash", label: "Gemini 3.6 Flash", kind: "llm", context_tokens: 1000000 },
       { id: "typesafe/jev-1.13", label: "TypeSafe Jev 1.13", kind: "decision", context_tokens: 32000 },
     ],
@@ -46,7 +47,7 @@ describe("decision-model columns", () => {
     fireEvent.change(screen.getByPlaceholderText("The answer misses or misreads it"), { target: { value: "Not finished" } });
     // the fallback list offers only LLMs with a bigger context — never the classifier itself
     const fallback = screen.getByDisplayValue(/Skip it/) as HTMLSelectElement;
-    expect([...fallback.options].map((o) => o.value)).toEqual(["", "openai/gpt-5.4-nano", "google/gemini-3.6-flash"]);
+    expect([...fallback.options].map((o) => o.value)).toEqual(["", "openai/gpt-6-luna", "google/gemini-3.6-flash"]);
     fireEvent.change(fallback, { target: { value: "google/gemini-3.6-flash" } });
 
     fireEvent.click(screen.getByText("Create Column"));
@@ -100,6 +101,14 @@ describe("decision-model columns", () => {
     expect(
       decisionProblem("decision_multilabel", { ...q, labels: Array.from({ length: 51 }, (_, i) => lbl(`l${i}`)) }, "0.5"),
     ).toMatch(/At most 50/);
+  });
+
+  it("a new column opens on the decision default and its question types", async () => {
+    render(<AddColumnModal open onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByText("Manual"));
+    await screen.findByText("Question Type");
+    expect(screen.getByDisplayValue("Default — typesafe/jev-1.13")).toBeTruthy();
+    expect(screen.getByDisplayValue("Binary (yes / no)")).toBeTruthy();
   });
 
   it("offers Binary / Multi-class / Multi-label for a decision model", async () => {

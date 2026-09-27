@@ -24,6 +24,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from tracely.api.internal_client import api_call, auth_headers_from
+from tracely.domain.evaluation.guide import create_evaluator_description
 
 INSTRUCTIONS = """Tracely is trace-native CI/CD for AI agents: production traces are graded by
 evaluators (the columns of the traces table), failures are clustered, and clusters become
@@ -140,7 +141,9 @@ async def list_evaluator_templates(ctx: Context) -> list[dict]:
     return await _call(ctx, "GET", "/api/evaluators/templates")
 
 
-@mcp.tool()
+@mcp.tool(description=create_evaluator_description(
+    "config", "backfill existing conversations with Run in the traces table."
+))
 async def create_evaluator(
     ctx: Context,
     name: str,
@@ -151,19 +154,6 @@ async def create_evaluator(
     score_name: str = "",
     enabled: bool = True,
 ) -> dict:
-    """Add a new evaluator (a new column on the traces table).
-
-    kind="llm_judge" — config takes `prompt` (the rubric), `output_type`
-    ("score" | "boolean" | "json"), `threshold` (for "score"), and optional `advisory` (true =
-    a FAIL is recorded but does not flip the trace's verdict, which is what subjective-quality
-    columns should do). level is one of CONVERSATION, AGENT_RUN, SPAN, TOOL, GENERATION, CHAIN.
-
-    kind="structural" — config takes `check`, one of run_outcome (AGENT_RUN), tool_success
-    (TOOL), tool_consistency (AGENT_RUN), latency (AGENT_RUN, plus `budget_ms`), required_tools
-    (AGENT_RUN, plus `tools`). The level is fixed per check, as noted.
-
-    New evaluators grade traces ingested from now on; use the Evaluations UI to backfill.
-    """
     body = {
         "name": name,
         "description": description,
@@ -190,7 +180,8 @@ async def update_evaluator(
     sampling: float | None = None,
 ) -> dict:
     """Patch an evaluator — only the fields you pass change. `enabled=False` retires a column
-    without losing the scores it already produced. `sampling` (0.0–1.0) grades a deterministic
+    without losing the scores it already produced. `config` REPLACES the whole config: read it
+    with list_evaluators, change what you need (e.g. add `run_if`), send all of it back. `sampling` (0.0–1.0) grades a deterministic
     fraction of traces; `target_agent` / `target_env` scope it to one agent or environment."""
     patch = {
         k: v

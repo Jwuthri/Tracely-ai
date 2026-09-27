@@ -51,6 +51,7 @@ export const TEMPLATE_VARIABLES: TemplateVar[] = [
   { name: "ROLLING_SUMMARY", description: "Accumulated rolling summary of the conversation so far (compact, prefix-stable); empty when none has been generated", type: "string", levels: ALL },
   { name: "GOAL", description: "User's overall goal/intent (first request in the thread)", type: "string", levels: ALL },
   { name: "LIST_AGENT", description: "List of agents seen with the tools they called", type: "string", levels: ALL },
+  { name: "DEPENDENCIES", description: "This item's results from the columns in Depends On — label, value, verdict and reason each", type: "string", levels: ALL },
   // conversation only
   { name: "MESSAGES", description: "All turns formatted ([role]: text)", type: "string", levels: ["conversation"] },
   { name: "USER_MESSAGES", description: "All user requests only", type: "string", levels: ["conversation"] },

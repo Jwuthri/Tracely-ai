@@ -39,7 +39,7 @@ INTENTS = [
 # label schema, on the templates whose state can grow without bound (`@CURRENT_STEPS`); the
 # others are clipped transcripts/turns that always fit.
 _JEV = {"model": "typesafe/jev-1.13"}
-_FALLBACK = "openai/gpt-5.4-nano"
+_FALLBACK = "openai/gpt-6-luna"
 
 # One turn with its evidence — the state for judges that must check the answer against the tools.
 _TURN_WITH_EVIDENCE = (

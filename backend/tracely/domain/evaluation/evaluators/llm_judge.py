@@ -66,7 +66,7 @@ from tracely.domain.evaluation.evaluators.base import (
 from tracely.domain.evaluation.evaluators import prompts
 from tracely.domain.evaluation.evaluators.prompts import ADVANCED_SYSTEM
 from tracely.domain.evaluation.evaluators.catalog import DEFAULT_JUDGE_PROMPT
-from tracely.domain.evaluation import budget, decision
+from tracely.domain.evaluation import budget, conditions, decision
 from tracely.domain.evaluation.output_schema import model_from_json_schema
 from tracely.domain.evaluation.results import EvalResult, RunContext, chain_payload
 from tracely.domain.evaluation.template_resolver import (
@@ -215,6 +215,12 @@ class LLMJudgeEvaluator(Evaluator):
         if not provider.llm_enabled():
             return []
         config = params  # the full evaluator config — flat, see `base.dispatch`
+        if self.level not in STEP_LEVELS and config.get("run_if"):
+            # One item (the turn or the thread): gate it once. Step levels gate per step, below —
+            # a step-level prerequisite has one result per step.
+            ok, why = conditions.evaluate(config["run_if"], _deps(config))
+            if not ok:
+                return [self._not_run(why)]
         if config.get("is_advanced"):
             return self._run_advanced(ctx, config)
         if self.level == CONVERSATION:
@@ -222,6 +228,22 @@ class LLMJudgeEvaluator(Evaluator):
         if self.level in STEP_LEVELS:
             return self._run_steps(ctx, config)
         return self._run_message(ctx, config)
+
+    def _not_run(self, why: str, span_id: str = "") -> EvalResult:
+        """A neutral, visible score for an item this column's `run_if` excluded. Written rather
+        than omitted: a re-run after the prerequisite changed its mind must REPLACE the stale
+        grade (scores converge by deterministic id), and "why is this cell empty?" gets an
+        answer. Neutral, so it never fails anything."""
+        return EvalResult(
+            "", self.level, "", data_type="TEXT", string_value="Not run",
+            comment=why[:500], target_span_id=span_id,
+        )
+
+    def _step_gate(self, config: dict, span_id: str) -> EvalResult | None:
+        if not config.get("run_if"):
+            return None
+        ok, why = conditions.evaluate(config["run_if"], _deps(config, span_id))
+        return None if ok else self._not_run(why, span_id)
 
     # ── per-level runners ────────────────────────────────────────────────────
 
@@ -317,6 +339,10 @@ class LLMJudgeEvaluator(Evaluator):
             reset_chat(chat)
         out: list[EvalResult] = []
         for i, s in enumerate(candidates):
+            gated = self._step_gate(config, s.get("span_id", ""))
+            if gated:
+                out.append(gated)
+                continue
             # Name the recorded call for the span it judges. Without this a step-level column
             # grading 10 spans records 10 identical rows named after the model, and "which step
             # did it fail on?" is unanswerable — the one question step-level grading exists for.
@@ -442,6 +468,7 @@ class LLMJudgeEvaluator(Evaluator):
             wanted_vars=wanted,
             history_override=history_override,
             declared_agents=declared_agents,
+            dependencies=_deps(config),
         )
         result = self._grade_resolved(config, template, context)
         return [result] if result else []
@@ -469,6 +496,10 @@ class LLMJudgeEvaluator(Evaluator):
         )
         out: list[EvalResult] = []
         for s in candidates:
+            gated = self._step_gate(config, s.get("span_id", ""))
+            if gated:
+                out.append(gated)
+                continue
             context = build_context(
                 self.level,
                 thread_spans=thread_spans,
@@ -478,6 +509,7 @@ class LLMJudgeEvaluator(Evaluator):
                 wanted_vars=wanted,
                 history_override=history_override,
                 declared_agents=declared_agents,
+                dependencies=_deps(config, s.get("span_id", "")),
             )
             result = self._grade_resolved(config, template, context)
             if result:
@@ -583,8 +615,12 @@ class LLMJudgeEvaluator(Evaluator):
         output_type = str(config.get("output_type") or "score").lower()
         if output_type not in OUTPUT_TYPES:
             output_type = "score"
-        primary = config.get("model") or None
         is_decision = decision.is_decision_output(output_type)
+        # No model named: a decision column runs on the column default (Jev), an LLM column on the
+        # text default (`get_chat_model`'s own fallback) — never the other way round.
+        primary = config.get("model") or (
+            provider.settings.column_default_model if is_decision else None
+        )
         if is_decision and not provider.is_decision_model(primary):
             # A decision column whose model was swapped for an LLM outside the validated router:
             # answer the same question through the LLM rather than write nothing.

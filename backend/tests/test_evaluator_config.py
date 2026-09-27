@@ -69,3 +69,8 @@ def test_chain_payload_is_the_one_rendering_for_sequential_context():
     }
     # non-object JSON (a bare list/string) falls back to the compact form too
     assert chain_payload(value=None, verdict="", comment="", string_value="[1, 2]") == {}
+    # a plain string is a decision column's label, carried as its own field
+    assert chain_payload(value=0.96, verdict="", comment="order_status (confidence 0.96)",
+                         string_value="order_status") == {
+        "label": "order_status", "value": 0.96, "reason": "order_status (confidence 0.96)",
+    }

@@ -27,6 +27,7 @@ export type EvaluatorConfig = {
   is_advanced?: boolean; // prompt uses @VARIABLE templates (set server-side from the prompt)
   template_variables?: string[]; // refs used, e.g. ["HISTORY", "CURRENT_STEP.tool_call"] (informational)
   depends_on?: string[]; // score_names of evaluators whose results are injected as context
+  run_if?: RunIfCondition[]; // grade an item only when every condition holds on its depends_on results
   model?: string;
   // LLM that grades an item too long for `model`'s context; unset = such items are skipped.
   fallback_model?: string;
@@ -40,13 +41,24 @@ export type EvaluatorConfig = {
   params?: Record<string, unknown>;
 };
 
+// One `run_if` condition (backend domain/evaluation/conditions.py).
+export type RunIfCondition = {
+  column: string; // score_name of a Depends On column
+  field: "label" | "verdict" | "value";
+  op: "in" | "not_in" | "gte" | "gt" | "lte" | "lt";
+  values?: string[]; // label / verdict conditions
+  value?: number; // value conditions
+};
+
 export type JudgeModelOption = {
   id: string;
   label: string;
   kind?: "llm" | "decision";
   context_tokens?: number | null;
 };
-export type JudgeModels = { default: string; models: JudgeModelOption[] };
+// `default`: what a new column starts on (the decision model, when reachable). `text_default`:
+// what an LLM column with no model runs on — the "Default" for pickers that need a text model.
+export type JudgeModels = { default: string; text_default?: string; models: JudgeModelOption[] };
 
 export type EvaluatorDef = {
   id: string;

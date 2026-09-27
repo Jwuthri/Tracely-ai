@@ -209,9 +209,11 @@ async def test_models_endpoint_static_fallback(client, sync_db, monkeypatch):
     r = await client.get("/api/evaluators/models", headers=_bearer(tok))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["default"].startswith("openai/")
+    # a new column starts on the decision model; text work keeps a chat model
+    assert body["default"] == "typesafe/jev-1.13"
+    assert body["text_default"] == "openai/gpt-6-luna"
     ids = [m["id"] for m in body["models"]]
-    assert "openai/gpt-5.4-nano" in ids
+    assert "openai/gpt-6-luna" in ids and "openai/gpt-5.4-nano" not in ids
     assert len(ids) >= 8 and all(m["label"] for m in body["models"])
 
 
@@ -233,13 +235,15 @@ async def test_models_endpoint_filters_to_available(client, sync_db, monkeypatch
 
     monkeypatch.setattr(
         provider, "_openrouter_model_names",
-        lambda: {"openai/gpt-5.4-nano": "OpenAI: GPT-5.4 Nano"},
+        lambda: {"openai/gpt-6-luna": "OpenAI: GPT-6 Luna"},
     )
     tok = await _owner_token(client)
     r = await client.get("/api/evaluators/models", headers=_bearer(tok))
     assert r.json()["models"] == [
-        {"id": "openai/gpt-5.4-nano", "label": "OpenAI: GPT-5.4 Nano", "kind": "llm", "context_tokens": None}
+        {"id": "openai/gpt-6-luna", "label": "OpenAI: GPT-6 Luna", "kind": "llm", "context_tokens": None}
     ]
+    # no workspace key → no Decisions API → a new column starts on the text default
+    assert r.json()["default"] == "openai/gpt-6-luna"
 
 
 async def test_generate_json_draft_builds_schema(client, sync_db, monkeypatch):
@@ -425,7 +429,6 @@ async def test_decision_column_roundtrips(client, sync_db):
     ({"model": "typesafe/jev-1.13", "output_type": "score", "prompt": "Grade."}, "decision model"),
     # a decision output type needs a decision model
     ({**_JEV_NOUL, "model": "openai/gpt-5.4-nano"}, "needs a decision model"),
-    ({k: v for k, v in _JEV_NOUL.items() if k != "model"}, "needs `model`"),
     # Jev's own limits, surfaced before any spend
     ({**_JEV_NOUL, "criteria": {"true": "Done"}}, '"false"'),
     ({**_JEV_NOUL, "output_type": "decision_multiclass", "criteria": {"a": None}}, "between 2 and 255"),
@@ -449,3 +452,98 @@ async def test_models_endpoint_lists_jev_as_decision(client, sync_db, monkeypatc
     models = (await client.get("/api/evaluators/models", headers=_bearer(tok))).json()["models"]
     jev = [m for m in models if m["kind"] == "decision"]
     assert [m["id"] for m in jev] == ["typesafe/jev-1.13"] and jev[0]["context_tokens"] == 32000
+
+
+async def test_decision_column_without_a_model_uses_the_column_default(client, sync_db):
+    tok = await _owner_token(client)
+    cfg = {k: v for k, v in _JEV_NOUL.items() if k != "model"}
+    r = await client.post("/api/evaluators", headers=_bearer(tok), json={"name": "x", "config": cfg})
+    assert r.status_code == 200, r.text
+
+
+# ── "Use AI" drafts a decision column first ─────────────────────────────────
+
+
+def _draft(**kw):
+    from tracely.domain.evaluation.generation import GeneratedEvaluatorDraft
+
+    return GeneratedEvaluatorDraft(**{"name": "M", "level": "AGENT_RUN", **kw})
+
+
+def _generate(monkeypatch, draft, *, key=True):
+    from tracely.domain.evaluation.generation import generate_evaluator_config
+    from tracely.infrastructure.llm import provider
+
+    if key:
+        _workspace_key(monkeypatch)
+    else:
+        monkeypatch.setattr(provider, "_encrypted_key_for", lambda pid: None)
+    seen = {}
+
+    def fake(prompt, *, response_format, system_prompt=None, **_):
+        seen["system"] = system_prompt
+        return draft
+
+    monkeypatch.setattr(provider, "run_structured_agent", fake)
+    return generate_evaluator_config("did the agent hallucinate?", "p1"), seen["system"]
+
+
+def test_generate_prefers_a_decision_column(monkeypatch):
+    out, system = _generate(monkeypatch, _draft(
+        engine="decision", task="binary", question="Does the `Agent answer` invent facts?",
+        yes_means="It states unsupported facts", no_means="Every fact is supported", pass_when="no",
+    ))
+    assert 'Set engine="decision" unless' in system
+    cfg = out["config"]
+    assert cfg["model"] == "typesafe/jev-1.13" and cfg["output_type"] == "decision_binary"
+    assert cfg["pass_when"] == "no" and cfg["criteria"]["false"] == "Every fact is supported"
+
+
+def test_generate_normalizes_labels(monkeypatch):
+    from tracely.domain.evaluation.generation import GeneratedLabel
+
+    out, _ = _generate(monkeypatch, _draft(
+        engine="decision", task="multiclass", question="Which failure?",
+        labels=[GeneratedLabel(name="Wrong Answer!", description="false"), GeneratedLabel(name="ok")],
+        fail_labels=["wrong answer"],
+    ))
+    assert out["config"]["criteria"] == {"wrong_answer": "false", "ok": None}
+    assert out["config"]["fail_options"] == ["wrong_answer"]
+
+
+def test_generate_falls_back_to_a_luna_rubric(monkeypatch):
+    # an LLM-shaped metric, and a decision draft too broken to use, both land on the text default
+    out, _ = _generate(monkeypatch, _draft(engine="llm", output_type="text", prompt="Describe the tone."))
+    assert out["config"]["model"] == "openai/gpt-6-luna" and out["config"]["output_type"] == "text"
+    out, _ = _generate(monkeypatch, _draft(engine="decision", task="multiclass", question="Q?", labels=[],
+                                            prompt="Grade it."))
+    assert out["config"]["model"] == "openai/gpt-6-luna" and out["config"]["prompt"] == "Grade it."
+
+
+def test_generate_without_a_decision_model_only_offers_llm(monkeypatch):
+    out, system = _generate(monkeypatch, _draft(engine="llm", prompt="Grade."), key=False)
+    assert "no decision model is available" in system
+
+
+# ── conditional columns (run_if) ─────────────────────────────────────────────
+
+
+async def test_run_if_joins_depends_on_and_rejects_unknown_columns(client, sync_db):
+    tok = await _owner_token(client)
+    cond = [{"column": "tracely.run.intent", "field": "label", "op": "in", "values": ["refund"]}]
+    ok = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "Explain refunds", "config": {"output_type": "text", "prompt": "Explain.", "run_if": cond},
+    })
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["config"]["depends_on"] == ["tracely.run.intent"]  # added for you
+
+    bad = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "x", "config": {"output_type": "text", "prompt": "E.", "run_if": [{**cond[0], "column": "nope"}]},
+    })
+    assert bad.status_code == 400 and "not columns here" in bad.json()["detail"]
+    assert "tracely.run.intent" in bad.json()["detail"]  # lists what does exist
+
+    malformed = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "y", "config": {"output_type": "text", "prompt": "E.", "run_if": [{**cond[0], "op": "equals"}]},
+    })
+    assert malformed.status_code == 400 and "op must be one of" in malformed.json()["detail"]

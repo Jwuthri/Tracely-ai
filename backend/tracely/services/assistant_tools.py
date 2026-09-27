@@ -34,6 +34,7 @@ from typing import Any
 from uuid import uuid4
 
 from tracely.api.internal_client import api_call
+from tracely.domain.evaluation.guide import create_evaluator_description
 
 # One tool result's ceiling. Large enough for a cluster with its members or a trace with its
 # spans; small enough that three of them still leave room to think.
@@ -254,7 +255,10 @@ def build_tools(headers: dict[str, str], path: str = "") -> list:
         `create_evaluator` over inventing a rubric from scratch."""
         return await call("GET", "/api/evaluators/templates")
 
-    @tool
+    @tool(description=create_evaluator_description(
+        "evaluator_config",
+        "call `run_evaluation` to backfill it over conversations that already exist.",
+    ))
     async def create_evaluator(
         name: str,
         evaluator_config: dict,
@@ -264,21 +268,6 @@ def build_tools(headers: dict[str, str], path: str = "") -> list:
         score_name: str = "",
         enabled: bool = True,
     ) -> Any:
-        """Add a new evaluator — a new column on the traces table.
-
-        kind="llm_judge" — `evaluator_config` takes `prompt` (the rubric), `output_type`
-        ("score" | "boolean" | "json"), `threshold` (for "score"), and optional `advisory`
-        (true = a FAIL is recorded but does not flip the trace's verdict, which is what
-        subjective-quality columns should be). `level` is one of CONVERSATION, AGENT_RUN, SPAN,
-        TOOL, GENERATION, CHAIN.
-
-        kind="structural" — `evaluator_config` takes `check`, one of run_outcome (AGENT_RUN),
-        tool_success (TOOL), tool_consistency (AGENT_RUN), latency (AGENT_RUN, plus `budget_ms`),
-        required_tools (AGENT_RUN, plus `tools`). The level is fixed per check, as noted.
-
-        A new evaluator grades traces ingested from now on — call `run_evaluation` to backfill it
-        over conversations that already exist.
-        """
         return await call(
             "POST",
             "/api/evaluators",
@@ -307,7 +296,9 @@ def build_tools(headers: dict[str, str], path: str = "") -> list:
     ) -> Any:
         """Patch an evaluator — only the fields you pass change. `enabled=false` retires a column
         without losing the scores it already produced, which is nearly always the right move
-        instead of deleting it. `sampling` (0.0–1.0) grades a deterministic fraction of traces;
+        instead of deleting it. `evaluator_config` REPLACES the whole config: read the column with
+        `list_evaluators`, change what you need (e.g. add `run_if`), and send all of it back — the
+        config keys are the ones `create_evaluator` documents. `sampling` (0.0–1.0) grades a deterministic fraction of traces;
         `target_agent` / `target_env` scope the column to one agent or environment."""
         patch = {
             k: v

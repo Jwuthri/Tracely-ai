@@ -38,6 +38,9 @@ x-app-env: &app-env
   # are the legacy direct-endpoint fallbacks used when no OpenRouter key is set.
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   # Decision models (TypeSafe Jev) are served on OpenRouter's Decisions API, not chat completions.
+  # New evaluation columns start on this decision model; text work defaults to LLM_JUDGE_MODEL.
+  COLUMN_DEFAULT_MODEL: ${COLUMN_DEFAULT_MODEL:-typesafe/jev-1.13}
+  LLM_JUDGE_MODEL: ${LLM_JUDGE_MODEL:-openai/gpt-6-luna}
   OPENROUTER_DECISIONS_URL: ${OPENROUTER_DECISIONS_URL:-https://openrouter.ai/api/alpha/decisions}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   LLM_JUDGE_API_KEY: ${OPENAI_API_KEY:-}
@@ -72,8 +75,8 @@ x-app-env: &app-env
   # Meta-analysis ("Analyze") synthesis model + rolling-summary compression model. The heavy
   # lifting (correlations/outliers; verbatim short steps) is deterministic; these only set the
   # model for the prose/compression LLM calls (both via the OpenRouter provider).
-  META_ANALYSIS_MODEL: ${META_ANALYSIS_MODEL:-openai/gpt-5-mini}
-  ROLLING_SUMMARY_MODEL: ${ROLLING_SUMMARY_MODEL:-openai/gpt-5.4-nano}
+  META_ANALYSIS_MODEL: ${META_ANALYSIS_MODEL:-openai/gpt-6-sol}
+  ROLLING_SUMMARY_MODEL: ${ROLLING_SUMMARY_MODEL:-openai/gpt-6-luna}
   ROLLING_SUMMARY_STEP_MAX_TOKENS: ${ROLLING_SUMMARY_STEP_MAX_TOKENS:-512}
   ROLLING_SUMMARY_MAX_TOKENS: ${ROLLING_SUMMARY_MAX_TOKENS:-16000}
   # Record what Tracely itself did — the judge's prompt and reply, the attacker's move, the call

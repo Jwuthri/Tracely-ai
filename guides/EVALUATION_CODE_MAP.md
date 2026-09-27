@@ -232,7 +232,8 @@ NS = c0ffee00-0000-0000-0000-000000000001
 |---|---|---|
 | `eval_debounce_seconds` | `4` | Countdown on both trace and thread eval tasks. |
 | `eval_latency_budget_ms` | `60000` | `LatencyEvaluator` fallback budget. |
-| `llm_judge_model` | `openai/gpt-5.4-nano` | Judge model when a column doesn't pick one. |
+| `column_default_model` | `typesafe/jev-1.13` | Model a new column starts on; what a decision column with no model runs on. |
+| `llm_judge_model` | `openai/gpt-6-luna` | Default text model: LLM columns with no model, the "Use AI" generator, attackers. |
 | `gate_quality_score_name` | `tracely.run.quality` | The one judge the gate enforces (`quality_specs`, :355). Blank = every AGENT_RUN judge. |
 | `gate_quality_blocks` | `true` | Whether a sub-threshold quality grade FAILs a replayed case. |
 | `eval_chat_enabled` / `eval_chat_pool_size` | `true` / `8` | Durable sequential-judge conversations (LangGraph Postgres checkpointer). |

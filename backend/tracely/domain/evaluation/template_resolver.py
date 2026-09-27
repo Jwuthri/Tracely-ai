@@ -122,6 +122,11 @@ TEMPLATE_VARIABLES: tuple[TemplateVariable, ...] = (
     ),
     TemplateVariable("GOAL", "User's overall goal/intent (first request in the thread)", "string", _ALL),
     TemplateVariable("LIST_AGENT", "List of agents seen with the tools they called", "string", _ALL),
+    TemplateVariable(
+        "DEPENDENCIES",
+        "This item's results from the columns in Depends On — label, value, verdict and reason each",
+        "string", _ALL,
+    ),
     # conversation only
     TemplateVariable("MESSAGES", "All turns formatted ([role]: text)", "string", (CL_CONVERSATION,)),
     TemplateVariable("USER_MESSAGES", "All user requests only", "string", (CL_CONVERSATION,)),
@@ -223,6 +228,7 @@ class EvaluationContext:
     current_step: dict[str, Any] | None = None  # a span dict
     step_number: str | None = None
     metric_previous_result: dict[str, Any] | None = None
+    dependencies: dict[str, Any] | None = None  # {score_name: payload}, from `depends_on`
 
 
 @dataclass
@@ -500,6 +506,7 @@ def build_context(
     wanted_vars: list[str] | None = None,
     history_override: str | None = None,
     declared_agents: list[dict] | None = None,
+    dependencies: dict[str, Any] | None = None,
 ) -> EvaluationContext:
     """Build the `EvaluationContext` for ONE evaluated item from already-fetched span dicts.
 
@@ -516,7 +523,7 @@ def build_context(
     `@MESSAGES` (instead of rebuilding the raw transcript from spans). None → raw transcript for
     `@HISTORY`/`@MESSAGES` and a soft-miss for `@ROLLING_SUMMARY`, so this stays non-breaking.
     """
-    ctx = EvaluationContext(metric_previous_result=metric_previous_result)
+    ctx = EvaluationContext(metric_previous_result=metric_previous_result, dependencies=dependencies or None)
     want = _base_names(wanted_vars)
 
     def need(name: str) -> bool:
@@ -619,6 +626,11 @@ def build_context(
 
 
 def _resolve_variable(name: str, prop: str | None, ctx: EvaluationContext) -> str | None:
+    if name == "DEPENDENCIES":
+        deps = ctx.dependencies
+        if not deps:
+            return None
+        return "\n".join(f"- {n}: {json.dumps(p, ensure_ascii=False)}" for n, p in deps.items())
     if name == "METRIC_PREVIOUS_RESULT":
         r = ctx.metric_previous_result
         return json.dumps(r, ensure_ascii=False, indent=2) if r else None
