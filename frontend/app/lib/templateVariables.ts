@@ -39,6 +39,8 @@ const STEP_PROPS: TemplateVarProp[] = [
   { name: "thinking", description: "The step's reasoning/thinking text (THINKING steps)" },
   { name: "output_content", description: "The readable text output of the step" },
   { name: "output_structured", description: "The raw structured (JSON) output of the step" },
+  { name: "input", description: "The step's readable input (tool arguments, a model call's messages, a query, a task)" },
+  { name: "error", description: "The step's error message, when it failed" },
 ];
 
 const ALL: CatalogLevel[] = ["conversation", "message", "step"];

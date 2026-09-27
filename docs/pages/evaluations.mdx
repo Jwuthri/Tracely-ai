@@ -48,6 +48,40 @@ behaves exactly like batch.
 schema, built in the Add Column form. Enum fields are enforced on the model, and a numeric
 `score` field in your schema drives the pass/fail verdict via the threshold.
 
+## Decision models (TypeSafe Jev)
+
+Pick **TypeSafe Jev 1.13** as a column's model and the column stops being a rubric. Jev is a
+classifier on OpenRouter's Decisions API: it reads the graded item (the same request/answer,
+transcript or step I/O an LLM judge would get, or your `@VARIABLE` template in Advanced mode) and
+answers **one question** with calibrated probabilities. You write the question and its criteria:
+
+| Question type | You define | Cell shows | Verdict |
+| --- | --- | --- | --- |
+| Binary (yes / no) | what *yes* and *no* mean | P(yes), 0–1 | PASS when P(yes) ≥ threshold (or below it, with *Pass when: No*) |
+| Multi-class (pick one) | 2–255 labels, each with an optional description | the chosen label | FAIL when the label is ticked *fail*; a label only when none are |
+| Multi-label (pick any) | 2–50 labels | every label with P ≥ threshold | FAIL when any ticked *fail* label applies |
+
+Multi-label asks one yes/no question per label, all in a single request, so each label is judged
+on its own and adding labels barely changes cost or latency.
+
+Write the question literally, one judgment per column, and name the part of the item you mean
+(`` `Agent answer` ``). Ask "Did the agent hallucinate?" with *Pass when: No* rather than inverting
+the criteria. Jev bills input tokens only, at a fraction of an LLM judge's cost, and needs a
+workspace OpenRouter key.
+
+The built-in library (Browse Library in Add Column) is written for Jev: every template is a
+question with labels, and the old JSON sub-fields (severity, detected type) became the labels
+themselves. Each keeps its score name, so existing gates and alerts that reference it keep working.
+
+## Long items and model context
+
+Every column is checked against its model's context window before a call is made (Jev reads at
+most 32k tokens; an LLM's limit comes from OpenRouter's catalog). Nothing is truncated. An item
+that doesn't fit is either graded by the column's **fallback model** — an LLM with a larger
+context, set under *If an item exceeds the context* — or recorded as **Skipped — input too long**,
+which carries no verdict and never fails a gate. A Jev column's fallback answers the same question
+with the same options, so the column keeps one score shape.
+
 ## Further reading
 
 New to this? [LLM evaluation: metrics, methods and tools](https://tracely-ai.com/llm-evaluation)

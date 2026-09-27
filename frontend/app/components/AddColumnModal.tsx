@@ -15,10 +15,22 @@ import {
   type EvaluatorDraft,
   type EvaluatorLevel,
   type EvaluatorTemplate,
+  type JudgeModelOption,
   type JudgeModels,
+  isDecisionOutput,
 } from "../lib/evaluators";
 import { extractVariablesFromPrompt, hasTemplateVariables } from "../lib/templateVariables";
 import { AdvancedPromptEditor } from "./AdvancedPromptEditor";
+import {
+  DECISION_TYPE_OPTIONS,
+  DecisionQuestionEditor,
+  EMPTY_DECISION,
+  applyDecision,
+  clearDecision,
+  decisionFromConfig,
+  decisionProblem,
+  type DecisionFields,
+} from "./DecisionQuestionEditor";
 import { OutputSchemaBuilder } from "./OutputSchemaBuilder";
 import { PromptPreview } from "./PromptPreview";
 
@@ -99,7 +111,21 @@ const OUTPUT_OPTIONS = [
   { value: "boolean", label: "Pass / Fail" },
   { value: "text", label: "Text" },
   { value: "json", label: "JSON Object (+ custom fields)" },
+  // decision-model question types (offered only when a decision model is picked)
+  ...DECISION_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
 ] as const;
+const LLM_OUTPUT_VALUES = new Set(["score", "number", "boolean", "text", "json"]);
+
+// Decision models (TypeSafe Jev) are classifiers: they answer one typed question instead of
+// grading a rubric, so picking one swaps the rubric fields for a question + criteria editor.
+function isDecisionModelId(models: JudgeModelOption[] | undefined, id: string): boolean {
+  return Boolean(id) && (models ?? []).some((m) => m.id === id && m.kind === "decision");
+}
+
+function fmtContext(tokens: number | null | undefined): string {
+  if (!tokens) return "";
+  return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}k`;
+}
 
 // Which step span types a Step (SPAN) judge grades — stored as `config.span_types` and honored
 // by the backend `_run_steps` filter + the table's per-row blanking. Matches the ingest
@@ -125,6 +151,8 @@ type FormState = {
   threshold: string;
   spanTypes: string[]; // SPAN-level judges: which step types to grade (config.span_types)
   outputSchema?: Record<string, unknown>;
+  fallbackModel: string; // "" = skip items too long for `model`'s context
+  decision: DecisionFields; // decision-model columns (question + criteria)
   paramsJson: string; // structural evaluators only
   enabled: boolean;
   scoreName?: string; // set when installing a template (stable identity)
@@ -137,7 +165,8 @@ type FormState = {
 const EMPTY_FORM: FormState = {
   name: "", description: "", kind: "llm_judge", level: "AGENT_RUN", prompt: "", model: "",
   outputType: "score", executionMode: "batch", dependsOn: [], threshold: "0.6",
-  spanTypes: DEFAULT_SPAN_TYPES, outputSchema: undefined, paramsJson: "", enabled: true,
+  spanTypes: DEFAULT_SPAN_TYPES, outputSchema: undefined, fallbackModel: "", decision: EMPTY_DECISION,
+  paramsJson: "", enabled: true,
 };
 
 function formFromConfig(
@@ -159,6 +188,8 @@ function formFromConfig(
     // semantics through install/edit round-trips) — only brand-new forms default to 0.6
     threshold: config.threshold != null ? String(config.threshold) : "",
     outputSchema: config.output_schema as Record<string, unknown> | undefined,
+    fallbackModel: config.fallback_model ?? "",
+    decision: isDecisionOutput(config.output_type) ? decisionFromConfig(config) : EMPTY_DECISION,
     paramsJson: config.check ? JSON.stringify(config.params ?? {}, null, 2) : "",
     scoreName,
     sourceConfig: config,
@@ -190,7 +221,19 @@ function configFromForm(f: FormState, previous?: EvaluatorConfig): EvaluatorConf
   }
   if (f.model.trim()) config.model = f.model.trim();
   else delete config.model;
-  if (f.outputType === "score" || f.outputType === "number" || f.outputType === "json") {
+  if (f.fallbackModel.trim()) config.fallback_model = f.fallbackModel.trim();
+  else delete config.fallback_model;
+  if (isDecisionOutput(f.outputType)) {
+    applyDecision(config, f.outputType, f.decision);
+    const t = parseFloat(f.threshold);
+    if (f.outputType === "decision_multiclass" || Number.isNaN(t)) delete config.threshold;
+    else config.threshold = Math.min(Math.max(t, 0), 1);
+  } else {
+    clearDecision(config);
+  }
+  if (isDecisionOutput(f.outputType)) {
+    // threshold handled above
+  } else if (f.outputType === "score" || f.outputType === "number" || f.outputType === "json") {
     const t = parseFloat(f.threshold);
     // blank = deliberately no threshold (informational metric, no PASS/FAIL)
     if (f.threshold.trim() !== "" && !Number.isNaN(t)) {
@@ -383,7 +426,18 @@ export function AddColumnModal({
       setError("Name is required.");
       return;
     }
-    if (form.kind === "llm_judge" && !form.prompt.trim()) {
+    const decisionCol = form.kind === "llm_judge" && isDecisionOutput(form.outputType);
+    if (decisionCol) {
+      if (promptMode === "advanced" && !form.prompt.trim()) {
+        setError("Write the state template, or switch to Basic to send the item as-is.");
+        return;
+      }
+      const problem = decisionProblem(form.outputType as Parameters<typeof decisionProblem>[0], form.decision, form.threshold);
+      if (problem) {
+        setError(problem);
+        return;
+      }
+    } else if (form.kind === "llm_judge" && !form.prompt.trim()) {
       setError("Evaluation prompt is required.");
       return;
     }
@@ -412,7 +466,12 @@ export function AddColumnModal({
     setBusy(true);
     setError("");
     try {
-      const config = configFromForm(form, editing?.config ?? form.sourceConfig);
+      const config = configFromForm(
+        // basic decision columns read the item itself; a rubric typed before switching models
+        // would only be dead weight (or, with @VARIABLEs, silently turn the column advanced)
+        isDecisionOutput(form.outputType) && promptMode === "basic" ? { ...form, prompt: "" } : form,
+        editing?.config ?? form.sourceConfig,
+      );
       const saved = editing
         ? await updateEvaluator(editing.id, {
             name: form.name.trim(),
@@ -444,6 +503,36 @@ export function AddColumnModal({
   const levelColors = LEVEL_COLORS[levelSegment] ?? LEVEL_COLORS.AGENT_RUN;
   const saveLabel = editing ? "Save Changes" : "Create Column";
   const defaultModelLabel = judgeModels?.default ? `Default — ${judgeModels.default}` : "Default judge model";
+  const modelOptions = judgeModels?.models ?? [];
+  const decisionModel = isDecisionModelId(modelOptions, form.model);
+  const isDecisionCol = isDecisionOutput(form.outputType);
+  const primaryInfo = modelOptions.find((m) => m.id === (form.model || judgeModels?.default));
+  // Fallback candidates: text models that can read MORE than the primary (all of them when the
+  // primary's context is unknown), never the primary itself.
+  const fallbackOptions = modelOptions.filter(
+    (m) =>
+      m.kind !== "decision" &&
+      m.id !== (form.model || judgeModels?.default) &&
+      (!primaryInfo?.context_tokens || !m.context_tokens || m.context_tokens > primaryInfo.context_tokens),
+  );
+
+  // Switching between an LLM judge and a decision model swaps the output vocabulary: carry what
+  // transfers (name, level, prompt) and reset what doesn't, so the form never holds a pair the
+  // backend rejects (a rubric output on Jev, a decision question on an LLM).
+  function pickModel(id: string) {
+    setForm((f) => {
+      const toDecision = isDecisionModelId(modelOptions, id);
+      if (toDecision && !isDecisionOutput(f.outputType)) {
+        return { ...f, model: id, outputType: "decision_binary", threshold: "0.5" };
+      }
+      if (!toDecision && isDecisionOutput(f.outputType)) {
+        const hasCriteria = f.decision.question.trim() !== "";
+        if (hasCriteria && !window.confirm("Switch to an LLM judge? The question and criteria will be discarded.")) return f;
+        return { ...f, model: id, outputType: "score", threshold: "0.6", decision: EMPTY_DECISION };
+      }
+      return { ...f, model: id };
+    });
+  }
 
   // Breadcrumb: for the "library" path show type→library→config; for direct skip just show the relevant steps.
   const visibleSteps: Step[] = editing
@@ -789,7 +878,9 @@ export function AddColumnModal({
                 <>
                   <div>
                     <div className="mb-1.5 flex items-center justify-between">
-                      <label className="block text-[10.5px] font-medium uppercase tracking-wider text-fg-faint">Evaluation Prompt</label>
+                      <label className="block text-[10.5px] font-medium uppercase tracking-wider text-fg-faint">
+                        {isDecisionCol ? (promptMode === "basic" ? "What the model reads" : "State template (what the model reads)") : "Evaluation Prompt"}
+                      </label>
                       <div className="flex items-center gap-0.5 rounded-md border border-line bg-ink-900/60 p-0.5">
                         {(["basic", "advanced"] as const).map((m) => (
                           <button
@@ -808,7 +899,14 @@ export function AddColumnModal({
                         ))}
                       </div>
                     </div>
-                    {promptMode === "basic" ? (
+                    {promptMode === "basic" && isDecisionCol ? (
+                      <p className="rounded-lg border border-line bg-ink-900/40 px-3 py-2 text-[11px] leading-relaxed text-fg-faint">
+                        The item itself — the request and answer, the transcript, or the step I/O for this level — is sent
+                        as the model&apos;s state. Switch to <span className="text-fg-muted">Advanced</span> to choose exactly
+                        what it reads with <span className="font-mono">@VARIABLES</span>; less irrelevant context means
+                        more accurate answers.
+                      </p>
+                    ) : promptMode === "basic" ? (
                       <>
                         <textarea
                           value={form.prompt}
@@ -845,31 +943,94 @@ export function AddColumnModal({
                       <label className="mb-1.5 block text-[10.5px] font-medium uppercase tracking-wider text-fg-faint">Model</label>
                       <select
                         value={form.model}
-                        onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+                        onChange={(e) => pickModel(e.target.value)}
                         className="w-full rounded-lg border border-line bg-ink-900/60 px-3 py-2 text-[12.5px] text-fg focus:border-signal/40 focus:outline-none"
                       >
                         <option value="">{defaultModelLabel}</option>
-                        {(judgeModels?.models ?? []).map((m) => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
-                        ))}
-                        {form.model && !(judgeModels?.models ?? []).some((m) => m.id === form.model) && (
+                        <optgroup label="LLM judges">
+                          {modelOptions.filter((m) => m.kind !== "decision").map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}{m.context_tokens ? ` · ${fmtContext(m.context_tokens)}` : ""}
+                            </option>
+                          ))}
+                        </optgroup>
+                        {modelOptions.some((m) => m.kind === "decision") && (
+                          <optgroup label="Decision models (classifiers)">
+                            {modelOptions.filter((m) => m.kind === "decision").map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.label}{m.context_tokens ? ` · ${fmtContext(m.context_tokens)}` : ""}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {form.model && !modelOptions.some((m) => m.id === form.model) && (
                           <option value={form.model}>{form.model}</option>
                         )}
                       </select>
                     </div>
                     <div>
-                      <label className="mb-1.5 block text-[10.5px] font-medium uppercase tracking-wider text-fg-faint">Output Type</label>
+                      <label className="mb-1.5 block text-[10.5px] font-medium uppercase tracking-wider text-fg-faint">
+                        {isDecisionCol ? "Question Type" : "Output Type"}
+                      </label>
                       <select
                         value={form.outputType}
-                        onChange={(e) => setForm((f) => ({ ...f, outputType: e.target.value as FormState["outputType"] }))}
+                        onChange={(e) => {
+                          const next = e.target.value as FormState["outputType"];
+                          setForm((f) => ({
+                            ...f,
+                            outputType: next,
+                            ...(isDecisionOutput(next) && next !== f.outputType ? { threshold: "0.5" } : {}),
+                          }));
+                        }}
                         className="w-full rounded-lg border border-line bg-ink-900/60 px-3 py-2 text-[12.5px] text-fg focus:border-signal/40 focus:outline-none"
                       >
-                        {OUTPUT_OPTIONS.map((o) => (
+                        {OUTPUT_OPTIONS.filter((o) =>
+                          decisionModel || isDecisionCol ? isDecisionOutput(o.value) : LLM_OUTPUT_VALUES.has(o.value),
+                        ).map((o) => (
                           <option key={o.value} value={o.value}>{o.label}</option>
                         ))}
                       </select>
                     </div>
                   </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-[10.5px] font-medium uppercase tracking-wider text-fg-faint">
+                      If an item exceeds the context{" "}
+                      <span className="font-normal normal-case tracking-normal text-fg-faint">
+                        {primaryInfo?.context_tokens ? `(${fmtContext(primaryInfo.context_tokens)} tokens)` : ""}
+                      </span>
+                    </label>
+                    <select
+                      value={form.fallbackModel}
+                      onChange={(e) => setForm((f) => ({ ...f, fallbackModel: e.target.value }))}
+                      className="w-full rounded-lg border border-line bg-ink-900/60 px-3 py-2 text-[12.5px] text-fg focus:border-signal/40 focus:outline-none"
+                    >
+                      <option value="">Skip it (no verdict, marked &ldquo;input too long&rdquo;)</option>
+                      {fallbackOptions.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          Grade with {m.label}{m.context_tokens ? ` · ${fmtContext(m.context_tokens)}` : ""}
+                        </option>
+                      ))}
+                      {form.fallbackModel && !fallbackOptions.some((m) => m.id === form.fallbackModel) && (
+                        <option value={form.fallbackModel}>Grade with {form.fallbackModel}</option>
+                      )}
+                    </select>
+                    <p className="mt-1.5 text-[10.5px] text-fg-faint">
+                      Nothing is truncated. {isDecisionCol
+                        ? "The fallback LLM answers the same question with the same options, so the column keeps one score shape."
+                        : "Items that fit are always graded by the column's own model."}
+                    </p>
+                  </div>
+
+                  {isDecisionCol && (
+                    <DecisionQuestionEditor
+                      type={form.outputType as Parameters<typeof decisionProblem>[0]}
+                      value={form.decision}
+                      onChange={(d) => setForm((f) => ({ ...f, decision: d }))}
+                      threshold={form.threshold}
+                      onThreshold={(t) => setForm((f) => ({ ...f, threshold: t }))}
+                    />
+                  )}
 
                   {(form.outputType === "score" || form.outputType === "number" || form.outputType === "json") && (
                     <div>
@@ -920,7 +1081,9 @@ export function AddColumnModal({
                       <p className="mt-1.5 text-[10.5px] text-fg-faint">
                         {form.level === "CONVERSATION"
                           ? "No effect at conversation level — single grade per thread."
-                          : "Steps chain within each run; message grades chain across the conversation after it settles."}
+                          : isDecisionCol
+                            ? "The earlier turns (or earlier steps) and this column's previous result are added to what the model reads."
+                            : "Steps chain within each run; message grades chain across the conversation after it settles."}
                       </p>
                     )}
                   </div>

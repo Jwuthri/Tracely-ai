@@ -42,6 +42,7 @@ T_TOOL_RESULT = "tool_result"
 T_OUTPUT_STRUCTURED = "output_structured"
 T_OUTPUT_CONTENT = "output_content"
 T_SUMMARY = "summary"  # a compacted block of older items (budget compaction)
+T_ERROR = "error"  # a failed step's error message
 
 _HISTORY_CLIP = 8000
 _ITEM_CLIP = 2000
@@ -295,7 +296,19 @@ def user_input_for_turn(tspans: list[dict], root_id: str | None = None) -> Compo
 
 
 def step_components(span: dict) -> list[Component]:
-    """Decompose one span (step) into its typed components. Empty components are dropped."""
+    """Decompose one span (step) into its typed components. Empty components are dropped. A failed
+    step also carries its error — a failed tool usually has no result, so without it the history
+    reads as a call that silently returned nothing."""
+    comps = _step_components(span)
+    msg = str(span.get("status_message") or "").strip()
+    if msg or str(span.get("level") or "").upper() == "ERROR":
+        role = ROLE_TOOL if (span.get("type") or "").upper() == TOOL else ROLE_ASSISTANT
+        comps.append(Component(role, T_ERROR, _clip(f"ERROR: {msg or 'step failed'}"),
+                               tool_name=span.get("name") or None))
+    return comps
+
+
+def _step_components(span: dict) -> list[Component]:
     stype = (span.get("type") or "").upper()
     comps: list[Component] = []
 
@@ -411,7 +424,56 @@ def _line(item: dict) -> str:
 def format_summary_as_history(items: object, max_chars: int = 0) -> str:
     """Render the summary's items into the `@HISTORY` string: a leading prev_summary block (if any)
     then [role]/[role:type] lines for the verbatim items. `max_chars > 0` clips; `<= 0` returns the
-    full text (the 20k compaction already bounds size). Tolerates the legacy object shape."""
+    full text (the budget's compaction already bounds size). Tolerates the legacy object shape."""
     lines = [_line(it) for it in as_summary_items(items) if (it.get("content") or "").strip()]
     text = "\n".join(lines)
     return _clip(text, max_chars) if max_chars and max_chars > 0 else text
+
+
+# --- per-workspace budget -------------------------------------------------------
+# The two knobs a workspace can set (the Rolling summary column's settings). Bounds keep a typo
+# from producing a summary that is useless (a 200-token history) or one no judge can read.
+
+MAX_TOKENS_RANGE = (2_000, 64_000)
+STEP_MAX_TOKENS_RANGE = (64, 4_000)
+
+
+@dataclass(frozen=True)
+class SummaryBudget:
+    max_tokens: int  # whole-summary budget; over it, older items fold into one `prev_summary`
+    step_max_tokens: int  # a step at or under this is kept verbatim; larger ones get summarized
+
+    def to_json(self) -> dict:
+        return {"max_tokens": self.max_tokens, "step_max_tokens": self.step_max_tokens}
+
+
+def summary_budget(raw: dict | None, *, default_max: int, default_step: int) -> SummaryBudget:
+    """The effective budget: the workspace's stored values over the server defaults. Stored values
+    are validated on write (`budget_problem`); anything unusable here falls back to the default."""
+    raw = raw if isinstance(raw, dict) else {}
+
+    def pick(key: str, default: int, bounds: tuple[int, int]) -> int:
+        v = raw.get(key)
+        ok = isinstance(v, int) and not isinstance(v, bool) and bounds[0] <= v <= bounds[1]
+        return v if ok else default
+
+    return SummaryBudget(
+        max_tokens=pick("max_tokens", default_max, MAX_TOKENS_RANGE),
+        step_max_tokens=pick("step_max_tokens", default_step, STEP_MAX_TOKENS_RANGE),
+    )
+
+
+def budget_problem(raw: dict) -> str | None:
+    """The first problem with a submitted budget, or None."""
+    allowed = {"max_tokens", "step_max_tokens"}
+    extra = set(raw) - allowed
+    if extra:
+        return f"unknown keys: {sorted(extra)}; allowed: {sorted(allowed)}"
+    for key, (lo, hi) in (("max_tokens", MAX_TOKENS_RANGE), ("step_max_tokens", STEP_MAX_TOKENS_RANGE)):
+        if key in raw:
+            v = raw[key]
+            if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+                return f"{key} must be an integer between {lo} and {hi}"
+    if raw.get("step_max_tokens", 0) > raw.get("max_tokens", MAX_TOKENS_RANGE[1]):
+        return "step_max_tokens cannot exceed max_tokens"
+    return None

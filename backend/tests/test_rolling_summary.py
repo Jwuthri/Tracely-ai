@@ -247,3 +247,14 @@ def test_dedup_consecutive_drops_repeated_final_answer():
     c = {"role": "assistant", "type": "output_content", "content": "different"}
     assert dedup_consecutive(None, [a, b, c]) == [a, c]
     assert dedup_consecutive(a, [b, c]) == [c]  # dedups against the prior stored tail too
+
+
+
+def test_a_failed_step_keeps_its_error():
+    from tracely.domain.evaluation.rolling_summary import step_components
+
+    comps = step_components({"type": "TOOL", "name": "run_sql", "input": '{"sql": "insert"}', "output": "",
+                             "level": "ERROR", "status_message": "permission denied (role: analyst_ro)"})
+    assert [c.type for c in comps] == ["tool_call", "error"]
+    assert comps[-1].content == "ERROR: permission denied (role: analyst_ro)"
+    assert step_components({"type": "TOOL", "name": "ok", "output": "fine"})[-1].type == "tool_result"

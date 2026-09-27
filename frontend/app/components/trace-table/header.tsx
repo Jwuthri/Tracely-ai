@@ -10,6 +10,7 @@ import { fmtTokens } from "./format";
 import { type Col, CTRL, HEAD_TH, LEVEL_BADGE, SORTABLE } from "./columns";
 import { DotsIcon, Play } from "./icons";
 import { CTRL_CELLS, EvalViewContext, SelectContext } from "./contexts";
+import { RollingSummarySettings } from "./RollingSummarySettings";
 
 /** How the table asks its owner to re-sort. Lives here, with the header that renders it, so the
  *  header module does not have to import a type back out of the root component. */
@@ -191,6 +192,8 @@ function SortGlyph({ active, order }: { active: boolean; order: SortOrder }) {
   );
 }
 
+const RSUMMARY_KEYS = new Set(["crsummary", "mrsummary", "srsummary"]);
+
 export function HeaderRow({ cols, sort }: { cols: Col[]; sort?: SortHandle }) {
   const sel = useContext(SelectContext);
   return (
@@ -252,6 +255,7 @@ export function HeaderRow({ cols, sort }: { cols: Col[]; sort?: SortHandle }) {
               )}
               <span className={clsx("rounded px-1.5 py-0.5 text-[10px] font-medium", LEVEL_BADGE[col.group])}>{col.group}</span>
               {col.evaluator && <HeaderEvalControls evaluator={col.evaluator} />}
+              {RSUMMARY_KEYS.has(col.key) && <RollingSummarySettings />}
             </div>
           </th>
         );

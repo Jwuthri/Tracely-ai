@@ -335,7 +335,8 @@ function ScenarioForm({
   const [models, setModels] = useState<JudgeModelOption[]>([]);
   useEffect(() => {
     if (kind !== "ADVERSARIAL" || models.length) return;
-    void listJudgeModels().then((m) => setModels(m.models)).catch(() => {});
+    // decision models (classifiers) can't drive an attacker — text models only
+    void listJudgeModels().then((m) => setModels(m.models.filter((x) => x.kind !== "decision"))).catch(() => {});
   }, [kind, models.length]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);

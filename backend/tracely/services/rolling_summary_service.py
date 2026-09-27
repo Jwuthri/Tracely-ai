@@ -4,7 +4,7 @@ The summary is a flat JSON LIST of items — `[{role, type, content, …}, …]`
 
   RULE 1 — represent the step: a step ≤ `step_max_tokens` (512) is appended VERBATIM to the list;
            a larger step is summarized to ~10-20 words by `rolling_summary_agent` first.
-  RULE 2 — keep the whole summary under `max_tokens` (20k): when the list exceeds the budget, fold
+  RULE 2 — keep the whole summary under `max_tokens` (the workspace budget, default 16k): when the list exceeds the budget, fold
            the older items (everything but the last 2) into ONE compacted item with the
            `prev_summary` role (`{role:"prev_summary", type:"summary", content}`) at the front, and
            keep only the last 2 items verbatim. Recursive, progress-guarded.
@@ -26,6 +26,7 @@ import structlog
 
 from tracely.config import settings
 from tracely.domain.evaluation.rolling_summary import (
+    SummaryBudget,
     as_summary_items,
     compacted_item,
     components_token_total,
@@ -33,6 +34,7 @@ from tracely.domain.evaluation.rolling_summary import (
     dedup_consecutive,
     format_summary_as_history,
     items_from_components,
+    summary_budget,
     summary_token_total,
     user_input_for_turn,
 )
@@ -96,6 +98,7 @@ class RollingSummaryService:
         running: list[dict] = []
         llm_steps = 0
         with provider.use_project_key(project_id), SyncSessionLocal() as s:
+            budget = self.budget_for(s, project_id)
             if force:
                 repositories.rolling_summary_delete_for_thread(s, project_id, thread_id)
                 existing: dict[str, list] = {}
@@ -125,7 +128,7 @@ class RollingSummaryService:
                     # RULE 1 — represent the step (verbatim ≤512 tok, else LLM-summarize)
                     summaries = None
                     if (
-                        components_token_total(comps) > settings.rolling_summary_step_max_tokens
+                        components_token_total(comps) > budget.step_max_tokens
                         and provider.llm_enabled()
                     ):
                         summaries = summarize_components(comps)
@@ -136,7 +139,7 @@ class RollingSummaryService:
                     running = running + dedup_consecutive(running[-1] if running else None, new_items)
 
                 # RULE 2 — keep the whole summary under budget (fold older items into a prev_summary item)
-                running, compactions = self._compact_to_budget(running)
+                running, compactions = self._compact_to_budget(running, budget.max_tokens)
                 llm_steps += compactions
 
                 repositories.rolling_summary_create(
@@ -153,6 +156,9 @@ class RollingSummaryService:
                         "verbatim": verbatim,
                         "step_order": step_order,
                         "source": source,
+                        # which budget built this row — a later budget change leaves older rows
+                        # as they were until the thread is regenerated
+                        "budget": budget.to_json(),
                     },
                 )
 
@@ -164,12 +170,21 @@ class RollingSummaryService:
             "llm_steps": llm_steps,
         }
 
-    def _compact_to_budget(self, running: list[dict]) -> tuple[list[dict], int]:
+    @staticmethod
+    def budget_for(s, project_id: str) -> SummaryBudget:
+        """This workspace's budget: its own settings over the server defaults."""
+        return summary_budget(
+            repositories.project_rolling_summary_config_get(s, project_id),
+            default_max=settings.rolling_summary_max_tokens,
+            default_step=settings.rolling_summary_step_max_tokens,
+        )
+
+    def _compact_to_budget(self, running: list[dict], budget: int | None = None) -> tuple[list[dict], int]:
         """While the list exceeds the token budget, fold the older items (all but the last 2) into one
         `prev_summary` item at the front and keep only the last 2 items verbatim. The fold absorbs any
         existing prev_summary item (it's part of the head). Recursive with a progress guard + pass cap.
         Returns (items, number_of_compactions)."""
-        budget = settings.rolling_summary_max_tokens
+        budget = budget or settings.rolling_summary_max_tokens
         compactions = 0
         passes = 0
         while (
@@ -213,7 +228,7 @@ class RollingSummaryService:
     def by_level(project_id: str, thread_id: str) -> dict:
         """Per-row rolling-summary item LISTS for the table's 3 levels — `conversation` (whole
         thread), `traces[trace_id]` (through that turn), and `spans[span_id]` (through that step).
-        Returned in full (no truncation — the frontend renders the JSON); the 20k compaction bounds
+        Returned in full (no truncation — the frontend renders the JSON); the budget's compaction bounds
         size."""
         with SyncSessionLocal() as s:
             rows = repositories.rolling_summary_list_for_thread(s, project_id, thread_id)
@@ -234,15 +249,25 @@ class RollingSummaryService:
         }
 
     @staticmethod
-    def history_override(project_id: str, thread_id: str) -> str | None:
-        """The FULL `@HISTORY` string rendered from the latest summary (bounded by the 20k budget, not
-        clipped), or None when no summary exists (caller falls back to the raw transcript). Guarded —
-        a lookup/format failure never blocks a grade."""
+    def history_override(project_id: str, thread_id: str, through_trace_id: str = "") -> str | None:
+        """The `@HISTORY` string rendered from the summary (bounded by the budget, not clipped), or
+        None when no summary exists (caller falls back to the raw transcript). Guarded — a
+        lookup/format failure never blocks a grade.
+
+        `through_trace_id` cuts it at the end of that turn — what a message/step judge must read.
+        The thread's LATEST summary covers every later turn too, and handing that to the judge of
+        turn 2 grades it with hindsight. Without it (conversation level) the latest row is right.
+        A turn with no summary row yet reads as no summary (raw transcript), never a later one."""
         if not thread_id:
             return None
         try:
             with SyncSessionLocal() as s:
-                row = repositories.rolling_summary_latest_for_thread(s, project_id, thread_id)
+                if through_trace_id:
+                    rows = repositories.rolling_summary_list_for_thread(s, project_id, thread_id)
+                    mine = [r for r in rows if r.trace_id == through_trace_id]  # ordered by step_order
+                    row = mine[-1] if mine else None
+                else:
+                    row = repositories.rolling_summary_latest_for_thread(s, project_id, thread_id)
             if row and row.summary:
                 return format_summary_as_history(row.summary, max_chars=0) or None
         except Exception as exc:  # never break the eval path on a cache miss/error

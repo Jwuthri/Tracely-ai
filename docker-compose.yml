@@ -37,6 +37,8 @@ x-app-env: &app-env
   # /embeddings endpoint — OPENROUTER_API_KEY alone is enough. OPENAI_API_KEY / LLM_JUDGE_API_KEY
   # are the legacy direct-endpoint fallbacks used when no OpenRouter key is set.
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  # Decision models (TypeSafe Jev) are served on OpenRouter's Decisions API, not chat completions.
+  OPENROUTER_DECISIONS_URL: ${OPENROUTER_DECISIONS_URL:-https://openrouter.ai/api/alpha/decisions}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   LLM_JUDGE_API_KEY: ${OPENAI_API_KEY:-}
   # Encrypts a workspace's own OpenRouter key (Settings -> LLM key) at rest. Any string
@@ -73,7 +75,7 @@ x-app-env: &app-env
   META_ANALYSIS_MODEL: ${META_ANALYSIS_MODEL:-openai/gpt-5-mini}
   ROLLING_SUMMARY_MODEL: ${ROLLING_SUMMARY_MODEL:-openai/gpt-5.4-nano}
   ROLLING_SUMMARY_STEP_MAX_TOKENS: ${ROLLING_SUMMARY_STEP_MAX_TOKENS:-512}
-  ROLLING_SUMMARY_MAX_TOKENS: ${ROLLING_SUMMARY_MAX_TOKENS:-20000}
+  ROLLING_SUMMARY_MAX_TOKENS: ${ROLLING_SUMMARY_MAX_TOKENS:-16000}
   # Record what Tracely itself did — the judge's prompt and reply, the attacker's move, the call
   # to the customer's endpoint — as a trace, behind the "Show eval" toggle. Costs one small extra
   # trace per evaluation; set false on a high-volume project that doesn't need the audit trail.

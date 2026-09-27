@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # (see infrastructure/llm/provider.py). Model ids are OpenRouter-style `provider/model`.
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # OpenRouter's Decisions API — where decision models (classifiers such as TypeSafe Jev) are
+    # served; they have no chat endpoint. See `provider.run_decision`.
+    openrouter_decisions_url: str = "https://openrouter.ai/api/alpha/decisions"
     # Symmetric key (any string, >=32 chars — SHA256-derived into a Fernet key, same UX as
     # SESSION_SECRET) encrypting a workspace's own OpenRouter key at rest in Postgres
     # (`Project.openrouter_api_key_encrypted`). Only needed once a workspace sets its own key —
@@ -225,7 +228,10 @@ class Settings(BaseSettings):
     rolling_summary_step_max_tokens: int = 512
     # Whole-summary budget: when the accumulated summary exceeds this many tokens, the older items
     # (everything but the last 2, which stay verbatim) are recursively compacted into one block.
-    rolling_summary_max_tokens: int = 20000
+    # 16k (was 20k) so `@HISTORY` plus a question fits a 32k decision model (Jev) — its tokenizer
+    # is denser than the 4-chars/token estimate on JSON-heavy steps. Per-workspace override:
+    # `projects.rolling_summary_config` (the Rolling summary column's settings).
+    rolling_summary_max_tokens: int = 16000
 
     # CI/CD gate soft thresholds — latency/token deltas vs the baseline (last green gate) raise a
     # WARNING by default (not a hard fail); fail-to-pass stays the only blocking gate unless the

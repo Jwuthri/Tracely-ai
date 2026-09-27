@@ -145,6 +145,18 @@ _FALLBACK_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     # Not in the dropdown, but shipped as a `Settings` default (`meta_analysis_model`), so it can
     # show up in a score's recorded model and must still price correctly.
     "openai/gpt-5-mini":               (0.25,  2.00),
+    # Decision model (see `_DECISION_MODELS`): billed per input token only, output is free.
+    "typesafe/jev-1.13":               (0.042, 0.00),
+}
+# Decision models — classifiers, not chat LLMs. OpenRouter serves them on its Decisions API
+# (`settings.openrouter_decisions_url`), NOT `/chat/completions`: they read a `state` plus typed
+# questions (noul / choice / score) and return calibrated probabilities, never text. LangChain
+# can't drive them, so `run_decision` is their only entry point. Static on purpose: OpenRouter's
+# public `/models` omits decision-output models entirely (verified 2026-09-27 — only
+# `/models/typesafe/jev-1.13/endpoints` knows it), so the catalog can't be the source of truth.
+# `context_tokens` is TypeSafe's budget for `state` + the (single) question.
+_DECISION_MODELS: dict[str, dict[str, Any]] = {
+    "typesafe/jev-1.13": {"label": "TypeSafe Jev 1.13", "context_tokens": 32_000},
 }
 _MODELS_TTL_S = 3600
 # `by_id`: {model_id: {"name": str, "prompt_per_mtok": float|None, "completion_per_mtok": float|None}}.
@@ -415,10 +427,15 @@ def _openrouter_models() -> dict[str, dict]:
             if not mid:
                 continue
             pricing = m.get("pricing") or {}
+            ctx = m.get("context_length")
             by_id[str(mid)] = {
                 "name": str(m.get("name") or mid),
                 "prompt_per_mtok": _per_mtok(pricing.get("prompt")),
                 "completion_per_mtok": _per_mtok(pricing.get("completion")),
+                "context_length": int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else None,
+                "output_modalities": list(
+                    (m.get("architecture") or {}).get("output_modalities") or []
+                ),
             }
         _models_cache.update(ts=now, by_id=by_id)
         return by_id
@@ -560,13 +577,38 @@ def estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> f
     return (input_tokens * (pin or 0.0) + output_tokens * (pout or 0.0)) / 1_000_000.0
 
 
-def list_models() -> list[dict[str, str]]:
-    """The curated judge-model choices for the evaluator UI: `[{id, label}, …]`. Verified
-    against the live OpenRouter catalog when reachable; the static list otherwise — narrowed to
-    `openai/*` when only the legacy direct OpenAI-compatible endpoint is configured (other
-    providers' ids can't be served there)."""
+def model_info(model_id: str | None) -> dict[str, Any]:
+    """What the judge needs to know about a model before calling it: `{id, kind, context_tokens}`.
+
+    `kind` is "decision" for a classifier served on the Decisions API (`run_decision`) and "llm"
+    for everything the chat path serves. `context_tokens` is the input budget the context gate in
+    `domain/evaluation/budget.py` checks against — from `_DECISION_MODELS` for a decision model,
+    from the live catalog's `context_length` otherwise, None when unknown (unknown never blocks a
+    call: the provider's own rejection is the backstop)."""
+    mid = _normalize_model((model_id or settings.llm_judge_model).strip())
+    if mid in _DECISION_MODELS:
+        return {"id": mid, "kind": "decision", "context_tokens": _DECISION_MODELS[mid]["context_tokens"]}
+    live = _openrouter_models().get(mid) or {}
+    kind = "decision" if "decisions" in (live.get("output_modalities") or []) else "llm"
+    return {"id": mid, "kind": kind, "context_tokens": live.get("context_length")}
+
+
+def is_decision_model(model_id: str | None) -> bool:
+    return bool(model_id) and model_info(model_id)["kind"] == "decision"
+
+
+def list_models() -> list[dict[str, Any]]:
+    """The curated judge-model choices for the evaluator UI: `[{id, label, kind,
+    context_tokens}, …]`. Verified against the live OpenRouter catalog when reachable; the static
+    list otherwise — narrowed to `openai/*` when only the legacy direct OpenAI-compatible endpoint
+    is configured (other providers' ids can't be served there).
+
+    Decision models (`kind="decision"`) are appended only with an OpenRouter key in scope — the
+    legacy endpoint has no Decisions API. Pickers that need a text-producing model (scenarios,
+    alert summaries, a column's context fallback) filter on `kind`."""
     curated = _CURATED_MODELS
-    if not effective_openrouter_key():
+    key = effective_openrouter_key()
+    if not key:
         # Legacy direct OpenAI-compatible endpoint: only ids api.openai.com actually serves.
         # `openai/gpt-oss-*` is open-weights hosted by third parties — its id starts with
         # `openai/` but offering it here would hand the user a model that 404s at judge time.
@@ -576,18 +618,24 @@ def list_models() -> list[dict[str, str]]:
             if mid.startswith("openai/") and not mid.startswith("openai/gpt-oss")
         ]
     available = _openrouter_model_names()
-    if available:
-        out = [
-            {"id": mid, "label": available.get(mid, label)}
-            for mid, label in curated
-            if mid in available
+    catalog = _openrouter_models()
+
+    def llm(mid: str, label: str) -> dict[str, Any]:
+        return {"id": mid, "label": available.get(mid, label), "kind": "llm",
+                "context_tokens": (catalog.get(mid) or {}).get("context_length")}
+
+    out = [llm(mid, label) for mid, label in curated if mid in available] if available else []
+    if not out:
+        out = [llm(mid, label) for mid, label in curated]
+    if key:
+        out += [
+            {"id": mid, "label": d["label"], "kind": "decision", "context_tokens": d["context_tokens"]}
+            for mid, d in _DECISION_MODELS.items()
         ]
-        if out:
-            return _by_label(out)
-    return _by_label([{"id": mid, "label": label} for mid, label in curated])
+    return _by_label(out)
 
 
-def _by_label(models: list[dict[str, str]]) -> list[dict[str, str]]:
+def _by_label(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Alphabetical by label, which groups the pickers by provider. Sorted here rather than in
     each `<select>` so every caller shows the same order."""
     return sorted(models, key=lambda m: m["label"].lower())
@@ -604,6 +652,11 @@ def get_chat_model(
     from langchain_openai import ChatOpenAI
 
     name = (model or settings.llm_judge_model).strip()
+    if _normalize_model(name) in _DECISION_MODELS:
+        raise RuntimeError(
+            f"{name} is a decision model (classifier) — it has no chat endpoint; "
+            "it is called through run_decision()."
+        )
     extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
     key = effective_openrouter_key()
     if not key and (project_scoped() or settings.require_project_llm_key):
@@ -665,6 +718,37 @@ def _invoke(
         return agent.invoke({"messages": [{"role": "user", "content": prompt}]}, config or None)
     except TypeError as exc:
         raise _provider_error(exc) from exc
+    except Exception as exc:
+        if is_context_overflow(str(exc)):
+            raise ContextOverflowError(str(exc)[:500]) from exc
+        raise
+
+
+class ContextOverflowError(RuntimeError):
+    """The provider refused the call because the input is longer than the model's context.
+
+    Its own type because the judge answers it differently from every other failure: not "log and
+    write nothing" but "grade with the column's `fallback_model`, or record a visible skip"
+    (`llm_judge._call_and_build`). The preflight estimate in `domain/evaluation/budget.py` catches
+    most of these before any spend; this is the authoritative backstop when the estimate is off."""
+
+
+# Substrings providers use for "input too long". OpenRouter passes the upstream message through
+# (OpenAI: "maximum context length is …", Anthropic: "prompt is too long", Google: "exceeds the
+# maximum number of tokens"); the Decisions API has no dedicated code, only a 400/413 body.
+_OVERFLOW_MARKERS = (
+    "context length", "context_length", "context window", "maximum context", "too many tokens",
+    "prompt is too long", "input is too long", "exceeds the maximum",
+    "token limit", "tokens exceeds", "payload too large", "request too large",
+    # TypeSafe via the Decisions API, verified live 2026-09-27:
+    # HTTP 400 {"detail":{"error_type":"max_tokens_exceeded"}}
+    "max_tokens_exceeded", "tokens_exceeded",
+)
+
+
+def is_context_overflow(message: str) -> bool:
+    m = (message or "").lower()
+    return any(k in m for k in _OVERFLOW_MARKERS)
 
 
 def _provider_error(exc: TypeError) -> Exception:
@@ -850,6 +934,98 @@ def run_text_agent(
     if on_usage is not None:
         on_usage(usage)
     return text
+
+
+_DECISION_RETRY_STATUSES = (429, 502, 503, 529)
+_DECISION_ATTEMPTS = 3
+
+
+def run_decision(
+    state: Any,
+    questions: dict[str, dict[str, Any]],
+    *,
+    model: str,
+    on_usage: UsageSink | None = None,
+) -> dict[str, dict[str, Any]]:
+    """One Decisions-API call (OpenRouter `/api/alpha/decisions`) — the only way a decision model
+    such as TypeSafe Jev is invoked. `questions` maps our ids to typed questions (`{type:
+    noul|choice|score, instructions, criteria}`), all answered in parallel against the same state;
+    returns the answers under the same ids (`{type, noul}` / `{type, choice, probabilities,
+    confidence}` / …). Raises if any id comes back unanswered.
+
+    Same key scoping as the chat path: the project's own OpenRouter key inside
+    `use_project_key`, and fail closed without one — there is no legacy direct endpoint for this.
+    429/502/503/529 retry with backoff (honouring `retry-after`); a 400/413 that reads as "input
+    too long" raises `ContextOverflowError` so the judge can fall back or skip; anything else
+    raises RuntimeError carrying the provider's own message. Recorded like every other model call
+    (request JSON in, answer JSON out), so the eval recording and the cell's prompt panel work
+    unchanged."""
+    import httpx
+
+    key = effective_openrouter_key()
+    if not key:
+        raise RuntimeError(
+            "Decision models run on OpenRouter only — this workspace has no OpenRouter API key. "
+            "Add one in Settings -> OpenRouter key."
+        )
+    mid = _normalize_model(model.strip())
+    body = {"model": mid, "state": state, "questions": questions}
+    request_text = json.dumps(body, indent=2, ensure_ascii=False)
+    with _recorded(request_text, None, mid) as sink:
+        resp = None
+        for attempt in range(_DECISION_ATTEMPTS):
+            resp = httpx.post(
+                settings.openrouter_decisions_url,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=60,
+            )
+            if resp.status_code not in _DECISION_RETRY_STATUSES or attempt == _DECISION_ATTEMPTS - 1:
+                break
+            time.sleep(_retry_delay(resp, attempt))
+        assert resp is not None
+        if resp.status_code >= 400:
+            detail = _error_message(resp)
+            if resp.status_code in (400, 413) and (resp.status_code == 413 or is_context_overflow(detail)):
+                raise ContextOverflowError(f"{mid}: {detail}")
+            raise RuntimeError(f"Decisions API {resp.status_code} for {mid}: {detail}")
+        data = resp.json()
+        answers = data.get("answers") or {}
+        missing = [qid for qid in questions if not isinstance(answers.get(qid), dict)]
+        if missing:
+            raise RuntimeError(f"Decisions API left {missing} unanswered for {mid}: {str(data)[:300]}")
+        answers = {qid: answers[qid] for qid in questions}
+        u = data.get("usage") or {}
+        usage = {
+            "input_tokens": int(u.get("input_tokens") or 0),
+            "output_tokens": int(u.get("output_tokens") or 0),
+            "total_tokens": int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0),
+            "model": mid,
+        }
+        if isinstance(u.get("cost"), (int, float)):
+            usage["cost_usd"] = float(u["cost"])
+        sink.append((json.dumps(answers, indent=2, ensure_ascii=False), usage))
+    if on_usage is not None:
+        on_usage(usage)
+    return answers
+
+
+def _retry_delay(resp: Any, attempt: int) -> float:
+    try:
+        return min(float(resp.headers.get("retry-after")), 10.0)
+    except (TypeError, ValueError):
+        return 0.5 * (2**attempt)
+
+
+def _error_message(resp: Any) -> str:
+    """OpenRouter's `{error: {message}}` body, or the raw text."""
+    try:
+        err = resp.json().get("error") or {}
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])[:500]
+    except Exception:
+        pass
+    return (resp.text or "")[:500]
 
 
 def _cached_tool_selector(**kw):

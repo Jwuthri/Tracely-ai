@@ -65,7 +65,8 @@ export function RuleEditor({
     let alive = true;
     void listJudgeModels()
       .then((m) => {
-        if (alive) setModelOptions(m.models.map((x) => x.id));
+        // decision models (classifiers) produce no text — not usable for an LLM step
+        if (alive) setModelOptions(m.models.filter((x) => x.kind !== "decision").map((x) => x.id));
       })
       .catch(() => undefined);
     return () => {

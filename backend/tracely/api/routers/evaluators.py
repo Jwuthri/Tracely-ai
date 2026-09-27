@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_project_id, require_user
+from tracely.domain.evaluation import decision
 from tracely.domain.evaluation.evaluators import TEMPLATES
 from tracely.domain.evaluation.evaluators.llm_judge import OUTPUT_TYPES
 from tracely.domain.evaluation.generation import generate_evaluator_config
@@ -103,6 +104,7 @@ def _validate_evaluator(kind: str, level: str, config: dict[str, Any]) -> None:
         not isinstance(depends_on, list) or not all(isinstance(d, str) for d in depends_on)
     ):
         raise HTTPException(status_code=400, detail="depends_on must be a list of score names")
+    _validate_models(output_type, config)
     if output_type == "json" and config.get("output_schema") is not None:
         try:
             compiled = model_from_json_schema(config["output_schema"])
@@ -115,6 +117,50 @@ def _validate_evaluator(kind: str, level: str, config: dict[str, Any]) -> None:
                 status_code=400,
                 detail="output_schema is not a usable JSON Schema (object with typed properties)",
             )
+
+
+def _validate_models(output_type: str, config: dict[str, Any]) -> None:
+    """A decision model (a classifier — TypeSafe Jev) answers typed questions, not rubrics, so it
+    and the `decision_*` output types come as a pair; and a context fallback has to be a model
+    that can read MORE than the primary, which only a text model on the chat path can."""
+    model = str(config.get("model") or "").strip()
+    wants_decision = decision.is_decision_output(output_type)
+    if model and provider.is_decision_model(model) and not wants_decision:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{model} is a decision model: it answers one typed question instead of grading a "
+                f"rubric, so output_type must be one of {list(decision.DECISION_OUTPUT_TYPES)}"
+            ),
+        )
+    if wants_decision:
+        if model and not provider.is_decision_model(model):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"output_type {output_type} needs a decision model (e.g. typesafe/jev-1.13); "
+                    f"{model} is an LLM — use score/number/boolean/text/json with it"
+                ),
+            )
+        if not model:
+            raise HTTPException(
+                status_code=400,
+                detail=f"output_type {output_type} needs `model` set to a decision model (e.g. typesafe/jev-1.13)",
+            )
+        problem = decision.validate(config)
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+    fallback = config.get("fallback_model")
+    if fallback is not None:
+        if not isinstance(fallback, str) or not fallback.strip():
+            raise HTTPException(status_code=400, detail="fallback_model must be a model id, or omitted")
+        if provider.is_decision_model(fallback):
+            raise HTTPException(
+                status_code=400,
+                detail="fallback_model must be an LLM (it grades items too long for the column's model); decision models have small fixed contexts",
+            )
+        if fallback.strip() == model:
+            raise HTTPException(status_code=400, detail="fallback_model must differ from the column's model")
 
 
 def _stamp_advanced(config: dict[str, Any]) -> dict[str, Any]:
@@ -281,7 +327,11 @@ async def resolve_prompt(
         from tracely.services.rolling_summary_service import RollingSummaryService
 
         history_override = await run_in_threadpool(
-            RollingSummaryService.history_override, project_id, thread_id
+            RollingSummaryService.history_override,
+            project_id,
+            thread_id,
+            # same cut as the run path: a message/step judge reads the summary as of its own turn
+            "" if level == "CONVERSATION" or not body.trace_id else body.trace_id,
         )
     declared_agents = None
     if thread_id and "LIST_AGENT" in base_names:

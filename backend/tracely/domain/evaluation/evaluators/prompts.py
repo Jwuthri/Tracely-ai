@@ -92,11 +92,17 @@ def step_body(candidates: list[dict], i: int) -> str:
     """The prompt for one step — `Step i of n` plus its I/O. Used for the item being graded and,
     in chained mode, to re-render the earlier items for the recording."""
     s = candidates[i]
-    return (
+    body = (
         f"Step {i + 1} of {len(candidates)} — {s.get('type')} `{s.get('name') or s.get('step_id') or ''}`\n"
         f"Step input:\n{clip(readable_io(s.get('input')), TRUNC_IO)}\n\n"
         f"Step output:\n{clip(readable_io(s.get('output')), TRUNC_IO)}"
     )
+    # A failed step usually has NO output — the error is the whole story, and without it a judge
+    # grading "was this the right call?" sees an empty result and has to guess why.
+    err = str(s.get("status_message") or "").strip()
+    if err or str(s.get("level") or "").upper() == "ERROR":
+        body += f"\n\nStep error:\n{clip(err or '(failed, no error message)', TRUNC_IO)}"
+    return body
 
 
 def step_line(span: dict, n: int) -> str:

@@ -66,6 +66,7 @@ from tracely.domain.evaluation.evaluators.base import (
 from tracely.domain.evaluation.evaluators import prompts
 from tracely.domain.evaluation.evaluators.prompts import ADVANCED_SYSTEM
 from tracely.domain.evaluation.evaluators.catalog import DEFAULT_JUDGE_PROMPT
+from tracely.domain.evaluation import budget, decision
 from tracely.domain.evaluation.output_schema import model_from_json_schema
 from tracely.domain.evaluation.results import EvalResult, RunContext, chain_payload
 from tracely.domain.evaluation.template_resolver import (
@@ -78,7 +79,7 @@ from tracely.infrastructure.llm import provider
 
 log = structlog.get_logger()
 
-OUTPUT_TYPES = ("score", "number", "boolean", "text", "json")
+OUTPUT_TYPES = ("score", "number", "boolean", "text", "json", *decision.DECISION_OUTPUT_TYPES)
 
 _DEFAULT_MAX_SPANS = 30  # cost guard for per-step judges
 
@@ -175,6 +176,11 @@ def _chat_id(ctx: RunContext, config: dict, score_name: str, level: str) -> str 
     incident where the database is already unhappy.
     """
     if not _is_sequential(config) or level == CONVERSATION:
+        return None
+    if decision.is_decision_output(config.get("output_type")):
+        # A decision model has no conversation to hold: every call is one state + one question.
+        # None here makes the callers paste the run-so-far into the item instead — sequential
+        # decision columns still see their history, as state.
         return None
     if level in STEP_LEVELS:
         subject = ctx.trace_id
@@ -391,7 +397,10 @@ class LLMJudgeEvaluator(Evaluator):
             from tracely.services.rolling_summary_service import RollingSummaryService
 
             return RollingSummaryService.history_override(
-                ctx.project_id, ctx.thread_id or ctx.trace_id
+                ctx.project_id,
+                ctx.thread_id or ctx.trace_id,
+                # message/step judges read the summary as of THEIR turn, not the thread's end
+                through_trace_id="" if self.level == CONVERSATION else ctx.trace_id,
             )
         except Exception:  # a cache miss/error must never block a grade
             return None
@@ -563,46 +572,133 @@ class LLMJudgeEvaluator(Evaluator):
         self, config: dict, *, system_prompt: str, body: str, chat_id: str | None = None
     ) -> EvalResult | None:
         """The model call + output-type→result tail shared by basic and advanced grading —
-        everything after the prompt is assembled. Picks the response schema from `output_type`,
-        invokes the agent at temp 0, and stamps token usage onto the result."""
+        everything after the prompt is assembled.
+
+        One context gate sits in front of every call (`domain/evaluation/budget.py`): the item is
+        estimated against the column model's context, and one that does not fit is graded by the
+        column's `fallback_model` or — with none set, or when it does not fit either — recorded
+        as a visible, verdict-less skip. Nothing is truncated to fit. A provider that rejects the
+        call for length anyway (`ContextOverflowError` — the estimate is only an estimate) takes
+        the same path."""
         output_type = str(config.get("output_type") or "score").lower()
         if output_type not in OUTPUT_TYPES:
             output_type = "score"
-        model = config.get("model") or None
-        usage: dict = {}
-        try:
-            if output_type == "json":
-                schema_model = model_from_json_schema(config.get("output_schema"))
-                if schema_model is not None:
-                    verdict = provider.run_structured_agent(
-                        body,
-                        response_format=schema_model,
-                        system_prompt=system_prompt,
-                        model=model,
-                        on_usage=usage.update,
-                        chat_id=chat_id,
+        primary = config.get("model") or None
+        is_decision = decision.is_decision_output(output_type)
+        if is_decision and not provider.is_decision_model(primary):
+            # A decision column whose model was swapped for an LLM outside the validated router:
+            # answer the same question through the LLM rather than write nothing.
+            is_decision = False
+        attempts = [primary] + ([config["fallback_model"]] if config.get("fallback_model") else [])
+        last_overflow = ""
+        for i, model in enumerate(attempts):
+            info = provider.model_info(model)
+            decision_call = is_decision and i == 0
+            if decision_call:
+                questions = decision.build_questions(config)
+                tokens = budget.estimate_tokens(decision.request_text(body, questions))
+            elif decision.is_decision_output(output_type):
+                tokens = budget.estimate_tokens(decision.fallback_system_prompt(config), body)
+            else:
+                tokens = budget.estimate_tokens(system_prompt, body)
+            reserve = 0 if decision_call else provider.settings.llm_max_output_tokens
+            if not budget.fits(info, tokens, reserve):
+                last_overflow = budget.overflow_note(info["id"], tokens, info)
+                log.info("llm_judge_over_context", evaluator=self.score_name, model=info["id"], tokens=tokens)
+                continue
+            try:
+                if decision_call:
+                    result = self._decision_call(config, body, questions, model=info["id"])
+                else:
+                    result = self._llm_call(
+                        config, output_type, system_prompt=system_prompt, body=body,
+                        model=model, chat_id=chat_id if i == 0 else None,
                     )
-                    return self._attach_usage(self._json_result(config, verdict.model_dump()), usage)
-                # no usable schema: free-form strict JSON (the rubric defines the shape)
-                text = provider.run_text_agent(
-                    body + "\n\nRespond with ONE strict JSON object shaped exactly as your "
-                    "instructions describe.",
+            except provider.ContextOverflowError:
+                limit = f" {budget.k(info['context_tokens'])}" if info.get("context_tokens") else ""
+                last_overflow = (
+                    f"{info['id']} rejected the input as longer than its{limit} context. "
+                    "Set a fallback model on this column to grade long items."
+                )
+                log.info("llm_judge_context_rejected", evaluator=self.score_name, model=info["id"])
+                continue
+            except Exception as exc:
+                log.warning("llm_judge_failed", evaluator=self.score_name, level=self.level, error=str(exc))
+                return None
+            if result is not None and i > 0:
+                note = f"[graded by fallback {info['id']}: input exceeded {attempts[0] or 'the default model'}'s context]"
+                result.comment = f"{note} {result.comment}".strip()[:500]
+            return result
+        return self._skipped(last_overflow, has_fallback=len(attempts) > 1)
+
+    def _skipped(self, note: str, *, has_fallback: bool) -> EvalResult:
+        """A neutral, visible score for an item no configured model could read in full. Neutral
+        on purpose: the verdict policy fails only on FAIL, so a too-long item never turns a gate
+        red — but the cell says why it was not graded instead of staying mysteriously empty."""
+        if has_fallback:
+            note += " The fallback model's context is too small as well."
+        return EvalResult(
+            "", self.level, "", data_type="TEXT",
+            string_value="Skipped — input too long", comment=note[:500],
+        )
+
+    def _decision_call(self, config: dict, state: str, questions: dict, *, model: str) -> EvalResult:
+        usage: dict = {}
+        answers = provider.run_decision(state, questions, model=model, on_usage=usage.update)
+        return self._attach_usage(self._decision_result(decision.answer_fields(config, answers)), usage)
+
+    def _decision_result(self, fields: dict) -> EvalResult:
+        return EvalResult(
+            "", self.level, fields["verdict"], data_type=fields["data_type"], value=fields["value"],
+            string_value=fields["string_value"], comment=fields["comment"][:500],
+        )
+
+    def _llm_call(
+        self, config: dict, output_type: str, *, system_prompt: str, body: str,
+        model: str | None, chat_id: str | None,
+    ) -> EvalResult | None:
+        usage: dict = {}
+        if decision.is_decision_output(output_type):
+            # An LLM answering a decision column's question (its context fallback): constrained
+            # to the same answer space, reshaped into the same answer, mapped by the same code.
+            reply = provider.run_structured_agent(
+                body,
+                response_format=decision.fallback_schema(config),
+                system_prompt=decision.fallback_system_prompt(config),
+                model=model,
+                on_usage=usage.update,
+            )
+            fields = decision.answer_fields(config, decision.fallback_answers(config, reply))
+            return self._attach_usage(self._decision_result(fields), usage)
+        if output_type == "json":
+            schema_model = model_from_json_schema(config.get("output_schema"))
+            if schema_model is not None:
+                verdict = provider.run_structured_agent(
+                    body,
+                    response_format=schema_model,
                     system_prompt=system_prompt,
                     model=model,
                     on_usage=usage.update,
+                    chat_id=chat_id,
                 )
-                return self._attach_usage(self._json_result(config, _parse_json_object(text)), usage)
-            verdict = provider.run_structured_agent(
-                body,
-                response_format=self._response_format(output_type, config),
+                return self._attach_usage(self._json_result(config, verdict.model_dump()), usage)
+            # no usable schema: free-form strict JSON (the rubric defines the shape)
+            text = provider.run_text_agent(
+                body + "\n\nRespond with ONE strict JSON object shaped exactly as your "
+                "instructions describe.",
                 system_prompt=system_prompt,
                 model=model,
                 on_usage=usage.update,
-                chat_id=chat_id,
             )
-        except Exception as exc:
-            log.warning("llm_judge_failed", evaluator=self.score_name, level=self.level, error=str(exc))
-            return None
+            return self._attach_usage(self._json_result(config, _parse_json_object(text)), usage)
+        verdict = provider.run_structured_agent(
+            body,
+            response_format=self._response_format(output_type, config),
+            system_prompt=system_prompt,
+            model=model,
+            on_usage=usage.update,
+            chat_id=chat_id,
+        )
         return self._attach_usage(self._to_result(config, output_type, verdict), usage)
 
     @staticmethod

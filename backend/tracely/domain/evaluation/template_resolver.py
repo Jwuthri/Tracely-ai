@@ -30,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from tracely.domain.evaluation.text import answer_for, content_text, request_for
+from tracely.domain.evaluation.text import answer_for, content_text, readable_io, request_for
 from tracely.domain.traces.spans import root_span
 
 # Mirrors evaluators/base.py + the ingest vocabulary (otel/types.py). Local copies dodge an
@@ -107,6 +107,8 @@ _STEP_PROPS = (
     ("thinking", "The step's reasoning/thinking text (THINKING steps)"),
     ("output_content", "The readable text output of the step"),
     ("output_structured", "The raw structured (JSON) output of the step"),
+    ("input", "The step's readable input (tool arguments, a model call's messages, a query, a task)"),
+    ("error", "The step's error message, when it failed"),
 )
 
 TEMPLATE_VARIABLES: tuple[TemplateVariable, ...] = (
@@ -215,6 +217,7 @@ class EvaluationContext:
     current_message: dict[str, Any] | None = None  # {input, output, role}
     current_steps: str | None = None
     current_step_spans: list[dict[str, Any]] = field(default_factory=list)
+    root_agent: str = ""  # the turn's top-level agent — steps of any other agent are attributed
     current_steps_count: str | None = None
     previous_step: dict[str, Any] | None = None  # a span dict
     current_step: dict[str, Any] | None = None  # a span dict
@@ -307,27 +310,50 @@ def _format_agents(spans: list[dict]) -> str | None:
     return "\n".join(lines)
 
 
+def _step_error(span: dict) -> str | None:
+    """A failed step's error. `status_message` is where every exporter puts it; a step can be
+    ERROR-level with no message, and that still has to read as a failure."""
+    msg = str(span.get("status_message") or "").strip()
+    if msg:
+        return _clip(msg, _STEP_CLIP)
+    return "(failed, no error message)" if str(span.get("level") or "").upper() == "ERROR" else None
+
+
+def _requested_tools(span: dict) -> str | None:
+    """The tool calls a model step REQUESTED (a GENERATION's `tool_calls`) — not a TOOL span,
+    whose `tool_call_names` is just its own name and says nothing its header doesn't."""
+    tcs = span.get("tool_calls")
+    if tcs:
+        return _clip(json.dumps(tcs, ensure_ascii=False, indent=2), _STEP_CLIP)
+    names = [str(n) for n in (span.get("tool_call_names") or []) if n]
+    return ", ".join(names) or None
+
+
 def _resolve_step_field(span: dict, prop: str) -> str | None:
     """One property of a step span. Soft-miss (None) when the field doesn't apply to this span."""
+    stype = span.get("type")
     if prop == "tool_call":
-        tcs = span.get("tool_calls")
-        if tcs:
-            return _clip(json.dumps(tcs, ensure_ascii=False, indent=2), _STEP_CLIP)
-        names = [str(n) for n in (span.get("tool_call_names") or []) if n]
-        if names:
-            return ", ".join(names)
-        if span.get("type") == TOOL:
-            return _clip(content_text(span.get("input")), _STEP_CLIP) or None
-        return None
+        if stype == TOOL:
+            # A TOOL span's call IS its name + arguments. Its `tool_call_names` is only its own name,
+            # and preferring that used to replace the arguments with the bare tool name — so every
+            # judge was shown `run_pricing_model` and never what it was called with.
+            args = readable_io(span.get("input"), per_message=_STEP_CLIP)
+            name = span.get("name") or ""
+            return _clip(f"{name}({args})" if args else name, _STEP_CLIP) or None
+        return _requested_tools(span)
     if prop == "tool_result":
-        if span.get("type") == TOOL:
-            return _clip(content_text(span.get("output")), _STEP_CLIP) or None
+        if stype == TOOL:
+            return _clip(content_text(span.get("output")), _STEP_CLIP) or _step_error(span)
         return None
     if prop == "thinking":
-        if span.get("type") == THINKING:
+        if stype == THINKING:
             txt = content_text(span.get("output")) or content_text(span.get("input"))
             return _clip(txt, _STEP_CLIP) or None
         return None
+    if prop == "input":
+        return _clip(readable_io(span.get("input"), per_message=_STEP_CLIP), _STEP_CLIP) or None
+    if prop == "error":
+        return _step_error(span)
     if prop == "output_content":
         return _clip(content_text(span.get("output")), _STEP_CLIP) or None
     if prop == "output_structured":
@@ -349,26 +375,73 @@ def _structured(out: Any) -> str | None:
     return None
 
 
-def _format_step(span: dict) -> str | None:
-    """Human-readable multi-line dump of a step (bare `@CURRENT_STEP` / `@PREVIOUS_STEP`)."""
-    lines = [f"Step type: {span.get('type', '') or 'STEP'}"]
+# How each step type's input and output read to a judge. Every step shows BOTH — the input is
+# half of what happened (the arguments a tool got, the query a retriever ran, the task a
+# sub-agent was handed, the messages a model was called with), and it used to be dropped for
+# everything but TOOL. Types not listed use the generic pair.
+_IO_LABELS: dict[str, tuple[str, str]] = {
+    TOOL: ("Arguments", "Result"),
+    GENERATION: ("Prompt", "Response"),
+    "RETRIEVER": ("Query", "Retrieved"),
+    "DELEGATE": ("Task", "Returned"),
+    "AGENT": ("Input", "Output"),
+    "GUARDRAIL": ("Checked", "Verdict"),
+    "SKILL": ("Input", "Output"),
+}
+
+
+def _format_step(span: dict, root_agent: str = "", agent_names: dict[str, str] | None = None) -> str | None:
+    """Everything one step did, for a judge: what it was, whose it was, what went in, what came
+    out, and whether it failed. Each field once (THINKING and TOOL output used to be printed twice
+    under two labels), each clipped on its own so one huge dump can't evict the rest."""
+    stype = str(span.get("type") or "STEP")
+    head = f"{stype}"
     if span.get("name"):
-        lines.append(f"Name: {span['name']}")
-    for label, prop in (("Tool call", "tool_call"), ("Tool result", "tool_result"),
-                        ("Thinking", "thinking"), ("Output", "output_content")):
-        val = _resolve_step_field(span, prop)
-        if val:
-            lines.append(f"{label}: {val}")
+        head += f" `{span['name']}`"
+    agent = str(span.get("agent_id") or "")
+    if agent and agent != root_agent and stype != "AGENT":  # an AGENT span's header names it already
+        head += f" (agent: {(agent_names or {}).get(agent) or agent})"
+    lines = [head]
+    if stype == THINKING:
+        thought = _resolve_step_field(span, "thinking")
+        if thought:
+            lines.append(f"Thinking: {thought}")
+    else:
+        in_label, out_label = _IO_LABELS.get(stype, ("Input", "Output"))
+        inp = _resolve_step_field(span, "input")
+        if inp:
+            lines.append(f"{in_label}: {inp}")
+        out = _clip(readable_io(span.get("output"), per_message=_STEP_CLIP), _STEP_CLIP)
+        if out:
+            lines.append(f"{out_label}: {out}")
+        if stype != TOOL:
+            requested = _requested_tools(span)
+            if requested:
+                lines.append(f"Requested tool calls: {requested}")
+    err = _step_error(span)
+    if err:
+        lines.append(f"ERROR: {err}")
     return "\n".join(lines)
 
 
-def _format_steps(spans: list[dict]) -> str | None:
+def _agent_names(spans: list[dict]) -> dict[str, str]:
+    """`agent_id → name` from the turn's AGENT spans: ids are opaque (often UUIDs), and "a step of
+    6a10a2c9-…" tells a judge nothing that "a step of market-analyst" does."""
+    return {
+        str(s["agent_id"]): str(s["name"])
+        for s in spans
+        if s.get("type") == "AGENT" and s.get("agent_id") and s.get("name")
+    }
+
+
+def _format_steps(spans: list[dict], root_agent: str = "") -> str | None:
     if not spans:
         return None
+    names = _agent_names(spans)
     blocks = []
     for i, s in enumerate(spans, start=1):
-        body = _format_step(s) or ""
-        blocks.append(f"Step {i}:\n{body}")
+        body = _format_step(s, root_agent, names) or ""
+        blocks.append(f"Step {i} · {body}")
     return "\n\n".join(blocks)
 
 
@@ -435,6 +508,9 @@ def build_context(
     cross-trace vars aren't materialized). `wanted_vars` (bare names) restricts materialization to
     referenced variables; `None` materializes everything applicable.
 
+    At message/step level `@HISTORY`/`@MESSAGES` end at the current turn (never later turns); the
+    caller passes a `history_override` cut at the same point.
+
     `history_override` (optional): a precomputed history string (the rolling summary). It backs
     the explicit `@ROLLING_SUMMARY` variable AND transparently substitutes for `@HISTORY`/
     `@MESSAGES` (instead of rebuilding the raw transcript from spans). None → raw transcript for
@@ -456,6 +532,12 @@ def build_context(
         return ctx
     ios = [(_turn_io(spans)) for _, spans in turns]  # [(user, answer), ...]
     cl = catalog_level(level)
+    # The turn being graded (message/step levels). History-shaped variables stop at it: a thread is
+    # usually graded after it settles, when its later turns already exist, and a judge grading turn
+    # 2 must not read how turns 3-10 went — it would grade the message with hindsight the agent
+    # never had (a "did the user have to re-ask?" check finds the re-ask in the future turn).
+    cur_idx = next((i for i, (tid, _) in enumerate(turns) if tid == current_trace_id), len(turns) - 1)
+    upto = ios if cl == CL_CONVERSATION else ios[: cur_idx + 1]
 
     # whole-conversation vars — prefer a precomputed rolling summary for @HISTORY/@MESSAGES,
     # else rebuild the raw transcript from spans (original behavior).
@@ -465,7 +547,7 @@ def build_context(
             ctx.messages = history_override
         else:
             lines: list[str] = []
-            for user, answer in ios:
+            for user, answer in upto:
                 if user:
                     lines.append(f"[user]: {_clip(user, _MSG_CLIP)}")
                 if answer:
@@ -494,8 +576,7 @@ def build_context(
     if cl == CL_CONVERSATION:
         return ctx
 
-    # message / step: locate the current turn (by trace_id; fall back to the last turn)
-    cur_idx = next((i for i, (tid, _) in enumerate(turns) if tid == current_trace_id), len(turns) - 1)
+    # message / step: the current turn (by trace_id; the last turn when it isn't found)
     cur_spans = turns[cur_idx][1]
     cur_user, cur_answer = ios[cur_idx]
     # "steps" = the turn's spans minus the agent-root wrapper (so the first real step is step 1),
@@ -504,9 +585,10 @@ def build_context(
     step_spans = [s for s in cur_spans if s.get("span_id") != cur_root.get("span_id")] or cur_spans
     if need("CURRENT_MESSAGE"):
         ctx.current_message = {"input": cur_user, "output": cur_answer, "role": "assistant"}
+    ctx.root_agent = str(cur_root.get("agent_id") or "")
+    ctx.current_step_spans = step_spans  # also names the agents in a bare @CURRENT_STEP dump
     if need("CURRENT_STEPS"):
-        ctx.current_steps = _format_steps(step_spans)
-        ctx.current_step_spans = step_spans
+        ctx.current_steps = _format_steps(step_spans, ctx.root_agent)
     if need("CURRENT_STEPS_COUNT"):
         ctx.current_steps_count = str(len(step_spans))
     if cur_idx > 0:
@@ -542,7 +624,10 @@ def _resolve_variable(name: str, prop: str | None, ctx: EvaluationContext) -> st
         return json.dumps(r, ensure_ascii=False, indent=2) if r else None
     if name == "CURRENT_STEPS" and prop:
         wanted = prop.upper()
-        return _format_steps([s for s in ctx.current_step_spans if str(s.get("type") or "").upper() == wanted])
+        return _format_steps(
+            [s for s in ctx.current_step_spans if str(s.get("type") or "").upper() == wanted],
+            ctx.root_agent,
+        )
     if name in _STRING_ATTRS:
         return getattr(ctx, _STRING_ATTRS[name])
     if name in _OBJECT_ATTRS:
@@ -551,7 +636,11 @@ def _resolve_variable(name: str, prop: str | None, ctx: EvaluationContext) -> st
             return None
         if name == "CURRENT_MESSAGE":
             return _resolve_message_field(obj, prop) if prop else _format_message(obj)
-        return _resolve_step_field(obj, prop) if prop else _format_step(obj)
+        return (
+            _resolve_step_field(obj, prop)
+            if prop
+            else _format_step(obj, ctx.root_agent, _agent_names(ctx.current_step_spans))
+        )
     return None  # unknown variable → soft miss
 
 

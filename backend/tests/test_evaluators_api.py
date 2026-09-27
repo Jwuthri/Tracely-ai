@@ -237,7 +237,9 @@ async def test_models_endpoint_filters_to_available(client, sync_db, monkeypatch
     )
     tok = await _owner_token(client)
     r = await client.get("/api/evaluators/models", headers=_bearer(tok))
-    assert r.json()["models"] == [{"id": "openai/gpt-5.4-nano", "label": "OpenAI: GPT-5.4 Nano"}]
+    assert r.json()["models"] == [
+        {"id": "openai/gpt-5.4-nano", "label": "OpenAI: GPT-5.4 Nano", "kind": "llm", "context_tokens": None}
+    ]
 
 
 async def test_generate_json_draft_builds_schema(client, sync_db, monkeypatch):
@@ -396,3 +398,54 @@ async def test_chain_progress_reports_sequential_columns(client, sync_db, monkey
     r = await client.get("/api/sessions/th-other/chain-progress", headers=_bearer(tok))
     m = next(m for m in r.json()["metrics"] if m["score_name"] == "helpfulness")
     assert (m["chained"], m["up_to_date"], m["last_payload"]) == (0, False, None)
+
+
+# ── decision models (TypeSafe Jev) ───────────────────────────────────────────
+
+_JEV_NOUL = {
+    "model": "typesafe/jev-1.13", "output_type": "decision_binary",
+    "question": "Did the agent complete the task?",
+    "criteria": {"true": "Done", "false": "Not done"},
+}
+
+
+async def test_decision_column_roundtrips(client, sync_db):
+    tok = await _owner_token(client)
+    r = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "Task done (Jev)", "level": "AGENT_RUN",
+        "config": {**_JEV_NOUL, "fallback_model": "google/gemini-3.6-flash"},
+    })
+    assert r.status_code == 200, r.text
+    cfg = r.json()["config"]
+    assert cfg["output_type"] == "decision_binary" and cfg["fallback_model"] == "google/gemini-3.6-flash"
+
+
+@pytest.mark.parametrize("config, needle", [
+    # a decision model can't grade a rubric
+    ({"model": "typesafe/jev-1.13", "output_type": "score", "prompt": "Grade."}, "decision model"),
+    # a decision output type needs a decision model
+    ({**_JEV_NOUL, "model": "openai/gpt-5.4-nano"}, "needs a decision model"),
+    ({k: v for k, v in _JEV_NOUL.items() if k != "model"}, "needs `model`"),
+    # Jev's own limits, surfaced before any spend
+    ({**_JEV_NOUL, "criteria": {"true": "Done"}}, '"false"'),
+    ({**_JEV_NOUL, "output_type": "decision_multiclass", "criteria": {"a": None}}, "between 2 and 255"),
+    # a fallback has to be able to read more — an LLM, not another classifier
+    ({**_JEV_NOUL, "fallback_model": "typesafe/jev-1.13"}, "fallback_model must be an LLM"),
+])
+async def test_decision_column_validation(client, sync_db, config, needle):
+    tok = await _owner_token(client)
+    r = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "x", "level": "AGENT_RUN", "config": config,
+    })
+    assert r.status_code == 400 and needle in r.json()["detail"], r.text
+
+
+async def test_models_endpoint_lists_jev_as_decision(client, sync_db, monkeypatch):
+    from tracely.infrastructure.llm import provider
+
+    _workspace_key(monkeypatch)
+    monkeypatch.setattr(provider, "_openrouter_model_names", lambda: {})
+    tok = await _owner_token(client)
+    models = (await client.get("/api/evaluators/models", headers=_bearer(tok))).json()["models"]
+    jev = [m for m in models if m["kind"] == "decision"]
+    assert [m["id"] for m in jev] == ["typesafe/jev-1.13"] and jev[0]["context_tokens"] == 32000

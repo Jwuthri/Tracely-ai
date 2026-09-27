@@ -8,7 +8,15 @@ import type { EvalScore } from "./api";
 
 export type EvaluatorLevel = "CONVERSATION" | "AGENT_RUN" | "SPAN" | "TOOL" | "GENERATION" | "CHAIN";
 
-export type EvaluatorOutputType = "score" | "number" | "boolean" | "text" | "json";
+// `decision_*` pair with a decision model (TypeSafe Jev): one typed question, calibrated
+// probabilities, no text. See backend domain/evaluation/decision.py.
+export type DecisionOutputType = "decision_binary" | "decision_multiclass" | "decision_multilabel";
+export type EvaluatorOutputType = "score" | "number" | "boolean" | "text" | "json" | DecisionOutputType;
+
+export const DECISION_OUTPUT_TYPES: DecisionOutputType[] = ["decision_binary", "decision_multiclass", "decision_multilabel"];
+export function isDecisionOutput(t: string | undefined): t is DecisionOutputType {
+  return DECISION_OUTPUT_TYPES.includes(t as DecisionOutputType);
+}
 
 export type EvaluatorConfig = {
   prompt?: string;
@@ -20,12 +28,24 @@ export type EvaluatorConfig = {
   template_variables?: string[]; // refs used, e.g. ["HISTORY", "CURRENT_STEP.tool_call"] (informational)
   depends_on?: string[]; // score_names of evaluators whose results are injected as context
   model?: string;
+  // LLM that grades an item too long for `model`'s context; unset = such items are skipped.
+  fallback_model?: string;
+  // decision columns
+  question?: string;
+  criteria?: { true: string; false: string } | Record<string, string | null>;
+  fail_options?: string[]; // multiclass / multilabel: labels that mean FAIL
+  pass_when?: "yes" | "no"; // decision_binary
   span_types?: string[];
   check?: string; // structural evaluators
   params?: Record<string, unknown>;
 };
 
-export type JudgeModelOption = { id: string; label: string };
+export type JudgeModelOption = {
+  id: string;
+  label: string;
+  kind?: "llm" | "decision";
+  context_tokens?: number | null;
+};
 export type JudgeModels = { default: string; models: JudgeModelOption[] };
 
 export type EvaluatorDef = {

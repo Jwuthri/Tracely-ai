@@ -199,6 +199,21 @@ def project_ingest_key(s: Session, project_id: str) -> str | None:
     ).scalar_one_or_none()
 
 
+def project_rolling_summary_config_get(s: Session, project_id: str) -> dict:
+    proj = project_get(s, project_id)
+    cfg = proj.rolling_summary_config if proj else None
+    return dict(cfg) if isinstance(cfg, dict) else {}
+
+
+def project_rolling_summary_config_set(s: Session, project_id: str, config: dict) -> dict:
+    proj = project_get(s, project_id)
+    if proj is None:
+        return {}
+    proj.rolling_summary_config = config or None
+    s.commit()
+    return dict(config)
+
+
 def project_ui_prefs_get(s: Session, project_id: str) -> dict:
     """This workspace's UI defaults (`{}` when unset or the project is gone)."""
     proj = s.get(Project, project_id)

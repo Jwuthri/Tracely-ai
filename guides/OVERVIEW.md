@@ -183,7 +183,7 @@ Plus a **⌘K command palette** to jump anywhere.
 
 **Rolling summary ✅** *(migration `0010`)* — per-span accumulating summary stored at the step level (one row per span = the full history-so-far at that point), so the conversation view = the last row, the message view = its turn's last step, the step view = that exact row. Algorithm:
 - **RULE 1** — a step ≤ `step_max_tokens` (default 512) is kept **verbatim**; larger steps are summarized to ~10-20 words by a small model.
-- **RULE 2** — when the running list exceeds `max_tokens` (default 20k), the older items (all but the last 2) **fold into one item with the `prev_summary` role**, recursively. The summary stays a flat list `[{role, type, content, …}]` — `prev_summary` is a *role*, not a key, so renderers and judges treat it uniformly.
+- **RULE 2** — when the running list exceeds `max_tokens` (default 16k, editable per workspace from the Rolling summary column), the older items (all but the last 2) **fold into one item with the `prev_summary` role**, recursively. The summary stays a flat list `[{role, type, content, …}]` — `prev_summary` is a *role*, not a key, so renderers and judges treat it uniformly.
 - Auto-generates on ingest. Surfaced as **3 per-row columns** in the trace table (C / M / S levels) rendered as JSON pills; available to advanced evaluators as **`@HISTORY` / `@ROLLING_SUMMARY`** template variables.
 
 **Conversation agents panel ✅** *(migration `0011`)* — two sources, merged into one panel:

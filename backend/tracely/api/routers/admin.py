@@ -16,6 +16,8 @@ from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_project_id, require_role, require_user
 from tracely.auth import Principal
+from tracely.config import settings
+from tracely.domain.evaluation.rolling_summary import budget_problem
 from tracely.infrastructure.blob import s3
 from tracely.infrastructure.clickhouse import async_reader, deletes
 from tracely.infrastructure.db import repositories as repo
@@ -236,6 +238,57 @@ async def set_ui_prefs(body: UiPrefsBody, project_id: str = Depends(get_project_
             return repo.project_ui_prefs_set(s, project_id, prefs)
 
     return {"prefs": await run_in_threadpool(work)}
+
+
+class RollingSummaryConfigBody(BaseModel):
+    max_tokens: int | None = None
+    step_max_tokens: int | None = None
+
+
+def _rolling_summary_config(s, project_id: str) -> dict:
+    from tracely.services.rolling_summary_service import RollingSummaryService
+
+    return {
+        "config": RollingSummaryService.budget_for(s, project_id).to_json(),
+        "defaults": {
+            "max_tokens": settings.rolling_summary_max_tokens,
+            "step_max_tokens": settings.rolling_summary_step_max_tokens,
+        },
+        "custom": bool(repo.project_rolling_summary_config_get(s, project_id)),
+    }
+
+
+@router.get("/project/rolling-summary-config")
+async def get_rolling_summary_config(project_id: str = Depends(get_project_id)) -> dict:
+    """The workspace's rolling-summary budget (what backs `@HISTORY` / `@ROLLING_SUMMARY`), the
+    server defaults it falls back to, and whether it has been customized."""
+
+    def work() -> dict:
+        with SyncSessionLocal() as s:
+            return _rolling_summary_config(s, project_id)
+
+    return await run_in_threadpool(work)
+
+
+@router.put("/project/rolling-summary-config", dependencies=[Depends(require_user)])
+async def set_rolling_summary_config(
+    body: RollingSummaryConfigBody, project_id: str = Depends(get_project_id)
+) -> dict:
+    """Set the budget (omit a field to use its default; both omitted = back to defaults). Behind
+    `require_user`: it changes what every history-reading judge sees and how often the summarizer
+    spends on the workspace's key — a people decision, not a CI key's. Applies to summaries built
+    from now on; existing threads keep theirs until regenerated."""
+    raw = body.model_dump(exclude_none=True)
+    problem = budget_problem(raw)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+
+    def work() -> dict:
+        with SyncSessionLocal() as s:
+            repo.project_rolling_summary_config_set(s, project_id, raw)
+            return _rolling_summary_config(s, project_id)
+
+    return await run_in_threadpool(work)
 
 
 @router.get("/project/llm-key", response_model=OpenRouterKeyOut)

@@ -214,7 +214,7 @@ def test_step_type_filters_are_offered_at_message_level():
 def test_bare_current_step_dumps_fields():
     ctx = build_context("SPAN", thread_spans=_trace_with_steps(), current_trace_id="t1", current_span_id="tool-1")
     text = _resolve("@CURRENT_STEP", ctx).resolved_text
-    assert "Tool call:" in text and "get_weather" in text and "Tool result: sunny, 70F" in text
+    assert text == "TOOL `get_weather`\nArguments: SF\nResult: sunny, 70F"
 
 
 def test_thinking_only_for_thinking_spans():
@@ -278,3 +278,77 @@ def test_generator_prompt_teaches_advanced_mode():
 
     assert "ADVANCED" in _SYSTEM and "@CURRENT_STEPS.tool" in _SYSTEM
     assert "{variables}" in _SYSTEM  # the catalog is injected at call time, never hard-coded
+
+
+# ── @CURRENT_STEPS carries the whole turn ────────────────────────────────────
+# Regression net for a real 42-span multi-agent trace whose judge read tool NAMES instead of
+# arguments, no step inputs at all except for tools, no errors, and every tool output twice.
+
+
+def _multi_agent_turn() -> list[dict]:
+    root = _span(span_id="root", type="AGENT", name="orchestrator", agent_id="A0",
+                 input="Launch in Germany?", output="Conditional go.")
+    kids = [
+        ("think", dict(type="THINKING", name="thinking", output="Fan out four workstreams.")),
+        ("gen", dict(type="GENERATION", name="gpt-4o",
+                     input='[{"role": "system", "content": "Split it."}, {"role": "user", "content": "Launch in Germany?"}]',
+                     output="W1..W4", tool_call_names=["delegate"])),
+        ("dlg", dict(type="DELEGATE", name="delegate:pricing", input='{"workstream": "W2"}', output='{"eur": 39}')),
+        ("sub", dict(type="AGENT", name="pricing-analyst", agent_id="A1")),
+        ("ret", dict(type="RETRIEVER", name="web_search", agent_id="A1", input='{"query": "Preise"}', output="3 hits")),
+        ("ok", dict(type="TOOL", name="run_model", agent_id="A1", input='{"price": 39}',
+                    output='{"revenue": 168090}', tool_call_names=["run_model"])),
+        ("bad", dict(type="TOOL", name="run_sql", agent_id="A1", input='{"sql": "insert …"}', output="",
+                     level="ERROR", status_message="permission denied (role: analyst_ro)",
+                     tool_call_names=["run_sql"])),
+    ]
+    return [root] + [
+        _span(span_id=sid, parent_span_id="root", is_app_root=0, **{"agent_id": "A0", **kw}) for sid, kw in kids
+    ]
+
+
+def test_current_steps_shows_every_step_with_its_input_output_and_error():
+    ctx = build_context("AGENT_RUN", thread_spans=_multi_agent_turn(), current_trace_id="t1")
+    text = _resolve("@CURRENT_STEPS", ctx).resolved_text
+    assert text.count("Step ") == 7  # every non-root span, nested sub-agent steps included
+    # inputs for every kind of step, not only tools
+    assert "Prompt: system: Split it.\nuser: Launch in Germany?" in text
+    assert 'Task: {"workstream": "W2"}' in text
+    assert 'Query: {"query": "Preise"}' in text
+    # a tool's ARGUMENTS, not just its own name
+    assert 'Arguments: {"price": 39}' in text
+    # the error of a failed step, which has no output to show
+    assert "ERROR: permission denied (role: analyst_ro)" in text
+    # each field once — output used to print under two labels
+    assert text.count("168090") == 1 and text.count("Fan out four workstreams.") == 1
+    # a model's requested tool calls stay visible
+    assert "Requested tool calls: delegate" in text
+    # sub-agent steps are attributed by NAME (ids are opaque); root-agent steps aren't labelled
+    assert "TOOL `run_sql` (agent: pricing-analyst)" in text
+    assert "GENERATION `gpt-4o`\n" in text
+
+
+def test_step_props_input_error_and_tool_call_arguments():
+    ctx = build_context("TOOL", thread_spans=_multi_agent_turn(), current_trace_id="t1", current_span_id="bad")
+    assert _resolve("@CURRENT_STEP.error", ctx).resolved_text == "permission denied (role: analyst_ro)"
+    assert _resolve("@CURRENT_STEP.input", ctx).resolved_text == '{"sql": "insert …"}'
+    assert _resolve("@CURRENT_STEP.tool_call", ctx).resolved_text == 'run_sql({"sql": "insert …"})'
+    # a failed tool's "result" is its error, not a soft miss
+    assert _resolve("@CURRENT_STEP.tool_result", ctx).resolved_text == "permission denied (role: analyst_ro)"
+
+
+def _three_turns() -> list[dict]:
+    return [
+        _span(trace_id=f"t{i}", span_id=f"r{i}", type="AGENT", input=f"question {i}", output=f"answer {i}")
+        for i in (1, 2, 3)
+    ]
+
+
+def test_message_level_history_stops_at_the_current_turn():
+    """Threads are graded after they settle; turn 2's judge must not read turn 3."""
+    ctx = build_context("AGENT_RUN", thread_spans=_three_turns(), current_trace_id="t2", wanted_vars=["HISTORY"])
+    history = _resolve("@HISTORY", ctx).resolved_text
+    assert "question 2" in history and "question 3" not in history and "answer 3" not in history
+    # conversation level still reads the whole thread
+    conv = build_context("CONVERSATION", thread_spans=_three_turns(), wanted_vars=["HISTORY"])
+    assert "question 3" in _resolve("@HISTORY", conv).resolved_text
