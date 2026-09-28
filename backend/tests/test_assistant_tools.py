@@ -27,6 +27,7 @@ _TABLES = [
     models.Membership.__table__,
     models.Invitation.__table__,
     models.Evaluator.__table__,
+    models.EvalChainProgress.__table__,
     models.Monitor.__table__,
     models.MonitorStep.__table__,
 ]

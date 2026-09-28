@@ -172,21 +172,62 @@ def _with_condition_deps(config: dict[str, Any]) -> dict[str, Any]:
     return {**config, "depends_on": deps + [n for n in needed if n not in deps]}
 
 
-def _check_condition_columns(s, project_id: str, config: dict[str, Any], own_score_name: str = "") -> None:
-    """A `run_if` naming a column that doesn't exist here would read "no result" forever and the
-    column would silently never run — reject it with the names that do exist."""
-    needed = conditions.columns(config.get("run_if"))
-    if not needed:
+def _pass_of(level: str, config: dict[str, Any]) -> str:
+    """Which evaluation pass a column runs in. Columns only see each other's results inside one
+    pass (`evaluation_service._dispatch_specs`): conversation columns run in the thread pass,
+    sequential message/step columns in the ordered turn pass, batch ones on ingest."""
+    if level == "CONVERSATION":
+        return "conversation"
+    return "sequential" if str(config.get("execution_mode") or "batch") == "sequential" else "batch"
+
+
+def _check_dependencies(
+    s, project_id: str, kind: str, level: str, config: dict[str, Any], own_score_name: str = ""
+) -> None:
+    """Reject a Depends On / Run only when that could never be satisfied, with the reason:
+    - a column that doesn't exist (its result would be "missing" forever);
+    - one in a different pass (conversation vs message/step, batch vs sequential) — the passes
+      never share results, so the dependent would grade without it or never run;
+    - a cycle (`_topo_sort` would silently fall back to arbitrary order).
+    Structural checks don't read dependencies, so they can't have `run_if`."""
+    deps = list(dict.fromkeys([*(config.get("depends_on") or []), *conditions.columns(config.get("run_if"))]))
+    if kind == "structural" and config.get("run_if"):
+        raise HTTPException(status_code=400, detail="run_if applies to llm_judge columns only")
+    if not deps:
         return
+    if own_score_name and own_score_name in deps:
+        raise HTTPException(status_code=400, detail="a column cannot depend on itself")
     known = {e.score_name: e for e in repo.evaluators_list(s, project_id)}
-    missing = [n for n in needed if n not in known]
+    missing = [n for n in deps if n not in known]
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"run_if reads {missing}, which are not columns here; existing: {sorted(known)}",
+            detail=f"depends_on/run_if reads {missing}, which are not columns here; existing: {sorted(known)}",
         )
-    if own_score_name and own_score_name in needed:
-        raise HTTPException(status_code=400, detail="a column's run_if cannot read the column itself")
+    mine = _pass_of(level, config)
+    other = {n: _pass_of(known[n].level, known[n].config or {}) for n in deps}
+    wrong = {n: p for n, p in other.items() if p != mine}
+    if wrong:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"this column runs in the {mine} pass but {', '.join(f'{n} ({p})' for n, p in wrong.items())} "
+                f"run in another; passes don't share results, so the dependency could never be read. "
+                f"Give both the same level group (conversation vs message/step) and execution_mode."
+            ),
+        )
+    # a cycle through the existing graph back to this column
+    graph = {n: list((e.config or {}).get("depends_on") or []) for n, e in known.items()}
+    if own_score_name:
+        graph[own_score_name] = deps
+        seen, stack = set(), list(deps)
+        while stack:
+            n = stack.pop()
+            if n == own_score_name:
+                raise HTTPException(status_code=400, detail=f"depends_on makes a cycle through {own_score_name}")
+            if n not in seen:
+                seen.add(n)
+                stack.extend(graph.get(n, []))
 
 
 def _stamp_advanced(config: dict[str, Any]) -> dict[str, Any]:
@@ -355,7 +396,7 @@ async def resolve_prompt(
     # transcript when no summary exists.
     base_names = {w.split(".", 1)[0] for w in wanted}
     history_override = None
-    if thread_id and ({"HISTORY", "MESSAGES", "ROLLING_SUMMARY"} & base_names):
+    if thread_id and "ROLLING_SUMMARY" in base_names:
         from tracely.services.rolling_summary_service import RollingSummaryService
 
         history_override = await run_in_threadpool(
@@ -424,7 +465,7 @@ async def create_evaluator(
 
     def work():
         with SyncSessionLocal() as s:
-            _check_condition_columns(s, project_id, config)
+            _check_dependencies(s, project_id, body.kind, body.level, config)
             e = repo.evaluator_create(
                 s, project_id,
                 name=body.name, description=body.description, kind=body.kind,
@@ -458,16 +499,23 @@ async def update_evaluator(
                 patch.get("level", existing.level),
                 patch.get("config", existing.config or {}),
             )
-            _check_condition_columns(
-                s, project_id, patch.get("config", existing.config or {}), existing.score_name
+            _check_dependencies(
+                s, project_id, existing.kind, patch.get("level", existing.level),
+                patch.get("config", existing.config or {}), existing.score_name,
             )
+            level_changed = "level" in patch and patch["level"] != existing.level
             e = repo.evaluator_update(s, project_id, evaluator_id, patch)
-            return None if e is None else _evaluator_dict(e)
+            return None if e is None else (_evaluator_dict(e), level_changed)
 
     res = await run_in_threadpool(work)
     if res is None:
         raise HTTPException(status_code=404, detail="evaluator not found")
-    return res
+    out, level_changed = res
+    if level_changed:
+        # Scores at the old level address items the column no longer grades (a turn-level row
+        # left behind by a move to SPAN, …): nothing would ever replace them. Re-grade to refill.
+        await run_in_threadpool(_retract_scores, project_id, out["score_name"])
+    return out
 
 
 @router.delete("/evaluators/{evaluator_id}", dependencies=[Depends(require_user)])
@@ -476,9 +524,26 @@ async def delete_evaluator(
 ) -> dict:
     def work():
         with SyncSessionLocal() as s:
-            return repo.evaluator_delete(s, project_id, evaluator_id)
+            existing = repo.evaluator_get(s, project_id, evaluator_id)
+            if existing is None or not repo.evaluator_delete(s, project_id, evaluator_id):
+                return None
+            return existing.score_name
 
-    ok = await run_in_threadpool(work)
-    if not ok:
+    score_name = await run_in_threadpool(work)
+    if score_name is None:
         raise HTTPException(status_code=404, detail="evaluator not found")
+    # Deleting a column deletes its verdicts: left in place they kept failing traces for the 90-day
+    # TTL (and a deleted ADVISORY column's FAILs started counting as real ones).
+    await run_in_threadpool(_retract_scores, project_id, score_name)
     return {"deleted": evaluator_id}
+
+
+def _retract_scores(project_id: str, score_name: str) -> None:
+    from tracely.infrastructure.clickhouse.score_writer import ScoreWriter
+
+    try:
+        ScoreWriter().retract_evaluator(project_id, score_name)
+    except Exception as exc:  # noqa: BLE001 — the column is gone either way; log, don't 500
+        import structlog
+
+        structlog.get_logger().warning("evaluator_score_retract_failed", name=score_name, error=str(exc))

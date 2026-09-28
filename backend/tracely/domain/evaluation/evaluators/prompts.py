@@ -26,20 +26,22 @@ step judge (this message's earlier steps). `earlier_messages` re-renders prior t
 introspection recording only — with a durable conversation the wire carries just the new item,
 and a recording of that alone is indistinguishable from batch.
 
-Everything here is pure text over span dicts: no I/O, no policy, no model calls. Budgets are the
-`_TRUNC_*` constants; every clip is per-field so one huge tool dump can't evict the rest.
+Everything here is pure text over span dicts: no I/O, no policy, no model calls. Nothing is
+truncated: what the span recorded is what the judge reads. A column whose item is too long for its
+model goes to its fallback model or is skipped visibly (`domain/evaluation/budget.py`).
 """
 
 from __future__ import annotations
 
-from tracely.domain.evaluation.evaluators.base import CHAIN, GENERATION, TOOL
-from tracely.domain.evaluation.text import answer_for, content_text, readable_io, request_for
+from tracely.domain.evaluation.text import (
+    NO_ANSWER,
+    NO_USER_MESSAGE,
+    agent_answer,
+    content_text,
+    readable_io,
+    user_message,
+)
 from tracely.domain.traces.spans import root_span
-
-TRUNC_IO = 1500  # per-step input/output excerpt
-TRUNC_TURN = 800  # per-turn excerpt in the conversation transcript
-TRUNC_STEP_LINE = 400  # one earlier step, in a sequential judge's trajectory
-TRUNC_TRAJECTORY = 4000  # the whole run-so-far block (steps, or earlier turns)
 
 # The system prompt for an ADVANCED grade. Deliberately says nothing about what to grade: the
 # user's resolved template is the rubric AND the context, and it arrives as the human message.
@@ -47,11 +49,6 @@ ADVANCED_SYSTEM = (
     "You are an evaluator. Follow the instructions in the message exactly and return the "
     "structured verdict you are asked for — nothing else."
 )
-
-
-def clip(s: str, n: int) -> str:
-    s = s or ""
-    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def by_trace(spans: list[dict]) -> list[list[dict]]:
@@ -76,32 +73,34 @@ def message_body(spans: list[dict], *, include_answer: bool = True) -> str:
     conversation, so a terse "yes" still resolves against the question that prompted it. With no
     user message there is no intent to label, so the item is skipped."""
     root = root_span(spans)
-    user_in = request_for(root, spans)
+    user_in = user_message(root)
     if not include_answer:
-        return f"User message:\n{clip(user_in, 2000)}" if user_in else ""
-    answer = answer_for(root, spans, TOOL, GENERATION, CHAIN)
+        return f"User message:\n{user_in}" if user_in else ""
+    answer = agent_answer(root)
     if not answer and not user_in:
         return ""
     return (
-        f"User request:\n{clip(user_in, 2000)}\n\n"
-        f"Agent answer:\n{clip(answer, 2000) or '(the agent produced no answer)'}"
+        f"User request:\n{user_in or NO_USER_MESSAGE}\n\n"
+        f"Agent answer:\n{answer or NO_ANSWER}"
     )
 
 
-def step_body(candidates: list[dict], i: int) -> str:
-    """The prompt for one step — `Step i of n` plus its I/O. Used for the item being graded and,
-    in chained mode, to re-render the earlier items for the recording."""
+def step_body(candidates: list[dict], i: int, user_request: str = "") -> str:
+    """The prompt for one step: the turn's user message (what the step was in service of — a
+    "was this the right tool?" question can't be answered without it), then `Step i of n` with
+    its input, output and error. The earlier-steps re-render for the recording passes no request."""
     s = candidates[i]
-    body = (
+    head = f"User request:\n{user_request}\n\n" if user_request else ""
+    body = head + (
         f"Step {i + 1} of {len(candidates)} — {s.get('type')} `{s.get('name') or s.get('step_id') or ''}`\n"
-        f"Step input:\n{clip(readable_io(s.get('input')), TRUNC_IO)}\n\n"
-        f"Step output:\n{clip(readable_io(s.get('output')), TRUNC_IO)}"
+        f"Step input:\n{readable_io(s.get('input'))}\n\n"
+        f"Step output:\n{readable_io(s.get('output'))}"
     )
     # A failed step usually has NO output — the error is the whole story, and without it a judge
     # grading "was this the right call?" sees an empty result and has to guess why.
     err = str(s.get("status_message") or "").strip()
     if err or str(s.get("level") or "").upper() == "ERROR":
-        body += f"\n\nStep error:\n{clip(err or '(failed, no error message)', TRUNC_IO)}"
+        body += f"\n\nStep error:\n{err or '(failed, no error message)'}"
     return body
 
 
@@ -111,7 +110,7 @@ def step_line(span: dict, n: int) -> str:
     body = content_text(span.get("output")) or content_text(span.get("input"))
     return (
         f"{n}. {span.get('type')} `{span.get('name') or span.get('step_id') or ''}`: "
-        f"{clip(body, TRUNC_STEP_LINE)}"
+        f"{body}"
     )
 
 
@@ -124,12 +123,12 @@ def turn_lines(spans: list[dict], stop_before: str = "") -> list[str]:
         if stop_before and (trace_spans[0].get("trace_id") or "") == stop_before:
             break
         root = root_span(trace_spans)
-        user_in = request_for(root, trace_spans)
-        answer = answer_for(root, trace_spans, TOOL, GENERATION, CHAIN)
+        user_in = user_message(root)
+        answer = agent_answer(root)
         if user_in:
-            lines.append(f"Turn {n} — user: {clip(user_in, TRUNC_TURN)}")
+            lines.append(f"Turn {n} — user: {user_in}")
         if answer:
-            lines.append(f"Turn {n} — agent: {clip(answer, TRUNC_TURN)}")
+            lines.append(f"Turn {n} — agent: {answer}")
     return lines
 
 

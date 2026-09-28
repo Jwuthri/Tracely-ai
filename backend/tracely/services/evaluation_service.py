@@ -140,6 +140,14 @@ def _subject_label(ctx) -> str:
     return f"grading {where} {subject}" + (f"\n\n{text[:600]}" if text else "")
 
 
+def _no_result_reason(spec: dict) -> str:
+    """What the recording says when a column produced nothing for an item — the actual reason,
+    where one is knowable, instead of a blanket "not applicable"."""
+    if spec.get("kind") == "llm_judge" and not provider.llm_enabled():
+        return "(not run — this workspace has no OpenRouter key; set one in Settings → OpenRouter key)"
+    return "(no result — nothing gradable for this column in this item: no input/output at its level)"
+
+
 def _chain_payload(score: dict) -> dict:
     """A persisted score row → the compact context that seeds the NEXT turn in sequential mode
     (one rendering for the whole chain: `results.chain_payload`)."""
@@ -270,12 +278,12 @@ class EvaluationService:
         root = root_span(spans)
         agent_run_id = root.get("agent_run_id") or trace_id
         thread_id = next((s.get("conversation_id") for s in spans if s.get("conversation_id")), "") or trace_id
+        untargeted = specs
         if specs is None:
             # Auto (on-ingest) run: honor each evaluator's targeting + sampling. An explicit
             # on-demand run passes `specs` and always grades (the user chose them).
-            specs = self._apply_targeting(
-                project_id, self.load_enabled_evaluators(project_id), root, trace_id
-            )
+            untargeted = self.load_enabled_evaluators(project_id)
+            specs = self._apply_targeting(project_id, untargeted, root, trace_id)
         elif apply_targeting:
             # `evaluate_thread` reuses an already-loaded list to avoid treating its automatic
             # settled-thread pass like an on-demand run. Keep the same targeting guarantee that
@@ -295,13 +303,17 @@ class EvaluationService:
             project_id, trace_id, agent_run_id, spans, root,
             thread_id=thread_id, thread_spans=thread_spans,
         )
-        results = self._dispatch_specs(trace_specs, ctx)
+        ran: list[str] = []
+        results = self._dispatch_specs(trace_specs, ctx, ran)
         if results:
             self.score_writer.write_eval_scores(
                 project_id, trace_id, agent_run_id, results, thread_id=thread_id
             )
             self._emit(on_result, results, trace_id=trace_id, thread_id=thread_id)
             self._milestone_first_check(project_id, spans)
+        # A column's run REPLACES its previous results for this turn: whatever it no longer
+        # produced (a step it stopped grading, a level it left) is retracted, not left failing.
+        self._retract_stale(project_id, ran, results, trace_id=trace_id, thread_id=thread_id)
 
         fail_results = [r for r in results if r.verdict == "FAIL"]
         if fail_results and root.get("agent_id"):
@@ -325,9 +337,13 @@ class EvaluationService:
             # so it is only wasted work when the project has neither. The specs are already loaded
             # here, so answering costs nothing and saves a queued task plus its DB round-trip on
             # every message of the common batch-only setup.
+            # Decided on the UNTARGETED list: the conversation pass samples by thread and targets
+            # on any turn, so this turn being sampled out (or another agent's) must not cancel it.
             "needs_thread_pass": any(
-                s["level"] == CONVERSATION or _execution_mode(s) == "sequential" for s in specs
+                s["level"] == CONVERSATION or _execution_mode(s) == "sequential"
+                for s in (untargeted if untargeted is not None else specs)
             ),
+            "ran": ran,
         }
 
     def evaluate_thread(
@@ -423,11 +439,17 @@ class EvaluationService:
                 incremental=automatic,
             )
 
+        errored: set[str] = set()  # sequential metrics whose grade failed on the current turn
+
         def capture(score: dict) -> None:
-            if score["name"] in sequential_names:
+            if score["name"] in sequential_names and score.get("error"):
+                errored.add(score["name"])
+            if score["name"] in sequential_names and score.get("graded", True):
                 chain[score["name"]] = _chain_payload(score)
             if on_result is not None:
                 on_result(score)
+
+        halted: set[str] = set()  # sequential metrics that stop advancing for the rest of this pass
 
         # Fetch the thread's spans ONCE (not once per turn) when an advanced judge needs the
         # full transcript — `evaluate_trace` reuses what we pass instead of re-reading.
@@ -440,7 +462,8 @@ class EvaluationService:
             # A sequential metric joins at its start index; everything else runs on every turn.
             due = [
                 s for s in trace_specs
-                if s["score_name"] not in sequential_names or starts[s["score_name"]] <= i
+                if s["score_name"] not in sequential_names
+                or (starts[s["score_name"]] <= i and s["score_name"] not in halted)
             ]
             if not due:
                 continue
@@ -451,9 +474,20 @@ class EvaluationService:
             )
             total += r.get("scores", 0)
             failures += r.get("failures", 0)
+            # A metric whose grade failed on this turn stops here for this pass: grading the next
+            # turn would append it to the chain out of order, and recording progress would skip
+            # this turn for good. The next pass resumes at it.
+            # Same for one that didn't run at all (no OpenRouter key, or it raised): recording
+            # progress would skip this turn for good once it can run.
+            halted |= errored | {
+                n for n in sequential_names
+                if starts[n] <= i and n not in halted and n not in set(r.get("ran", []))
+                and any(s["score_name"] == n for s in due)
+            }
+            errored.clear()
             # Record progress per graded turn (not per pass) so a crashed pass resumes from the
             # last turn it finished instead of re-appending everything to the conversation.
-            graded = [n for n in sequential_names if starts[n] <= i]
+            graded = [n for n in sequential_names if starts[n] <= i and n not in halted]
             if graded:
                 try:
                     with SyncSessionLocal() as sess:
@@ -636,7 +670,8 @@ class EvaluationService:
         if not specs:
             return 0
         ctx = RunContext(project_id, "", "", spans, root_span(spans), thread_id=thread_id)
-        results = self._dispatch_specs(specs, ctx)
+        ran: list[str] = []
+        results = self._dispatch_specs(specs, ctx, ran)
         # This pass writes with NO trace_id, so only CONVERSATION-level results are addressable
         # (readers find them by session_id). A span-scoped evaluator misconfigured to CONVERSATION
         # level — `tool_success` is one, its results stay TOOL-level — would otherwise be written
@@ -651,7 +686,27 @@ class EvaluationService:
         if keep:
             self.score_writer.write_eval_scores(project_id, "", "", keep, thread_id=thread_id)
             self._emit(on_result, keep, trace_id="", thread_id=thread_id)
+        self._retract_stale(project_id, ran, keep, thread_id=thread_id)
         return len(keep)
+
+    def _retract_stale(
+        self, project_id: str, ran: list[str], results: list[EvalResult], *,
+        trace_id: str = "", thread_id: str = "",
+    ) -> None:
+        """Retract the rows the evaluators in `ran` did not produce this time, for this item.
+        Best-effort: a failed retraction leaves the old rows, exactly as before this existed."""
+        if not ran or not hasattr(self.score_writer, "retract_eval_scores"):
+            return
+        keep = {
+            self.score_writer.eval_score_id(trace_id, thread_id, r.name, r.level, r.target_span_id)
+            for r in results
+        }
+        try:
+            self.score_writer.retract_eval_scores(
+                project_id, ran, trace_id=trace_id, thread_id=thread_id, keep_ids=keep
+            )
+        except Exception as exc:  # noqa: BLE001 — never sink a grade over cleanup
+            log.warning("score_retract_failed", trace_id=trace_id, thread_id=thread_id, error=str(exc))
 
     def _apply_conversation_targeting(
         self, project_id: str, specs: list[dict], spans: list[dict], thread_id: str
@@ -701,7 +756,13 @@ class EvaluationService:
                 applicable.append(spec)
         return applicable
 
-    def _dispatch_specs(self, specs: list[dict], ctx: RunContext) -> list[EvalResult]:
+    def _dispatch_specs(
+        self, specs: list[dict], ctx: RunContext, ran: list[str] | None = None
+    ) -> list[EvalResult]:
+        """Run `specs` on one item. `ran` (optional) collects the score_names that actually
+        ran to completion — the evaluators whose previous results for this item the caller may
+        replace. Not included: an LLM judge in a workspace with no OpenRouter key (it didn't run),
+        and an evaluator that raised (its old result is still the best we have)."""
         specs = _topo_sort(specs)
         # Each completed evaluator's results, kept per `span_id` so a dependent grading at step
         # level can line up THIS step's prerequisite verdicts (a trace/conversation result lands
@@ -747,15 +808,20 @@ class EvaluationService:
                     new_results = self.registry.dispatch(
                         spec["kind"], spec["config"], spec["score_name"], spec["level"], ctx
                     )
+                    # It ran unless it produced nothing BECAUSE it couldn't (an LLM judge with no
+                    # OpenRouter key in this workspace).
+                    if ran is not None and (
+                        new_results
+                        or not (spec.get("kind") == "llm_judge" and not provider.llm_enabled())
+                    ):
+                        ran.append(spec["score_name"])
                     if rec:
                         # The verdict lands ON the evaluator's own span rather than in a child
                         # "verdict" event — one row per evaluator, not two.
-                        rec.describe(
-                            output=_results_json(new_results)
-                            or "(no result — not applicable to this trace)"
-                        )
+                        rec.describe(output=_results_json(new_results) or _no_result_reason(spec))
                     results.extend(new_results)
-                    if new_results:
+                    graded = [r for r in new_results if r.graded]  # "Not run"/"Skipped" isn't evidence
+                    if graded:
                         completed[spec["score_name"]] = [
                             {
                                 "span_id": r.target_span_id,
@@ -764,7 +830,7 @@ class EvaluationService:
                                     comment=r.comment, string_value=r.string_value,
                                 ),
                             }
-                            for r in new_results
+                            for r in graded
                         ]
                 except Exception as exc:  # one bad evaluator must not sink the rest
                     if rec:
@@ -798,6 +864,8 @@ class EvaluationService:
                     "data_type": r.data_type,
                     "trace_id": None if r.level == CONVERSATION else trace_id,
                     "session_id": thread_id or None,
+                    "graded": r.graded,
+                    "error": r.error,
                 })
             except Exception as exc:  # a slow/broken consumer must not sink the run
                 log.warning("eval_emit_failed", error=str(exc))

@@ -33,6 +33,17 @@ _FAILING = (
     "AND name NOT IN {adv:Array(String)}"
 )
 
+# The conversation-level half: a CONVERSATION score is written with no trace_id (it is about the
+# thread, addressed by session_id), so `_FAILING` can never see it. A thread fails when any of its
+# turns fails OR its conversation-level verdict does — the same rule `domain.evaluation.verdict`
+# applies on the trace page. Without this the list showed a green dot (and the "failing" filter
+# hid the thread) while the trace page said FAIL.
+_FAILING_THREADS = (
+    "SELECT session_id FROM scores FINAL WHERE project_id = {p:String} "
+    f"AND {_ONLINE} AND verdict = 'FAIL' AND evaluation_level = 'CONVERSATION' "
+    "AND name NOT IN {adv:Array(String)}"
+)
+
 _SCORE_COLS = (
     "name, evaluation_level, observation_id, value, string_value, verdict, comment, data_type"
 )
@@ -404,10 +415,12 @@ SESSION_SORTS = {
 }
 
 
-# What the traces list's text filter searches, server-side: the thread's first input, last
-# output, model id, user metadata (keys and values, as the JSON string) and agent id. Case-
-# insensitive substring; no tokenising. Defined once so the count and the page agree.
-_SESSION_HAYSTACK = "concat(first_input, ' ', last_output, ' ', model, ' ', metadata, ' ', agent_id)"
+# What the traces list's text filter searches, server-side: any span's input or output in the
+# thread (`text_hit`, computed per span so no message text is held in memory), plus the model id,
+# user metadata (keys and values, as the JSON string), agent id and — for an internal run — its
+# title and subject. Case-insensitive substring; no tokenising. Defined once so the count and the
+# page agree.
+_SESSION_HAYSTACK = "concat(model, ' ', metadata, ' ', agent_id, ' ', _root_name, ' ', subject_id)"
 
 
 def session_filter_clauses(failing: bool | None, multi: bool | None, q: str) -> tuple[str, dict]:
@@ -423,7 +436,9 @@ def session_filter_clauses(failing: bool | None, multi: bool | None, q: str) -> 
     elif multi is False:
         parts.append(" AND turns = 1")
     if q and q.strip():
-        parts.append(f" AND positionCaseInsensitiveUTF8({_SESSION_HAYSTACK}, {{q:String}}) > 0")
+        parts.append(
+            f" AND (text_hit = 1 OR positionCaseInsensitiveUTF8({_SESSION_HAYSTACK}, {{q:String}}) > 0)"
+        )
         params["q"] = q.strip()[:200]
     return "".join(parts), params
 
@@ -443,6 +458,16 @@ def session_order_clause(sort: str, order: str) -> str:
     expr = SESSION_SORTS.get(sort, SESSION_SORTS["recent"])
     direction = "ASC" if str(order).lower() == "asc" else "DESC"
     return f"ORDER BY {expr} {direction}, last_ts DESC, thread ASC"
+
+
+# A trace's display text: its ROOT span's input and output — the same two values every judge
+# grades (`domain/evaluation/text.user_message` / `agent_answer`), so what the table shows is what
+# was graded. No other span is consulted. Assumes a GROUP BY over one trace's spans.
+_TRACE_INPUT = "anyIf(input, parent_span_id = '')"
+_TRACE_OUTPUT = "anyIf(output, parent_span_id = '')"
+# Whether `_TRACE_INPUT` / `_TRACE_OUTPUT` would be non-empty — without holding the text.
+_TRACE_HAS_INPUT = "max(input != '' AND parent_span_id = '')"
+_TRACE_HAS_OUTPUT = "max(output != '' AND parent_span_id = '')"
 
 
 async def sessions_overview(
@@ -482,7 +507,13 @@ async def sessions_overview(
 
     `sort`/`order` reorder the whole list, not the page: the table's sortable headers have to see
     past the loaded window, or "sort by slowest" would only ever surface the slowest of the 50 rows
-    already on screen."""
+    already on screen.
+
+    The message text is fetched LAST, for the page only. Rolling `input`/`output` strings up for
+    every trace in the project held ~1 GiB per query at ~100k traces — the page and its count run
+    together, so two of them plus the worker tipped ClickHouse over its memory limit and the traces
+    tab 500'd. The rollup now carries only booleans and the two trace ids whose text the row shows;
+    a second query reads the text for those ≤2×`limit` traces."""
     client = await get_async_client()
     order_clause = session_order_clause(sort, order)
     time_clause = ""
@@ -500,6 +531,14 @@ async def sessions_overview(
         params["ag"] = agent_id
     filter_clause, fparams = session_filter_clauses(failing, multi, q)
     params.update(fparams)
+    # The text filter's per-span half — a flag, so no message is kept in the aggregation state.
+    q_inner = q_outer = ""
+    if "q" in fparams:
+        q_inner = (
+            ",\n            max(positionCaseInsensitiveUTF8(input, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(output, {q:String}) > 0)  AS t_q"
+        )
+        q_outer = ",\n          max(t_q)                              AS text_hit"
     body = f"""
         SELECT
           if(conv != '', conv, trace_id)        AS thread,
@@ -507,9 +546,13 @@ async def sessions_overview(
           argMax(t_agent, ts_max)               AS agent_id,
           -- An internal run is titled by its root span ("eval · 5 evaluator(s)"), not by the
           -- first GENERATION input — which for a recording is the judge's raw system prompt and
-          -- reads as noise in the list. Its "answer" is what it was about.
-          if(max(t_internal) != '', max(t_root_name), argMin(t_input, ts_min))  AS first_input,
-          if(max(t_internal) != '', max(t_subject), argMax(t_output, ts_min))   AS last_output,
+          -- reads as noise in the list. Its "answer" is what it was about. The text itself is
+          -- filled in afterwards, from these two traces (see the docstring).
+          argMin(trace_id, ts_min)              AS _first_trace,
+          argMax(trace_id, ts_min)              AS _last_trace,
+          max(t_root_name)                      AS _root_name,
+          if(max(t_internal) != '', max(t_root_name) != '' OR max(t_subject) != '',
+             max(t_has_input) OR max(t_has_output))  AS _has_content,
           sum(t_tokens)                         AS tokens,
           sum(t_input_tokens)                   AS input_tokens,
           sum(t_output_tokens)                  AS output_tokens,
@@ -518,30 +561,17 @@ async def sessions_overview(
           min(ts_min)                           AS first_ts,
           max(ts_max)                           AS last_ts,
           argMax(trace_id, ts_max)              AS last_trace_id,
-          max(t_failing)                        AS failing,
+          toUInt8(max(t_failing) = 1 OR thread IN ({_FAILING_THREADS})) AS failing,
           max(t_internal)                       AS internal_kind,
           max(t_subject)                        AS subject_id,
           toJSONString(CAST(
             (groupArrayArray(mapKeys(t_meta)), groupArrayArray(mapValues(t_meta))),
-            'Map(String, String)'))             AS metadata
+            'Map(String, String)'))             AS metadata{q_outer}
         FROM (
           SELECT trace_id,
             max(conversation_id)                                          AS conv,
-            -- Prefer the EARLIEST GENERATION input (carries the actual user message in the chat
-            -- array), fall back to the earliest non-empty input from any other span — so the
-            -- conversation title isn't pinned to framework internals like CrewAI's agent-config
-            -- payload or LlamaIndex's workflow-start event.
-            if(argMinIf(input, start_time, input != '' AND type = 'GENERATION') != '',
-               argMinIf(input, start_time, input != '' AND type = 'GENERATION'),
-               argMinIf(input, start_time, input != ''))                    AS t_input,
-            -- Pick the LATEST GENERATION output as the run's answer (skip TOOL results and
-            -- framework CHAIN router signals like LangGraph's `__end__`). Fall back to root, then
-            -- to any non-TOOL non-CHAIN span.
-            if(argMaxIf(output, start_time, output != '' AND type = 'GENERATION') != '',
-               argMaxIf(output, start_time, output != '' AND type = 'GENERATION'),
-               if(anyIf(output, parent_span_id = '' AND output != '') != '',
-                  anyIf(output, parent_span_id = '' AND output != ''),
-                  argMaxIf(output, start_time, output != '' AND type NOT IN ('TOOL','CHAIN')))) AS t_output,
+            {_TRACE_HAS_INPUT}                                            AS t_has_input,
+            {_TRACE_HAS_OUTPUT} AS t_has_output,
             toUInt64(sum(arraySum(mapValues(usage_details))))             AS t_tokens,
             toUInt64(sum(usage_details['input']))                         AS t_input_tokens,
             toUInt64(sum(usage_details['output']))                        AS t_output_tokens,
@@ -558,7 +588,7 @@ async def sessions_overview(
             CAST(
               (groupArrayArray(mapKeys(mapFilter((k, v) -> startsWith(k, 'tracely.metadata.'), CAST(metadata, 'Map(String, String)')))),
                groupArrayArray(mapValues(mapFilter((k, v) -> startsWith(k, 'tracely.metadata.'), CAST(metadata, 'Map(String, String)'))))),
-              'Map(String, String)')                                      AS t_meta
+              'Map(String, String)')                                      AS t_meta{q_inner}
           FROM events FINAL WHERE project_id = {{p:String}} AND is_deleted = 0{time_clause}{internal_clause}
           GROUP BY trace_id
           {agent_clause}
@@ -567,7 +597,7 @@ async def sessions_overview(
         -- Drop 1-turn threads with no message content on either side (e.g. a lone TOOL/RETRIEVER
         -- span the output-normalizer couldn't map to text) unless an evaluator flagged it — pure
         -- ingestion noise, not a conversation worth listing.
-        HAVING NOT (turns = 1 AND first_input = '' AND last_output = '' AND failing = 0){filter_clause}
+        HAVING NOT (turns = 1 AND NOT _has_content AND failing = 0){filter_clause}
         """
     if count_only:
         res = await client.query(f"SELECT count() FROM ({body})", parameters=params)
@@ -576,12 +606,51 @@ async def sessions_overview(
         f"{body}\n        {order_clause}\n        LIMIT {{n:UInt32}} OFFSET {{o:UInt32}}",
         parameters=params,
     )
-    rows = []
-    for row in res.result_rows:
-        d = dict(zip(res.column_names, row))
+    rows = [dict(zip(res.column_names, row)) for row in res.result_rows]
+    texts = await _trace_texts(
+        client,
+        project_id,
+        {t for r in rows if not r["internal_kind"] for t in (r["_first_trace"], r["_last_trace"])},
+        time_clause + internal_clause,
+        params,
+    )
+    for d in rows:
+        first, last = d.pop("_first_trace"), d.pop("_last_trace")
+        root_name = d.pop("_root_name")
+        d.pop("_has_content")
+        d.pop("text_hit", None)
+        if d["internal_kind"]:
+            d["first_input"], d["last_output"] = root_name, d["subject_id"]
+        else:
+            d["first_input"] = texts.get(first, ("", ""))[0]
+            d["last_output"] = texts.get(last, ("", ""))[1]
         d["metadata"] = parse_thread_meta(d.get("metadata"))
-        rows.append(d)
     return rows
+
+
+async def _trace_texts(
+    client, project_id: str, trace_ids: set[str], span_clause: str, params: dict
+) -> dict[str, tuple[str, str]]:
+    """`trace_id -> (input, output)` display text for a page's traces — the second half of
+    `sessions_overview`. `span_clause` is that query's own time/internal span filter, so a trace's
+    text comes from the same spans its row was rolled up from."""
+    if not trace_ids:
+        return {}
+    res = await client.query(
+        f"""
+        SELECT trace_id, {_TRACE_INPUT} AS t_input, {_TRACE_OUTPUT} AS t_output
+        FROM events FINAL
+        PREWHERE trace_id IN {{ids:Array(String)}}
+        WHERE project_id = {{p:String}} AND is_deleted = 0{span_clause}
+        GROUP BY trace_id
+        """,
+        parameters={
+            **{k: v for k, v in params.items() if k in ("from", "to")},
+            "p": project_id,
+            "ids": sorted(trace_ids),
+        },
+    )
+    return {r[0]: (r[1], r[2]) for r in res.result_rows}
 
 
 async def thread_agents(project_id: str, thread_id: str) -> list[dict]:
@@ -655,18 +724,9 @@ async def session_turns(
             concat(anyIf(name, parent_span_id = ''), '\n\n',
                    coalesce(anyIf(input, parent_span_id = ''), ''))       AS root_in,
             coalesce(anyIf(output, parent_span_id = ''), '')              AS root_out,
-            -- Prefer the EARLIEST GENERATION input (the actual user message) over framework
-            -- internals (CrewAI agent-config payload, LlamaIndex workflow state, etc.).
-            if(argMinIf(input, start_time, input != '' AND type = 'GENERATION') != '',
-               argMinIf(input, start_time, input != '' AND type = 'GENERATION'),
-               argMinIf(input, start_time, input != ''))                    AS t_input,
-            -- Prefer the latest GENERATION output (skip TOOL + CHAIN router signals like
-            -- LangGraph's `__end__`); fall back to root output, then any non-TOOL/non-CHAIN.
-            if(argMaxIf(output, start_time, output != '' AND type = 'GENERATION') != '',
-               argMaxIf(output, start_time, output != '' AND type = 'GENERATION'),
-               if(anyIf(output, parent_span_id = '' AND output != '') != '',
-                  anyIf(output, parent_span_id = '' AND output != ''),
-                  argMaxIf(output, start_time, output != '' AND type NOT IN ('TOOL','CHAIN')))) AS t_output,
+            -- the ROOT span's input/output: exactly what every judge grades (see _TRACE_INPUT)
+            anyIf(input, parent_span_id = '')                            AS t_input,
+            anyIf(output, parent_span_id = '')                           AS t_output,
             toUInt64(sum(arraySum(mapValues(usage_details))))             AS tokens,
             toUInt64(sum(usage_details['input']))                         AS input_tokens,
             toUInt64(sum(usage_details['output']))                        AS output_tokens,

@@ -86,13 +86,12 @@ class ScoreWriter:
         now = datetime.now(timezone.utc)
         rows = []
         for r in results:
+            # Thread-scoped CONVERSATION rows are keyed by the thread (no trace_id — readers find
+            # them via session_id); everything else by (trace, evaluator, span).
+            sid = self.eval_score_id(trace_id, thread_id, r.name, r.level, r.target_span_id)
             if r.level == _CONVERSATION:
-                # Thread-scoped: keyed by the thread so any turn's re-evaluation converges to
-                # one row. No trace_id — readers find these via session_id.
-                sid = str(uuid.uuid5(_ONLINE_EVAL_NS, f"thread:{thread_id}:{r.name}"))
                 row_trace, row_session = None, thread_id
             else:
-                sid = str(uuid.uuid5(_ONLINE_EVAL_NS, f"{trace_id}:{r.name}:{r.target_span_id}"))
                 row_trace, row_session = trace_id, thread_id or None
             rows.append([
                 project_id, sid, row_trace, r.target_span_id or None, row_session, agent_run_id,
@@ -100,6 +99,73 @@ class ScoreWriter:
                 r.comment, _usage_metadata(getattr(r, "usage", None)), now, now,
             ])
         insert_rows(self.client, "scores", _ONLINE_EVAL_COLS, rows)
+
+    @staticmethod
+    def eval_score_id(trace_id: str, thread_id: str, name: str, level: str, span_id: str) -> str:
+        """The deterministic id `write_eval_scores` gives a result — one place, so retraction
+        computes exactly the ids a write just produced."""
+        if level == _CONVERSATION:
+            return str(uuid.uuid5(_ONLINE_EVAL_NS, f"thread:{thread_id}:{name}"))
+        return str(uuid.uuid5(_ONLINE_EVAL_NS, f"{trace_id}:{name}:{span_id}"))
+
+    def retract_eval_scores(
+        self,
+        project_id: str,
+        names: list[str],
+        *,
+        trace_id: str = "",
+        thread_id: str = "",
+        keep_ids: set[str] | None = None,
+    ) -> int:
+        """Delete these evaluators' online scores for one item except `keep_ids` — the rows the
+        evaluator's latest run did NOT produce. `trace_id` scopes to a turn (every level but
+        CONVERSATION); with only `thread_id` it scopes to the thread's CONVERSATION rows.
+
+        Without this a re-run could only ever ADD: a step no longer graded, a column moved to
+        another level, a turn that now has nothing gradable all kept their old verdict — still
+        failing the trace. Tombstones (a newer row with is_deleted = 1, which FINAL drops), never a
+        mutation, for the reason `deletes.delete_trace` gives. Returns rows retracted."""
+        if not names or not (trace_id or thread_id):
+            return 0
+        keep = keep_ids or set()
+        if trace_id:
+            scope, params = "trace_id = {t:String}", {"t": trace_id}
+        else:
+            scope, params = "session_id = {s:String} AND evaluation_level = 'CONVERSATION'", {"s": thread_id}
+        rows = self.client.query(
+            "SELECT id, name FROM scores FINAL WHERE project_id = {p:String} AND source = 'EVAL' "
+            f"AND evaluation_case_id = '' AND name IN {{n:Array(String)}} AND {scope}",
+            parameters={"p": project_id, "n": sorted(set(names)), **params},
+        ).result_rows
+        doomed = [(sid, name) for sid, name in rows if sid not in keep]
+        if not doomed:
+            return 0
+        now = datetime.now(timezone.utc)
+        insert_rows(
+            self.client, "scores",
+            ["project_id", "id", "name", "source", "is_deleted", "event_ts", "created_at"],
+            [[project_id, sid, name, "EVAL", 1, now, now] for sid, name in doomed],
+        )
+        return len(doomed)
+
+    def retract_evaluator(self, project_id: str, name: str) -> int:
+        """Delete every online score of one evaluator — what deleting the column means. Its
+        verdicts otherwise kept failing traces for the 90-day TTL, and a deleted ADVISORY column's
+        historic FAILs started counting as real failures the moment it left the advisory set."""
+        rows = self.client.query(
+            "SELECT id FROM scores FINAL WHERE project_id = {p:String} AND source = 'EVAL' "
+            "AND evaluation_case_id = '' AND name = {n:String}",
+            parameters={"p": project_id, "n": name},
+        ).result_rows
+        if not rows:
+            return 0
+        now = datetime.now(timezone.utc)
+        insert_rows(
+            self.client, "scores",
+            ["project_id", "id", "name", "source", "is_deleted", "event_ts", "created_at"],
+            [[project_id, sid, name, "EVAL", 1, now, now] for (sid,) in rows],
+        )
+        return len(rows)
 
     def write_regression_verdict(self, case, trace_id: str, verdict: str) -> None:
         now = datetime.now(timezone.utc)

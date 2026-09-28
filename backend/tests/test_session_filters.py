@@ -20,6 +20,7 @@ def test_text_is_parameterised_case_insensitive_and_bounded():
     sql, params = session_filter_clauses(None, None, "  Refund POLICY  ")
     assert "positionCaseInsensitiveUTF8(" in sql and "{q:String}" in sql
     assert params == {"q": "Refund POLICY"}
-    assert "first_input" in sql and "metadata" in sql and "agent_id" in sql  # the documented fields
+    # the documented fields: message text via the per-span `text_hit` flag, the rest by substring
+    assert "text_hit" in sql and "metadata" in sql and "agent_id" in sql
     assert len(session_filter_clauses(None, None, "x" * 500)[1]["q"]) == 200
     assert "'" not in sql.replace("' '", "")  # nothing user-controlled is spliced into the SQL

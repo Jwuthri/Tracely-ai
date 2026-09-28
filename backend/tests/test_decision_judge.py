@@ -238,9 +238,10 @@ def test_multilabel_nothing_fired_and_no_fail_labels(monkeypatch):
     assert r.verdict == ""  # informational tags
 
 
-def test_multilabel_unanswered_label_writes_no_score(monkeypatch):
+def test_multilabel_unanswered_label_is_a_visible_error(monkeypatch):
     _install(monkeypatch, _Decisions(_ok({}, answers={"l0": {"type": "noul", "noul": 1}})))
-    assert _judge().run(_ctx([_span()]), dict(MULTILABEL)) == []
+    [r] = _judge().run(_ctx([_span()]), dict(MULTILABEL))
+    assert (r.string_value, r.verdict, r.graded) == ("Error", "", False) and "unanswered" in r.comment
 
 
 def test_multilabel_fallback_selects_labels(monkeypatch):
@@ -286,9 +287,11 @@ def test_rate_limit_is_retried(monkeypatch):
     assert len(fake.requests) == 3 and r.verdict == "PASS"
 
 
-def test_other_errors_write_no_score(monkeypatch):
+def test_other_errors_are_a_visible_neutral_error(monkeypatch):
+    """A failed call writes a neutral "Error" result (replacing the last grade) instead of nothing."""
     _install(monkeypatch, _Decisions(httpx.Response(401, json={"error": {"message": "bad key"}})))
-    assert _judge().run(_ctx([_span()]), dict(NOUL)) == []
+    [r] = _judge().run(_ctx([_span()]), dict(NOUL))
+    assert (r.string_value, r.verdict, r.graded) == ("Error", "", False) and "bad key" in r.comment
 
 
 def test_no_openrouter_key_makes_no_call(monkeypatch):

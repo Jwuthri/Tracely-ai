@@ -263,7 +263,7 @@ def test_the_conversation_pass_drops_span_scoped_results(capsys):
     svc.score_writer = type("W", (), {
         "write_eval_scores": staticmethod(lambda *a, **kw: written.append(a[3]))
     })()
-    svc._dispatch_specs = lambda specs, ctx: [
+    svc._dispatch_specs = lambda specs, ctx, ran=None: [
         EvalResult("conv.judge", "CONVERSATION", "PASS"),
         EvalResult("tool.success", "TOOL", "FAIL", target_span_id="s1"),
     ]
@@ -295,7 +295,7 @@ def test_thread_pass_marks_the_chain_and_resets_its_conversations(monkeypatch):
 
     def fake_trace(self, project_id, trace_id, specs=None, **kw):
         staged.append(specs)
-        return {"scores": 0, "failures": 0}
+        return {"scores": 0, "failures": 0, "ran": [s["score_name"] for s in specs or []]}
 
     monkeypatch.setattr(EvaluationService, "evaluate_trace", fake_trace)
     svc = EvaluationService(trace_reader=type("R", (), {
@@ -371,7 +371,7 @@ def _chain_harness(monkeypatch, progress: dict):
 
     def fake_trace(self, project_id, trace_id, specs=None, **kw):
         calls["graded"].append((trace_id, specs))
-        return {"scores": 1, "failures": 0}
+        return {"scores": 1, "failures": 0, "ran": [s["score_name"] for s in specs or []]}
 
     monkeypatch.setattr(EvaluationService, "evaluate_trace", fake_trace)
     return calls
@@ -466,3 +466,56 @@ def test_lock_acquire_and_release(monkeypatch):
         pass
     assert [o[0] for o in ops] == ["set", "release"]
     assert ops[0][1] == ops[1][1] and ops[0][2] == ops[1][2]  # same key, same token
+
+
+# ── a re-run replaces a column's results; it doesn't only add ─────────────────
+
+
+def test_a_rerun_retracts_rows_the_column_no_longer_produces():
+    from tracely.domain.evaluation.results import EvalResult
+
+    calls = {}
+
+    class Writer:
+        def write_eval_scores(self, *a, **k):
+            calls["write"] = a
+
+        eval_score_id = staticmethod(__import__(
+            "tracely.infrastructure.clickhouse.score_writer", fromlist=["ScoreWriter"]).ScoreWriter.eval_score_id)
+
+        def retract_eval_scores(self, project_id, names, **kw):
+            calls["retract"] = (names, kw)
+
+    spans = [_ok_span("t1")]
+    svc = EvaluationService(trace_reader=_FakeReader({"t1": spans}, ["t1"]), score_writer=Writer())  # type: ignore[arg-type]
+    svc._dispatch_specs = lambda specs, ctx, ran=None: (ran.extend(["col"]) if ran is not None else None) or [
+        EvalResult("col", "SPAN", "PASS", target_span_id="s2")
+    ]
+    svc.evaluate_trace("p", "t1", specs=[{"score_name": "col", "level": "SPAN", "kind": "structural", "config": {}}])
+    names, kw = calls["retract"]
+    assert names == ["col"] and kw["trace_id"] == "t1"
+    # only the row just written survives
+    assert kw["keep_ids"] == {Writer.eval_score_id("t1", kw["thread_id"], "col", "SPAN", "s2")}
+
+
+
+def test_a_failed_sequential_grade_halts_its_chain_instead_of_skipping_the_turn(monkeypatch):
+    """A 429 / provider error on turn 1 must not mark turn 1 done: progress stays behind it and
+    turn 2 is not graded out of order; the next pass resumes at turn 1."""
+    monkeypatch.setattr(
+        EvaluationService, "load_enabled_evaluators",
+        staticmethod(lambda project_id, evaluator_ids=None: [_seq_spec()]),
+    )
+    calls = _chain_harness(monkeypatch, {})
+
+    def erroring_trace(self, project_id, trace_id, specs=None, on_result=None, **kw):
+        calls["graded"].append((trace_id, specs))
+        on_result({"name": "helpfulness", "graded": False, "error": True, "verdict": "", "value": None,
+                   "comment": "Not graded: 429", "string_value": "Error"})
+        return {"scores": 1, "failures": 0, "ran": ["helpfulness"]}
+
+    monkeypatch.setattr(EvaluationService, "evaluate_trace", erroring_trace)
+    svc = EvaluationService(trace_reader=_Reader(["t1", "t2"]))
+    svc.evaluate_thread("p1", "th-1")
+    assert [tid for tid, _ in calls["graded"]] == ["t1"]  # t2 not graded on a broken chain
+    assert calls["set"] == []  # and t1 is NOT recorded as done

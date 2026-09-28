@@ -33,6 +33,14 @@ class EvalResult:
     # LLM-judge token usage for THIS grade ({input_tokens, output_tokens, total_tokens, model}),
     # so eval spend is attributable per evaluator. None for structural checks (no LLM call).
     usage: dict | None = None
+    # False for a result that records that the item was NOT graded — "Not run" (a `run_if` was
+    # false) or "Skipped — input too long". Written so the cell says why and replaces a stale
+    # grade, but it is not evidence: dependents, `run_if` conditions and the sequential chain
+    # must never read it as a label or a verdict.
+    graded: bool = True
+    # True when the grade was attempted and FAILED (provider error, 429, bad reply). Distinct
+    # from a legitimate "Not run"/"Skipped": a sequential chain must not advance past it.
+    error: bool = False
 
 
 def chain_payload(

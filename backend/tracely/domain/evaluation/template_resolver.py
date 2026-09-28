@@ -30,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from tracely.domain.evaluation.text import answer_for, content_text, readable_io, request_for
+from tracely.domain.evaluation.text import agent_answer, content_text, readable_io, user_message
 from tracely.domain.traces.spans import root_span
 
 # Mirrors evaluators/base.py + the ingest vocabulary (otel/types.py). Local copies dodge an
@@ -55,15 +55,6 @@ _ALL = (CL_CONVERSATION, CL_MESSAGE, CL_STEP)
 # `@foo` are NOT variables.
 VARIABLE_RE = re.compile(r"@([A-Z_]+)(?:\.([a-z_]+))?")
 
-_HISTORY_CLIP = 8000  # whole-transcript budget (matches the basic judge's transcript clip)
-_MSG_CLIP = 2000  # per user/assistant message
-_STEP_CLIP = 2000  # per step field
-_STRUCT_CLIP = 4000  # @CURRENT_STEP.output_structured — generous (the user asked to inspect it)
-
-
-def _clip(s: str, n: int) -> str:
-    s = s or ""
-    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 # ── catalog (UI metadata; not on the grading hot path) ───────────────────────
@@ -242,11 +233,9 @@ class ResolvedTemplate:
 
 
 def _turn_io(spans: list[dict]) -> tuple[str, str]:
-    """A turn's (user request, assistant answer) from its spans."""
+    """A turn's (user message, agent answer): its root span's input and output (`text.py`)."""
     root = root_span(spans)
-    user = request_for(root, spans)
-    answer = answer_for(root, spans, TOOL, GENERATION, CHAIN)
-    return user, answer
+    return user_message(root), agent_answer(root)
 
 
 def _group_turns(thread_spans: list[dict]) -> list[tuple[str, list[dict]]]:
@@ -321,7 +310,7 @@ def _step_error(span: dict) -> str | None:
     ERROR-level with no message, and that still has to read as a failure."""
     msg = str(span.get("status_message") or "").strip()
     if msg:
-        return _clip(msg, _STEP_CLIP)
+        return msg
     return "(failed, no error message)" if str(span.get("level") or "").upper() == "ERROR" else None
 
 
@@ -330,7 +319,7 @@ def _requested_tools(span: dict) -> str | None:
     whose `tool_call_names` is just its own name and says nothing its header doesn't."""
     tcs = span.get("tool_calls")
     if tcs:
-        return _clip(json.dumps(tcs, ensure_ascii=False, indent=2), _STEP_CLIP)
+        return json.dumps(tcs, ensure_ascii=False, indent=2)
     names = [str(n) for n in (span.get("tool_call_names") or []) if n]
     return ", ".join(names) or None
 
@@ -343,25 +332,25 @@ def _resolve_step_field(span: dict, prop: str) -> str | None:
             # A TOOL span's call IS its name + arguments. Its `tool_call_names` is only its own name,
             # and preferring that used to replace the arguments with the bare tool name — so every
             # judge was shown `run_pricing_model` and never what it was called with.
-            args = readable_io(span.get("input"), per_message=_STEP_CLIP)
+            args = readable_io(span.get("input"))
             name = span.get("name") or ""
-            return _clip(f"{name}({args})" if args else name, _STEP_CLIP) or None
+            return f"{name}({args})" if args else name or None
         return _requested_tools(span)
     if prop == "tool_result":
         if stype == TOOL:
-            return _clip(content_text(span.get("output")), _STEP_CLIP) or _step_error(span)
+            return readable_io(span.get("output")) or _step_error(span)
         return None
     if prop == "thinking":
         if stype == THINKING:
             txt = content_text(span.get("output")) or content_text(span.get("input"))
-            return _clip(txt, _STEP_CLIP) or None
+            return txt or None
         return None
     if prop == "input":
-        return _clip(readable_io(span.get("input"), per_message=_STEP_CLIP), _STEP_CLIP) or None
+        return readable_io(span.get("input")) or None
     if prop == "error":
         return _step_error(span)
     if prop == "output_content":
-        return _clip(content_text(span.get("output")), _STEP_CLIP) or None
+        return content_text(span.get("output")) or None
     if prop == "output_structured":
         return _structured(span.get("output"))
     return None  # unknown property → soft miss
@@ -370,12 +359,12 @@ def _resolve_step_field(span: dict, prop: str) -> str | None:
 def _structured(out: Any) -> str | None:
     """The step output as pretty JSON when it's structured; soft-miss otherwise."""
     if isinstance(out, (dict, list)):
-        return _clip(json.dumps(out, ensure_ascii=False, indent=2), _STRUCT_CLIP)
+        return json.dumps(out, ensure_ascii=False, indent=2)
     if isinstance(out, str):
         s = out.strip()
         if s[:1] in ("[", "{"):
             try:
-                return _clip(json.dumps(json.loads(s), ensure_ascii=False, indent=2), _STRUCT_CLIP)
+                return json.dumps(json.loads(s), ensure_ascii=False, indent=2)
             except ValueError:
                 return None
     return None
@@ -399,7 +388,7 @@ _IO_LABELS: dict[str, tuple[str, str]] = {
 def _format_step(span: dict, root_agent: str = "", agent_names: dict[str, str] | None = None) -> str | None:
     """Everything one step did, for a judge: what it was, whose it was, what went in, what came
     out, and whether it failed. Each field once (THINKING and TOOL output used to be printed twice
-    under two labels), each clipped on its own so one huge dump can't evict the rest."""
+    under two labels). Nothing is truncated."""
     stype = str(span.get("type") or "STEP")
     head = f"{stype}"
     if span.get("name"):
@@ -417,7 +406,7 @@ def _format_step(span: dict, root_agent: str = "", agent_names: dict[str, str] |
         inp = _resolve_step_field(span, "input")
         if inp:
             lines.append(f"{in_label}: {inp}")
-        out = _clip(readable_io(span.get("output"), per_message=_STEP_CLIP), _STEP_CLIP)
+        out = readable_io(span.get("output"))
         if out:
             lines.append(f"{out_label}: {out}")
         if stype != TOOL:
@@ -431,19 +420,32 @@ def _format_step(span: dict, root_agent: str = "", agent_names: dict[str, str] |
 
 
 def _agent_names(spans: list[dict]) -> dict[str, str]:
-    """`agent_id → name` from the turn's AGENT spans: ids are opaque (often UUIDs), and "a step of
-    6a10a2c9-…" tells a judge nothing that "a step of market-analyst" does."""
-    return {
-        str(s["agent_id"]): str(s["name"])
-        for s in spans
-        if s.get("type") == "AGENT" and s.get("agent_id") and s.get("name")
-    }
+    """`agent_id → name`: ids are opaque (often UUIDs), and "a step of 6a10a2c9-…" tells a judge
+    nothing that "a step of market-analyst" does. From the turn's AGENT spans, else from a
+    DELEGATE span's name for the agent running underneath it (frameworks that emit no AGENT span
+    for a sub-agent — `agent_faq` handing work to its own generations and tools)."""
+    names: dict[str, str] = {}
+    by_id = {s.get("span_id"): s for s in spans}
+    for s in spans:
+        aid, name = s.get("agent_id"), s.get("name")
+        if s.get("type") == "AGENT" and aid and name:
+            names[str(aid)] = str(name)
+    for s in spans:
+        aid = str(s.get("agent_id") or "")
+        parent = by_id.get(s.get("parent_span_id"))
+        if aid and aid not in names and parent and parent.get("type") == "DELEGATE" and parent.get("name"):
+            if str(parent.get("agent_id") or "") != aid:
+                names[aid] = str(parent["name"]).removeprefix("delegate:")
+    return names
 
 
-def _format_steps(spans: list[dict], root_agent: str = "") -> str | None:
+def _format_steps(
+    spans: list[dict], root_agent: str = "", names: dict[str, str] | None = None
+) -> str | None:
     if not spans:
         return None
-    names = _agent_names(spans)
+    # names come from the WHOLE turn: a `.tool` filter drops the AGENT/DELEGATE spans they're read from
+    names = _agent_names(spans) if names is None else names
     blocks = []
     for i, s in enumerate(spans, start=1):
         body = _format_step(s, root_agent, names) or ""
@@ -455,15 +457,15 @@ def _resolve_message_field(msg: dict, prop: str) -> str | None:
     if prop == "role":
         return msg.get("role") or "assistant"
     val = msg.get(prop)
-    return _clip(val, _MSG_CLIP) if val else None
+    return val if val else None
 
 
 def _format_message(msg: dict) -> str | None:
     parts = []
     if msg.get("input"):
-        parts.append(f"User: {_clip(msg['input'], _MSG_CLIP)}")
+        parts.append(f"User: {msg['input']}")
     if msg.get("output"):
-        parts.append(f"Assistant: {_clip(msg['output'], _MSG_CLIP)}")
+        parts.append(f"Assistant: {msg['output']}")
     return "\n".join(parts) or None
 
 
@@ -518,10 +520,8 @@ def build_context(
     At message/step level `@HISTORY`/`@MESSAGES` end at the current turn (never later turns); the
     caller passes a `history_override` cut at the same point.
 
-    `history_override` (optional): a precomputed history string (the rolling summary). It backs
-    the explicit `@ROLLING_SUMMARY` variable AND transparently substitutes for `@HISTORY`/
-    `@MESSAGES` (instead of rebuilding the raw transcript from spans). None → raw transcript for
-    `@HISTORY`/`@MESSAGES` and a soft-miss for `@ROLLING_SUMMARY`, so this stays non-breaking.
+    `history_override` (optional): the thread's rolling summary, for `@ROLLING_SUMMARY` only.
+    `@HISTORY`/`@MESSAGES` are always the recorded conversation.
     """
     ctx = EvaluationContext(metric_previous_result=metric_previous_result, dependencies=dependencies or None)
     want = _base_names(wanted_vars)
@@ -529,8 +529,7 @@ def build_context(
     def need(name: str) -> bool:
         return want is None or name in want
 
-    # The rolling summary is its own explicit variable (soft-miss when absent) AND, when present,
-    # the substitute for @HISTORY/@MESSAGES below. It's passed in (own table), not built here.
+    # The rolling summary is its own explicit variable (soft-miss when absent), passed in (own table).
     if need("ROLLING_SUMMARY") and history_override:
         ctx.rolling_summary = history_override
 
@@ -546,36 +545,33 @@ def build_context(
     cur_idx = next((i for i, (tid, _) in enumerate(turns) if tid == current_trace_id), len(turns) - 1)
     upto = ios if cl == CL_CONVERSATION else ios[: cur_idx + 1]
 
-    # whole-conversation vars — prefer a precomputed rolling summary for @HISTORY/@MESSAGES,
-    # else rebuild the raw transcript from spans (original behavior).
+    # @HISTORY / @MESSAGES are the conversation as recorded — always. The rolling summary is its
+    # own variable (@ROLLING_SUMMARY); it used to stand in for @HISTORY silently whenever one
+    # existed, so a column asking for the history got a compressed paraphrase without any sign.
     if need("HISTORY") or need("MESSAGES"):
-        if history_override:
-            ctx.history = history_override
-            ctx.messages = history_override
-        else:
-            lines: list[str] = []
-            for user, answer in upto:
-                if user:
-                    lines.append(f"[user]: {_clip(user, _MSG_CLIP)}")
-                if answer:
-                    lines.append(f"[assistant]: {_clip(answer, _MSG_CLIP)}")
-            transcript = _clip("\n".join(lines), _HISTORY_CLIP)
-            ctx.history = transcript or None
-            ctx.messages = transcript or None
+        lines: list[str] = []
+        for user, answer in upto:
+            if user:
+                lines.append(f"[user]: {user}")
+            if answer:
+                lines.append(f"[assistant]: {answer}")
+        transcript = "\n".join(lines)
+        ctx.history = transcript or None
+        ctx.messages = transcript or None
     if need("USER_MESSAGES"):
-        ctx.user_messages = "\n".join(f"[user]: {_clip(u, _MSG_CLIP)}" for u, _ in ios if u) or None
+        ctx.user_messages = "\n".join(f"[user]: {u}" for u, _ in ios if u) or None
     if need("ASSISTANT_MESSAGES"):
-        ctx.assistant_messages = "\n".join(f"[assistant]: {_clip(a, _MSG_CLIP)}" for _, a in ios if a) or None
+        ctx.assistant_messages = "\n".join(f"[assistant]: {a}" for _, a in ios if a) or None
     users = [u for u, _ in ios if u]
     answers = [a for _, a in ios if a]
     if need("FIRST_USER_MSG") or need("GOAL"):
-        first_user = _clip(users[0], _MSG_CLIP) if users else None
+        first_user = users[0] if users else None
         ctx.first_user_msg = first_user
         ctx.goal = first_user  # best-effort: the initial request is the user's goal/intent
     if need("LAST_USER_MSG"):
-        ctx.last_user_msg = _clip(users[-1], _MSG_CLIP) if users else None
+        ctx.last_user_msg = users[-1] if users else None
     if need("LAST_ASSISTANT_MSG"):
-        ctx.last_assistant_msg = _clip(answers[-1], _MSG_CLIP) if answers else None
+        ctx.last_assistant_msg = answers[-1] if answers else None
     if need("LIST_AGENT"):
         # prefer the user-declared catalog (richer) when present, else derive from spans
         ctx.agents = format_agent_catalog(declared_agents) if declared_agents else _format_agents(thread_spans)
@@ -601,9 +597,9 @@ def build_context(
     if cur_idx > 0:
         prev_user, prev_answer = ios[cur_idx - 1]
         if need("PREVIOUS_USER_MSG"):
-            ctx.previous_user_msg = _clip(prev_user, _MSG_CLIP) if prev_user else None
+            ctx.previous_user_msg = prev_user if prev_user else None
         if need("PREVIOUS_ASSISTANT_MSG"):
-            ctx.previous_assistant_msg = _clip(prev_answer, _MSG_CLIP) if prev_answer else None
+            ctx.previous_assistant_msg = prev_answer if prev_answer else None
 
     if cl != CL_STEP:
         return ctx
@@ -639,6 +635,7 @@ def _resolve_variable(name: str, prop: str | None, ctx: EvaluationContext) -> st
         return _format_steps(
             [s for s in ctx.current_step_spans if str(s.get("type") or "").upper() == wanted],
             ctx.root_agent,
+            _agent_names(ctx.current_step_spans),
         )
     if name in _STRING_ATTRS:
         return getattr(ctx, _STRING_ATTRS[name])

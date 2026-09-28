@@ -29,19 +29,6 @@ def content_text(value: Any) -> str:
     return value
 
 
-def last_io(spans: list[dict], key: str) -> str:
-    """The LATEST span with a non-empty `key` (input/output), as readable text.
-
-    Named for what it does. It was `first_io`, which read as "the first input in the trace" — the
-    opposite of the body — and that mismatch is how it ended up standing in for the user's request.
-    It is a last-resort fallback only; `request_for` / `answer_for` are the real accessors.
-    """
-    for s in reversed(spans):
-        if s.get(key):
-            return content_text(s[key])
-    return ""
-
-
 _USER_ROLES = {"user", "human"}
 # Everything that is plainly NOT the person talking to the agent. The second pass uses this, so a
 # framework that calls the human `customer` or `contact` still resolves — the rule that survives an
@@ -87,107 +74,98 @@ def _last_user_text(value: Any) -> str:
     return ""
 
 
-def readable_io(value: Any, per_message: int = 400) -> str:
-    """A span's I/O rendered for a judge to read.
+def _unescaped_json(text: str) -> str:
+    """A JSON string re-serialized with real characters: tool payloads usually arrive
+    ASCII-escaped, and a judge reading `\\u00e0` for `à` in a French FAQ is reading noise."""
+    s = text.strip()
+    if s[:1] not in ("[", "{") or "\\u" not in s:
+        return text
+    try:
+        return json.dumps(json.loads(s), ensure_ascii=False)
+    except (ValueError, TypeError):
+        return text
 
-    A generation's input is the message array it was called with, and `content_text` returns only
-    the FIRST text in it — the system prompt. So a step-level judge was shown the agent's rubric
-    under "Step input" and never the request it answered. A real array renders as `role: text`
-    lines; anything else (a tool's JSON, a plain string, one message) is unchanged.
-    """
+
+def _tool_calls_text(message: dict) -> str:
+    """A message's tool calls as `name(arguments)`, comma-joined; "" when it has none."""
+    rendered = []
+    for c in message.get("tool_calls") or []:
+        if not isinstance(c, dict):
+            continue
+        fn = c.get("function") or {}
+        rendered.append(f"{fn.get('name') or c.get('name') or 'tool'}({fn.get('arguments') or c.get('arguments') or ''})")
+    return ", ".join(rendered)
+
+
+def _message_text(message: dict) -> str:
+    """One chat message as a judge reads it: its text, then any tool calls it made. A message that
+    is only a tool call used to come out as its raw JSON wrapper."""
+    content = message.get("content")
+    text = content_text(content) if content not in (None, "", []) else ""
+    calls = _tool_calls_text(message)
+    if calls:
+        text = f"{text}\n[calls {calls}]".strip()
+    return text
+
+
+def readable_io(value: Any) -> str:
+    """A span's I/O rendered for a judge to read: a chat message list as `role: text` lines (tool
+    calls included), a single message as its text, anything else (a tool's JSON, a plain string)
+    as-is with real characters instead of `\\u` escapes. Nothing is dropped or truncated."""
     msgs = _chat_messages(value)
-    if len(msgs) <= 1:
-        return content_text(value)
+    if not msgs:
+        return _unescaped_json(content_text(value))
+    if len(msgs) == 1:
+        return _message_text(msgs[0]) or _unescaped_json(content_text(value))
     lines = []
     for m in msgs:
         role = str(m.get("role") or m.get("type") or "?").lower()
-        text = content_text(m.get("content", m))
+        text = _message_text(m)
         if text:
-            lines.append(f"{role}: {text[:per_message]}")
-    return "\n".join(lines) or content_text(value)
+            lines.append(f"{role}: {text}")
+    return "\n".join(lines) or _unescaped_json(content_text(value))
 
 
-def request_for(root: dict, spans: list[dict]) -> str:
-    """The user's request for THIS message — the LAST thing the human said, not the first.
+# ── the two things a judge reads by default ─────────────────────────────────
+# One rule, no guessing: a turn's USER MESSAGE is what the root span received and its ANSWER is
+# what the root span returned. The root is the turn's entry point — the one span whose input and
+# output are, by definition, the exchange with the user. Nothing is inferred from other spans (a
+# sub-agent's prompt, the "richest" history, the latest generation): every such rule was right for
+# one trace shape and silently wrong for the next, and none of them could be seen from the UI. If
+# a column needs more — tool calls, sub-agents, errors — it asks for them with `@CURRENT_STEPS`,
+# which dumps every span as recorded.
+#
+# When the root carries nothing readable, that is what the judge is told, in so many words, so a
+# badly instrumented trace is visible instead of papered over.
 
-    Read from the FULLEST record of the conversation anywhere in the trace, which is the whole
-    point. Two traps, and taking the first source that answered fell into both:
+NO_USER_MESSAGE = "(no user message recorded on this turn's root span)"
+NO_ANSWER = "(no answer recorded on this turn's root span)"
 
-    - `extract_text` returns the first readable text in a message array — the system prompt, or
-      turn 1. So a judge graded turn 6's answer against turn 1's question.
-    - the root often carries a single message (the session's opening line, stamped on every turn
-      by the instrumentation) while the real history sits on the generation underneath. Stopping
-      at the root meant every turn of a 6-turn conversation read as "heyy".
 
-    So: score every candidate by how much conversation it holds, take the richest, and read its
-    last user turn. Ties go to the earlier candidate, which is the root — the entry point beats a
-    sub-agent's derived prompt. Symmetric to `answer_for`, which already takes the LAST answer.
-    """
-    best: list[dict] = []
-    for value in (root.get("input"), *(s.get("input") for s in spans)):
-        msgs = _chat_messages(value)
-        if len(msgs) > len(best):
-            best = msgs
-    text = _last_user_text(best)
+def user_message(root: dict) -> str:
+    """The user's message on this turn: the last user message in the root span's input when it is
+    a chat message list, otherwise the root input as text. "" when the root has none."""
+    text = _last_user_text(root.get("input"))
     if text:
         return text
-    return content_text(root.get("input")) or last_io(spans, "input")
-
-
-def _text_only(value: Any) -> str:
-    """Readable text WITHOUT `content_text`'s raw-JSON fallback — for deciding whether a candidate
-    actually said something. An assistant message that is only a tool call
-    (`{"role":"assistant","content":"","tool_calls":[…]}`) extracts to "", so the caller can fall
-    through to the action itself instead of grading the JSON wrapper as "the answer"."""
-    if value is None:
+    msgs = _chat_messages(root.get("input"))
+    if msgs:  # a message list with no user turn in it (system-only, assistant-only)
         return ""
-    if isinstance(value, str):
-        s = value.strip()
-        if s[:1] not in ("[", "{"):
-            return value
-        try:
-            return extract_text(json.loads(s))
-        except (ValueError, TypeError):
-            return value  # unparseable → it's prose
-    return extract_text(value)
+    return content_text(root.get("input")).strip()
 
 
-def answer_for(root: dict, spans: list[dict], TOOL: str, GENERATION: str, CHAIN: str) -> str:
-    """The agent's final answer for judge grading.
-
-    Order of preference: the LAST GENERATION span → the root span's output → any non-TOOL/non-CHAIN
-    output — the first one with READABLE TEXT wins; an empty or tool-call-only candidate falls
-    through instead of ending the search.
-
-    The root used to come first, which put this out of step with the SQL the whole UI reads through
-    (`sessions_overview` / `session_turns` both take the latest GENERATION first). Two consequences,
-    both real: a trace could DISPLAY one answer and be GRADED on another, and a framework root whose
-    output is a routing signal — LangGraph's `__end__` — was graded as the agent's reply. Same order
-    in both places now, so what you read in the table is what the judge read.
-
-    **Not every answer is text.** Some agents end a turn by ACTING — rendering a rich card (a tool
-    that displays content), or handing the conversation to a human. Their final generation is a
-    bare tool call, which used to be graded as the raw `tool_calls` JSON — and judges read that as
-    "the agent never answered the customer" and failed turns that were answered fine. When no
-    candidate has readable text, the LAST tool span's output IS the answer, labeled so the judge
-    grades whether the action addressed the user rather than punishing the missing prose.
-    """
-    candidates = [
-        next((s["output"] for s in reversed(spans)
-              if s.get("type") == GENERATION and s.get("output")), None),
-        root.get("output"),
-        next((s["output"] for s in reversed(spans)
-              if s.get("output") and s.get("type") not in (TOOL, CHAIN)), None),
-    ]
-    for value in candidates:
-        text = _text_only(value)
+def agent_answer(root: dict) -> str:
+    """The agent's answer on this turn: the root span's output as text. A chat-shaped output (one
+    message, or the conversation state a graph returns) is read as its LAST message; one that is
+    only a tool call (the agent answered by acting — a card, a handoff) is shown as that call
+    rather than as an empty reply. "" when the root has none."""
+    out = root.get("output")
+    msgs = _chat_messages(out)
+    if msgs:
+        last = msgs[-1]
+        text = content_text(last.get("content")) if last.get("content") not in (None, "", []) else ""
         if text:
             return text
-    for s in reversed(spans):
-        if s.get("type") == TOOL and s.get("output"):
-            name = s.get("name") or "tool"
-            return (
-                f"[no text reply — the agent answered with the `{name}` action; "
-                f"its output below is what the user received]\n{content_text(s['output'])}"
-            )
-    return last_io(spans, "output")
+        calls = _tool_calls_text(last)
+        return f"[no text reply — the agent called {calls}]" if calls else ""
+    return content_text(out).strip()
