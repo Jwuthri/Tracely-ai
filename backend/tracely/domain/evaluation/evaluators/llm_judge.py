@@ -75,6 +75,8 @@ from tracely.domain.evaluation.template_resolver import (
     template_resolver,
 )
 from tracely.domain import introspection
+from tracely.domain.evaluation.text import user_message
+from tracely.domain.traces.spans import root_span
 from tracely.infrastructure.llm import provider
 
 log = structlog.get_logger()
@@ -236,7 +238,7 @@ class LLMJudgeEvaluator(Evaluator):
         answer. Neutral, so it never fails anything."""
         return EvalResult(
             "", self.level, "", data_type="TEXT", string_value="Not run",
-            comment=why[:500], target_span_id=span_id,
+            comment=why[:500], target_span_id=span_id, graded=False,
         )
 
     def _step_gate(self, config: dict, span_id: str) -> EvalResult | None:
@@ -270,7 +272,7 @@ class LLMJudgeEvaluator(Evaluator):
             if lines:
                 history = (
                     "Conversation so far (earlier turns, oldest first):\n"
-                    + prompts.clip("\n".join(lines), prompts.TRUNC_TRAJECTORY) + "\n\n"
+                    + "\n".join(lines) + "\n\n"
                 )
         rec = introspection.active()
         if rec and chat:
@@ -337,6 +339,7 @@ class LLMJudgeEvaluator(Evaluator):
             from tracely.infrastructure.llm.checkpointer import reset_chat
 
             reset_chat(chat)
+        request = user_message(root_span(ctx.spans)) if ctx.spans else ""
         out: list[EvalResult] = []
         for i, s in enumerate(candidates):
             gated = self._step_gate(config, s.get("span_id", ""))
@@ -367,13 +370,12 @@ class LLMJudgeEvaluator(Evaluator):
             # fallback path (no checkpointer) pastes them in.
             trajectory = (
                 "Steps already taken in this message (oldest first):\n"
-                + prompts.clip("\n".join(prompts.step_line(p, n) for n, p in enumerate(candidates[:i], start=1)),
-                        prompts.TRUNC_TRAJECTORY)
+                + "\n".join(prompts.step_line(p, n) for n, p in enumerate(candidates[:i], start=1))
                 + "\n\n"
                 if sequential and i and not chat
                 else ""
             )
-            body = trajectory + prompts.step_body(candidates, i)
+            body = trajectory + prompts.step_body(candidates, i, request)
             result = self._grade(
                 config, body,
                 # With a chat the transcript carries each step's verdict, so the seed is pasted
@@ -388,7 +390,7 @@ class LLMJudgeEvaluator(Evaluator):
                 if coverage:
                     result.comment = (result.comment or "") + coverage
                 out.append(result)
-                if sequential:
+                if sequential and result.graded:
                     previous = chain_payload(value=result.value, verdict=result.verdict, comment=result.comment, string_value=result.string_value)
         return out
 
@@ -399,7 +401,7 @@ class LLMJudgeEvaluator(Evaluator):
         if not lines:
             return []
         turns = sum(1 for line in lines if " — user: " in line) or len(lines)
-        transcript = prompts.clip("\n".join(lines), 8000)
+        transcript = "\n".join(lines)
         # The messages, and nothing else. A conversation-level judge is asked to read a
         # conversation; a tool catalog stapled underneath made it grade tool choice instead, and
         # marked a plain greeting down for not calling an identification tool.
@@ -412,12 +414,10 @@ class LLMJudgeEvaluator(Evaluator):
     # ── advanced (template) grading ──────────────────────────────────────────
 
     def _history_override(self, ctx: RunContext, wanted: list[str]) -> str | None:
-        """The rolling summary for this thread, when one exists — it backs `@ROLLING_SUMMARY` and
-        is a compact, prefix-stable substitute for the raw transcript at `@HISTORY`/`@MESSAGES`.
-        None (the default) leaves the raw transcript in place, so behavior is unchanged when no
-        summary has been generated."""
+        """The thread's rolling summary for `@ROLLING_SUMMARY` — fetched only when the template
+        asks for it by name (it never stands in for `@HISTORY`). None when none exists."""
         names = {w.split(".", 1)[0] for w in (wanted or [])}
-        if not ({"HISTORY", "MESSAGES", "ROLLING_SUMMARY"} & names):
+        if "ROLLING_SUMMARY" not in names:
             return None
         try:
             from tracely.services.rolling_summary_service import RollingSummaryService
@@ -517,7 +517,7 @@ class LLMJudgeEvaluator(Evaluator):
                 if coverage:
                     result.comment = (result.comment or "") + coverage
                 out.append(result)
-                if sequential:
+                if sequential and result.graded:
                     previous = chain_payload(value=result.value, verdict=result.verdict, comment=result.comment, string_value=result.string_value)
         return out
 
@@ -562,13 +562,13 @@ class LLMJudgeEvaluator(Evaluator):
             body += (
                 "\n\nPrevious result of this metric (the preceding item in the sequence — use "
                 "it for continuity and comparison):\n"
-                + prompts.clip(json.dumps(previous, ensure_ascii=False), 1500)
+                + json.dumps(previous, ensure_ascii=False)
             )
         if deps is None:  # trace/conversation grades use every dependency result
             deps = _deps(config)
         if deps:
             dep_lines = "\n".join(
-                f"- {name}: {prompts.clip(json.dumps(v, ensure_ascii=False), 600)}"
+                f"- {name}: {json.dumps(v, ensure_ascii=False)}"
                 for name, v in deps.items()
             )
             body += (
@@ -660,12 +660,21 @@ class LLMJudgeEvaluator(Evaluator):
                 continue
             except Exception as exc:
                 log.warning("llm_judge_failed", evaluator=self.score_name, level=self.level, error=str(exc))
-                return None
+                return self._error(info["id"], exc)
             if result is not None and i > 0:
                 note = f"[graded by fallback {info['id']}: input exceeded {attempts[0] or 'the default model'}'s context]"
                 result.comment = f"{note} {result.comment}".strip()[:500]
             return result
         return self._skipped(last_overflow, has_fallback=len(attempts) > 1)
+
+    def _error(self, model: str, exc: Exception) -> EvalResult:
+        """A neutral, visible result for a grade the model call failed to produce (a provider
+        error, a 429, a reply that didn't fit the schema). It used to write nothing — the cell kept
+        whatever the last successful run said, and the failure lived only in a log line."""
+        return EvalResult(
+            "", self.level, "", data_type="TEXT", string_value="Error",
+            comment=f"Not graded: {model} failed — {str(exc)[:400]}", graded=False, error=True,
+        )
 
     def _skipped(self, note: str, *, has_fallback: bool) -> EvalResult:
         """A neutral, visible score for an item no configured model could read in full. Neutral
@@ -675,7 +684,7 @@ class LLMJudgeEvaluator(Evaluator):
             note += " The fallback model's context is too small as well."
         return EvalResult(
             "", self.level, "", data_type="TEXT",
-            string_value="Skipped — input too long", comment=note[:500],
+            string_value="Skipped — input too long", comment=note[:500], graded=False,
         )
 
     def _decision_call(self, config: dict, state: str, questions: dict, *, model: str) -> EvalResult:

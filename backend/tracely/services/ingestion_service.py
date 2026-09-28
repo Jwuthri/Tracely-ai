@@ -65,6 +65,7 @@ class IngestionService:
         self._resolve_registry_ids(project_id, events)
         # user-declared agent catalog (SDK `tracely.agents`) -> Postgres, stripped from ClickHouse
         self._extract_agent_definitions(project_id, events)
+        self._fill_agents_workflow_root(project_id, events)
 
         client = get_client()
         insert_rows(client, "events", EVENT_COLUMNS, to_rows(events))
@@ -85,9 +86,57 @@ class IngestionService:
             "events": len(events),
             "trace_ids": list(trace_ids),
             "internal_trace_ids": list(internal),
+            # the conversations these spans belong to — the worker re-arms each one's debounce,
+            # so a thread pass never grades a turn whose spans are still arriving
+            "conversation_ids": sorted({
+                ev["conversation_id"] for ev in real if ev.get("conversation_id")
+            }),
         }
 
     # ── internals ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fill_agents_workflow_root(project_id: str, events: list[dict]) -> None:
+        """OpenAI Agents SDK (OpenInference instrumentation): its trace root — the "Agent
+        workflow" span — records NO input and NO output, so the turn has no user message and no
+        answer, and nothing can grade it. That SDK defines a run's input as the items its first
+        model call receives and its final output as the last model response, so the root is
+        filled with exactly those: the input of the trace's first GENERATION, the output of its
+        last. Only for that framework's empty root, never anything else, and marked
+        `tracely.io_source = derived:openai-agents` so the derivation is visible, not silent.
+
+        The model spans end (and are exported) before the root, so they are usually already in
+        ClickHouse when the root's batch arrives; spans in the same batch count too."""
+        roots = [
+            ev for ev in events
+            if not ev.get("parent_span_id") and ev.get("name") == "Agent workflow"
+            and (ev.get("metadata") or {}).get("openinference.span.kind") == "AGENT"
+            and not ev.get("input") and not ev.get("output")
+        ]
+        if not roots:
+            return
+        try:
+            client = get_client()
+        except Exception:  # noqa: BLE001 — a missing fill must never fail ingestion
+            client = None  # the batch's own model spans still count
+        for root in roots:
+            tid = root.get("trace_id")
+            gens = [ev for ev in events if ev.get("trace_id") == tid and ev.get("type") == "GENERATION"]
+            try:
+                rows = [] if client is None else client.query(
+                    "SELECT input, output, start_time FROM events FINAL PREWHERE trace_id = {t:String} "
+                    "WHERE project_id = {p:String} AND is_deleted = 0 AND type = 'GENERATION'",
+                    parameters={"t": tid, "p": project_id},
+                ).result_rows
+            except Exception:  # noqa: BLE001
+                rows = []
+            gens += [{"input": i, "output": o, "start_time": st} for i, o, st in rows]
+            gens = sorted((g for g in gens if g.get("start_time") is not None), key=lambda g: g["start_time"])
+            first_in = next((g["input"] for g in gens if g.get("input")), None)
+            last_out = next((g["output"] for g in reversed(gens) if g.get("output")), None)
+            if first_in or last_out:
+                root["input"], root["output"] = first_in, last_out
+                root.setdefault("metadata", {})["tracely.io_source"] = "derived:openai-agents"
 
     @staticmethod
     def _milestone_first_trace(project_id: str, events: list[dict]) -> None:

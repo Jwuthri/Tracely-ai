@@ -255,10 +255,9 @@ def test_sequential_message_sees_the_earlier_turns(monkeypatch):
     assert "Conversation so far" not in prompts[0]
 
 
-def test_the_graded_request_is_the_last_user_message(monkeypatch):
-    """A span's input is the whole message array the model was called with — system prompt, every
-    earlier turn, then the new one. Taking its FIRST readable text graded this message's answer
-    against the system prompt (or turn 1), which is how a correct answer scored 0.05."""
+def test_the_graded_request_is_the_roots_last_user_message(monkeypatch):
+    """The root's input is the whole message array — system prompt, earlier turns, then the new
+    one. The request is its LAST user message, never the system prompt or turn 1."""
     prompts: list[str] = []
     _stub_structured(monkeypatch, {"score": 1.0, "reason": "ok"}, prompts=prompts)
     messages = json.dumps([
@@ -267,13 +266,23 @@ def test_the_graded_request_is_the_last_user_message(monkeypatch):
         {"role": "assistant", "content": "it shipped"},
         {"role": "user", "content": [{"type": "text", "text": "refund the duplicate charge"}]},
     ])
-    spans = [
-        _span(span_id="root", type="AGENT", input=None, output="Refund started."),
-        _span(span_id="gen-1", type="GENERATION", parent_span_id="root", input=messages),
-    ]
-    _judge(RUN).run(_ctx(spans), {})
+    _judge(RUN).run(_ctx([_span(span_id="root", type="AGENT", input=messages, output="Refund started.")]), {})
     assert "User request:\nrefund the duplicate charge" in prompts[0]
     assert "You are a returns specialist." not in prompts[0].split("Agent answer:")[0]
+
+
+def test_a_root_without_input_says_so_instead_of_borrowing_another_span(monkeypatch):
+    """No guessing from child spans: a root that recorded no user message is shown to the judge
+    (and in the prompt panel) as exactly that, so the instrumentation gap is visible."""
+    prompts: list[str] = []
+    _stub_structured(monkeypatch, {"score": 1.0, "reason": "ok"}, prompts=prompts)
+    history = json.dumps([{"role": "user", "content": "refund the duplicate charge"}])
+    spans = [
+        _span(span_id="root", type="AGENT", input=None, output="Refund started."),
+        _span(span_id="gen-1", type="GENERATION", parent_span_id="root", input=history),
+    ]
+    _judge(RUN).run(_ctx(spans), {})
+    assert "User request:\n(no user message recorded on this turn's root span)" in prompts[0]
 
 
 def test_no_key_skips_entirely(monkeypatch):
@@ -282,12 +291,14 @@ def test_no_key_skips_entirely(monkeypatch):
     assert _judge(RUN).run(_ctx([_span()]), {}) == []
 
 
-def test_transport_error_skips(monkeypatch):
+def test_transport_error_is_a_visible_neutral_error(monkeypatch):
     def boom(prompt, **kw):
         raise OSError("connection refused")
 
     monkeypatch.setattr(provider, "run_structured_agent", boom)
-    assert _judge(RUN).run(_ctx([_span()]), {}) == []
+    [r] = _judge(RUN).run(_ctx([_span()]), {})
+    assert (r.string_value, r.verdict, r.graded) == ("Error", "", False)
+    assert "connection refused" in r.comment
 
 
 # ── token-usage capture (per-evaluator cost) ─────────────────────────────────
@@ -416,7 +427,7 @@ def test_a_run_with_no_answer_is_still_graded(monkeypatch):
     spans = [_span(output="", input="where is my refund?")]
     results = _judge(RUN).run(_ctx(spans), {"prompt": "Grade.", "threshold": 0.6})
     assert [r.verdict for r in results] == ["FAIL"]
-    assert "(the agent produced no answer)" in prompts[0]
+    assert "(no answer recorded on this turn's root span)" in prompts[0]
 
 
 def test_a_run_with_neither_request_nor_answer_is_skipped(monkeypatch):
@@ -724,7 +735,7 @@ def test_malformed_traces_grade_or_skip_predictably(monkeypatch):
     # a request with no answer still grades, saying so
     half = _span(input="hello?", output="")
     assert len(_judge(RUN).run(_ctx([half]), {})) == 1
-    assert "(the agent produced no answer)" in prompts[-1]
+    assert "(no answer recorded on this turn's root span)" in prompts[-1]
 
     # step level: spans with no input/output are not gradable items
     spans = [

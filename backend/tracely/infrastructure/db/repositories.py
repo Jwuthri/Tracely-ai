@@ -397,6 +397,11 @@ def evaluator_delete(s: Session, project_id: str, evaluator_id: str) -> bool:
     e = evaluator_get(s, project_id, evaluator_id)
     if e is None:
         return False
+    # Its sequential progress goes with it: a column re-created under the same score_name would
+    # otherwise resume a chain (and seed a payload) from the one that was deleted.
+    s.execute(delete(EvalChainProgress).where(
+        EvalChainProgress.project_id == project_id, EvalChainProgress.score_name == e.score_name,
+    ))
     s.delete(e)
     s.commit()
     return True

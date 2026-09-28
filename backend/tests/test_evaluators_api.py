@@ -349,7 +349,7 @@ async def test_create_rejects_malformed_config_knobs(client, sync_db):
         "/api/evaluators", headers=_bearer(tok),
         json={"name": "ok", "kind": "llm_judge", "level": "TOOL", "config": {
             "threshold": 0.6, "max_spans": 10, "span_types": ["TOOL"],
-            "depends_on": ["helpfulness"], "output_type": "json",
+            "depends_on": ["tracely.tool.success"], "output_type": "json",
             "output_schema": {"type": "object", "properties": {"score": {"type": "number"}}},
         }},
     )
@@ -530,20 +530,41 @@ def test_generate_without_a_decision_model_only_offers_llm(monkeypatch):
 
 async def test_run_if_joins_depends_on_and_rejects_unknown_columns(client, sync_db):
     tok = await _owner_token(client)
-    cond = [{"column": "tracely.run.intent", "field": "label", "op": "in", "values": ["refund"]}]
+    cond = [{"column": "tracely.run.quality", "field": "label", "op": "in", "values": ["incorrect"]}]
     ok = await client.post("/api/evaluators", headers=_bearer(tok), json={
         "name": "Explain refunds", "config": {"output_type": "text", "prompt": "Explain.", "run_if": cond},
     })
     assert ok.status_code == 200, ok.text
-    assert ok.json()["config"]["depends_on"] == ["tracely.run.intent"]  # added for you
+    assert ok.json()["config"]["depends_on"] == ["tracely.run.quality"]  # added for you
 
     bad = await client.post("/api/evaluators", headers=_bearer(tok), json={
         "name": "x", "config": {"output_type": "text", "prompt": "E.", "run_if": [{**cond[0], "column": "nope"}]},
     })
     assert bad.status_code == 400 and "not columns here" in bad.json()["detail"]
-    assert "tracely.run.intent" in bad.json()["detail"]  # lists what does exist
+    assert "tracely.run.quality" in bad.json()["detail"]  # lists what does exist
 
     malformed = await client.post("/api/evaluators", headers=_bearer(tok), json={
         "name": "y", "config": {"output_type": "text", "prompt": "E.", "run_if": [{**cond[0], "op": "equals"}]},
     })
     assert malformed.status_code == 400 and "op must be one of" in malformed.json()["detail"]
+
+
+async def test_dependencies_across_passes_are_rejected(client, sync_db):
+    """Conversation vs message columns, and batch vs sequential ones, run in separate passes that
+    never share results — such a dependency could never be read, so it's refused at save."""
+    tok = await _owner_token(client)
+    conv = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "Conv check", "level": "CONVERSATION", "config": {"output_type": "boolean", "prompt": "P"},
+    })
+    assert conv.status_code == 200, conv.text
+    bad = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "Needs conv", "level": "AGENT_RUN",
+        "config": {"output_type": "text", "prompt": "E.", "depends_on": [conv.json()["score_name"]]},
+    })
+    assert bad.status_code == 400 and "pass" in bad.json()["detail"], bad.text
+    # tracely.run.intent is sequential; a batch column can't gate on it
+    batch = await client.post("/api/evaluators", headers=_bearer(tok), json={
+        "name": "Batch", "level": "AGENT_RUN", "config": {"output_type": "text", "prompt": "E.",
+        "run_if": [{"column": "tracely.run.intent", "field": "label", "op": "in", "values": ["x"]}]},
+    })
+    assert batch.status_code == 400 and "sequential" in batch.json()["detail"], batch.text

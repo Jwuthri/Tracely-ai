@@ -51,6 +51,11 @@ def ingest_otlp_blob(self, project_id: str, key: str, content_type: str) -> dict
             evaluate_run_task.apply_async(
                 (project_id, trace_id, gen), countdown=settings.eval_debounce_seconds
             )
+        # New spans for a conversation supersede any whole-thread pass already scheduled for it:
+        # that pass would grade this still-arriving turn (a request with no answer yet), chain it
+        # into the sequential judges and record it done — for good. Its own settle re-schedules.
+        for thread_id in result.get("conversation_ids", []):
+            eval_debounce.bump(project_id, _CONV_KEY.format(thread=thread_id))
     except Exception as exc:  # transient failures -> retry with backoff
         log.warning("ingest_failed", key=key, error=str(exc))
         raise self.retry(exc=exc)
