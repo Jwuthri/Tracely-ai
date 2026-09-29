@@ -78,7 +78,7 @@ Open a conversation and the same thread is available in five views, sharing one 
 <img className="screenshot" src="/screenshots/fleet.png" alt="Fleet view" />
 <img className="screenshot" src="/screenshots/conversation-evals.png" alt="Evals view — how the conversation was graded" />
 
-**Agents drawer.** The button in the header opens the agents of this conversation — either the catalog your SDK declared (`tracely.trace(agents=[...])`, with per-tool run counts) or, failing that, the agents observed in the spans. The same catalog is what a judge sees as `@LIST_AGENT`, so it can say *"the agent should have called `issue_refund` and didn't"*.
+**Agents drawer.** The button in the header opens the agents of this conversation — either the catalog your SDK declared (`tracely.trace(agents=[...])`, with per-tool run counts) or, failing that, the agents observed in the spans. A judge sees these agents as `@AGENTS` — the declared catalog merged with the tools the traces show the model being offered and calling, each marked by source — so it can say *"the agent should have called `issue_refund` and didn't"*.
 
 **Rolling summary.** Long conversations carry an accumulating summary, one entry per step: short steps verbatim, long ones compressed, the oldest folded together once the list grows past a budget. It is what a judge reads as `@HISTORY`, so grading turn 40 does not mean re-reading turns 1–39.
 

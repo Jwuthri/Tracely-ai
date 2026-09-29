@@ -81,7 +81,7 @@ as context in a basic prompt, or through `@DEPENDENCIES` in a template. Each res
 
 **Run only when** grades an item only when conditions on those results hold (all of them). A
 condition reads a column's **label** (a multi-class label, or any multi-label label), its
-**verdict** (PASS / FAIL / NONE) or its **value** (≥, >, ≤, <). Items that don't match show
+**verdict** (PASS / FAIL / NONE) or its **value** (`≥`, `>`, `≤`, `<`). Items that don't match show
 **Not run**: no verdict, no model call.
 
 The cheap-first pattern: let a Jev column classify every turn, and run the expensive LLM only

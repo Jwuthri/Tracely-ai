@@ -264,7 +264,7 @@ plus first-class hints: `tracely.agent.id` (auto-registered), `tracely.agent.ver
 
 **The agent catalog** tells Tracely which agents, tools, prompts and models the conversation *has*
 (not just which ones fired) — it fills the **Conversation Agents** panel and the Fleet view, and is
-readable from judge prompts as `@LIST_AGENT`. **State deltas** record what each step wrote to your
+readable from judge prompts as `@AGENTS`. **State deltas** record what each step wrote to your
 shared state, folded into the **Conversation State** drawer and the per-message **State Δ** column:
 
 ```python

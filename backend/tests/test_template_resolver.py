@@ -49,7 +49,7 @@ def test_catalog_level_maps_evaluator_levels():
 
 def test_conversation_level_exposes_common_and_conversation_variables():
     names = {v.name for v in variables_for_level("CONVERSATION")}
-    # 4 common (HISTORY, ROLLING_SUMMARY, GOAL, LIST_AGENT) + 6 conversation-only
+    # 4 common (HISTORY, ROLLING_SUMMARY, GOAL, AGENTS) + 6 conversation-only
     assert len(names) == 11
     assert "HISTORY" in names and "ROLLING_SUMMARY" in names and "FIRST_USER_MSG" in names
     # step-only vars are NOT offered at conversation level
@@ -119,7 +119,7 @@ def test_list_agent_lists_agents_and_tools():
         _span(trace_id="t1", span_id="tool", type="TOOL", name="search", agent_id="planner",
               parent_span_id="root", is_app_root=0, output="results"),
     ]
-    out = _resolve("@LIST_AGENT", ctx=build_context("CONVERSATION", thread_spans=spans))
+    out = _resolve("@AGENTS", ctx=build_context("CONVERSATION", thread_spans=spans))
     assert "planner" in out.resolved_text and "search" in out.resolved_text
 
 

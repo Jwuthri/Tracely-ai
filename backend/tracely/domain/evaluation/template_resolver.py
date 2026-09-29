@@ -10,7 +10,7 @@ Three pieces:
   applicable levels, nested object props. Mirrored in `frontend/app/lib/templateVariables.ts`.
 - `build_context(...)` — turns already-fetched span dicts into an `EvaluationContext` for a level.
   **Pure** (no I/O), and materializes ONLY the referenced vars (`wanted_vars`) so an unused
-  `@HISTORY`/`@LIST_AGENT` costs nothing in the grading hot path.
+  `@HISTORY`/`@AGENTS` costs nothing in the grading hot path.
 - `TemplateResolver.resolve(...)` — substitutes every `@NAME` / `@NAME.prop` match; a value that
   isn't present becomes the literal `[No <REF> available]` (soft miss — never an error, never
   blocks a grade).
@@ -112,7 +112,16 @@ TEMPLATE_VARIABLES: tuple[TemplateVariable, ...] = (
         "string", _ALL,
     ),
     TemplateVariable("GOAL", "User's overall goal/intent (first request in the thread)", "string", _ALL),
-    TemplateVariable("LIST_AGENT", "List of agents seen with the tools they called", "string", _ALL),
+    TemplateVariable(
+        "AGENTS",
+        "The agents of this conversation, each with its description and tools — declared, offered "
+        "to the model, or only seen being called",
+        "object", _ALL,
+        props=(
+            ("tools", "Every tool the agents had, with where it came from and how often it was called"),
+            ("called", "Only the tools that were called, with how many times"),
+        ),
+    ),
     TemplateVariable(
         "DEPENDENCIES",
         "This item's results from the columns in Depends On — label, value, verdict and reason each",
@@ -201,7 +210,7 @@ class EvaluationContext:
     history: str | None = None
     rolling_summary: str | None = None
     goal: str | None = None
-    agents: str | None = None
+    agents: list[AgentView] | None = None  # the conversation up to the graded item
     messages: str | None = None
     user_messages: str | None = None
     assistant_messages: str | None = None
@@ -252,19 +261,108 @@ def _group_turns(thread_spans: list[dict]) -> list[tuple[str, list[dict]]]:
     return [(tid, by_trace[tid]) for tid in order]
 
 
-def format_agent_catalog(agents: list[dict]) -> str | None:
-    """Render the user-declared agent catalog (name / description / tools + params) for @LIST_AGENT —
-    richer than the spans-derived view (`_format_agents`), since it carries descriptions and tool
-    parameters the traces don't. `tools` may be a dict-of-tools or a list."""
-    if not agents:
-        return None
-    lines: list[str] = []
-    for ag in agents:
+# ── @AGENTS: the conversation's agents and their tools ──────────────────────
+# A tool's definition comes from one of three places, best first: the catalog the SDK DECLARED
+# for the conversation (`tracely.trace(agents=[...])`), the tool list an instrumented model call
+# was OFFERED (OpenInference `llm.tools.N.tool.json_schema`, OTel `gen_ai.tool.definitions`), or
+# the TOOL span of a call (`tool.description`). A tool nothing describes is known only because it
+# was called. Each tool carries where it came from: "was the right tool available?" is a question
+# about what was on offer, and a declared catalog is often missing tools the agent really has.
+
+_DECLARED, _OFFERED, _CALLED = "declared", "offered", "called"
+_SOURCE_RANK = {_DECLARED: 0, _OFFERED: 1, _CALLED: 2}
+
+
+@dataclass
+class ToolView:
+    name: str
+    description: str = ""
+    source: str = _CALLED
+    ran: int = 0  # TOOL spans that executed it
+    requested: int = 0  # times a model call asked for it (`tool_call_names`)
+
+    @property
+    def calls(self) -> int:
+        # Executions when the tools are instrumented; the model's requests when they aren't
+        # (a requested call that also ran would otherwise count twice).
+        return self.ran or self.requested
+
+
+@dataclass
+class AgentView:
+    name: str
+    description: str = ""
+    tools: dict[str, ToolView] = field(default_factory=dict)
+
+    def tool(self, name: str, description: str = "", source: str = _CALLED) -> ToolView:
+        t = self.tools.get(name)
+        if t is None:
+            t = self.tools[name] = ToolView(name, description, source)
+        elif _SOURCE_RANK[source] < _SOURCE_RANK[t.source]:
+            t.source, t.description = source, description or t.description
+        elif not t.description:
+            t.description = description
+        return t
+
+
+def _span_meta(span: dict) -> dict:
+    meta = span.get("metadata") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _tool_defs(raw: Any) -> list[tuple[str, str]]:
+    """(name, description) of every tool in one tool-definition attribute — a single OpenAI-style
+    `{"type": "function", "function": {...}}`, a flat `{name, description}`, or a list of them."""
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return []
+    out: list[tuple[str, str]] = []
+    for item in obj if isinstance(obj, list) else [obj]:
+        if not isinstance(item, dict):
+            continue
+        fn = item["function"] if isinstance(item.get("function"), dict) else item
+        if fn.get("name"):
+            out.append((str(fn["name"]), str(fn.get("description") or "")))
+    return out
+
+
+def _offered_tools(meta: dict) -> list[tuple[str, str]]:
+    """The tools a model call was offered, in the order it was offered them."""
+
+    def index(key: str) -> int:
+        part = key.split(".")[2]
+        return int(part) if part.isdigit() else 0
+
+    keys = sorted(
+        (k for k in meta if k.startswith("llm.tools.") and k.endswith(".tool.json_schema")), key=index
+    )
+    out = [d for k in keys for d in _tool_defs(meta[k])]
+    if "gen_ai.tool.definitions" in meta:
+        out.extend(_tool_defs(meta["gen_ai.tool.definitions"]))
+    return out
+
+
+def collect_agents(spans: list[dict], declared: list[dict] | None = None) -> list[AgentView]:
+    """The agents of `spans` with every tool they had, merged from the declared catalog, the tools
+    their model calls were offered and the tools they called.
+
+    A span belongs to the nearest ancestor (itself included) named like a declared agent: graph
+    frameworks stamp one `agent_id` on everything and show a sub-agent only as the node its calls
+    run under (LangGraph's `lg-support` CHAIN). Failing that, to its `agent_id`'s agent, which is
+    the same agent as a declared one of that name; with no agent id, to the only declared agent,
+    or to an unnamed one."""
+    agents: dict[str, AgentView] = {}
+    for ag in declared or []:
         if not isinstance(ag, dict):
             continue
-        name = ag.get("name") or "agent"
-        desc = ag.get("description") or ""
-        lines.append(f"- {name}" + (f": {desc}" if desc else ""))
+        view = AgentView(str(ag.get("name") or "agent"), str(ag.get("description") or ""))
+        agents.setdefault(view.name.casefold(), view)
         raw = ag.get("tools")
         items = (
             list(raw.items())
@@ -275,34 +373,86 @@ def format_agent_catalog(agents: list[dict]) -> str | None:
         )
         for key, tdef in items:
             tdef = tdef if isinstance(tdef, dict) else {}
-            tname = tdef.get("name") or key
-            tdesc = tdef.get("description") or ""
-            # Name + description only. Argument names answer "how would I call this?", which is
-            # not a question a judge asks — it only needs to know the tool exists and what it is
-            # for. They were also the bulk of the catalog's length, and the catalog is competing
-            # for room with the transcript it is supposed to help grade.
-            lines.append(f"    • {tname}" + (f" — {tdesc}" if tdesc else ""))
-    return "\n".join(lines) or None
+            if name := str(tdef.get("name") or key or ""):
+                view.tool(name, str(tdef.get("description") or ""), _DECLARED)
 
+    names = _agent_names(spans)
+    only_declared = next(iter(agents.values())) if len(agents) == 1 else None
+    by_id = {s.get("span_id"): s for s in spans}
 
-def _format_agents(spans: list[dict]) -> str | None:
-    by_agent: dict[str, set[str]] = {}
-    for s in spans:
-        aid = s.get("agent_id") or ""
-        if not aid:
-            continue
-        tools = by_agent.setdefault(aid, set())
-        if s.get("type") == TOOL and s.get("name"):
-            tools.add(str(s["name"]))
-        for t in s.get("tool_call_names") or []:
-            if t:
-                tools.add(str(t))
-    if not by_agent:
+    def declared_ancestor(span: dict) -> AgentView | None:
+        seen: set = set()
+        node: dict | None = span
+        while node is not None and node.get("span_id") not in seen:
+            seen.add(node.get("span_id"))
+            if (hit := agents.get(str(node.get("name") or "").casefold())) is not None:
+                return hit
+            node = by_id.get(node.get("parent_span_id"))
         return None
-    lines = []
-    for aid, tools in by_agent.items():
-        lines.append(f"- {aid} (tools: {', '.join(sorted(tools))})" if tools else f"- {aid}")
-    return "\n".join(lines)
+
+    def agent_of(span: dict) -> AgentView:
+        if agents and (hit := declared_ancestor(span)) is not None:
+            return hit
+        aid = str(span.get("agent_id") or "")
+        if not aid and only_declared:
+            return only_declared
+        name = names.get(aid) or aid or "agent"
+        for key in (name.casefold(), aid.casefold()):
+            if key and key in agents:
+                return agents[key]
+        return agents.setdefault(name.casefold(), AgentView(name))
+
+    for s in spans:
+        stype = s.get("type")
+        meta = _span_meta(s)
+        offered = _offered_tools(meta) if stype == GENERATION else []
+        requested = [str(n) for n in (s.get("tool_call_names") or []) if n] if stype != TOOL else []
+        ran = str(meta.get("tool.name") or s.get("name") or "") if stype == TOOL else ""
+        if not (offered or requested or ran or stype == "AGENT"):
+            continue
+        agent = agent_of(s)
+        for name, desc in offered:
+            agent.tool(name, desc, _OFFERED)
+        for name in requested:
+            agent.tool(name).requested += 1
+        if ran:
+            agent.tool(ran, str(meta.get("tool.description") or "")).ran += 1
+    return list(agents.values())
+
+
+def _tool_line(t: ToolView, prefix: str = "") -> str:
+    head = f"{prefix}{t.name}" + (f" — {t.description}" if t.description else "")
+    if t.source == _CALLED:
+        return f"{head} [called {t.calls}×, no definition]"
+    return f"{head} [{t.source} · " + (f"called {t.calls}×]" if t.calls else "not called]")
+
+
+def format_agents(agents: list[AgentView], prop: str | None = None) -> str | None:
+    """`@AGENTS` (each agent, its description and its tools), `.tools` (every tool) or `.called`
+    (only the tools that were used, with counts). Names and descriptions only: argument names
+    answer "how would I call this?", which is not a question a judge asks, and they were most of
+    the catalog's length — competing for room with the transcript it is supposed to help grade."""
+    if prop is None:
+        lines: list[str] = []
+        for a in agents:
+            lines.append(f"- {a.name}" + (f": {a.description}" if a.description else ""))
+            lines.extend(f"    • {_tool_line(t)}" for t in a.tools.values())
+        return "\n".join(lines) or None
+    multi = sum(1 for a in agents if a.tools) > 1
+    if prop == "tools":
+        lines = [
+            _tool_line(t, f"{a.name} / " if multi else "") for a in agents for t in a.tools.values()
+        ]
+    elif prop == "called":
+        lines = [
+            f"{a.name + ' / ' if multi else ''}{t.name} ×{t.calls}"
+            for a in agents
+            for t in a.tools.values()
+            if t.calls
+        ]
+    else:
+        return None
+    return "\n".join(f"- {line}" for line in lines) or None
 
 
 def _step_error(span: dict) -> str | None:
@@ -474,7 +624,7 @@ def _format_message(msg: dict) -> str | None:
 
 _STRING_ATTRS = {
     "HISTORY": "history", "ROLLING_SUMMARY": "rolling_summary",
-    "GOAL": "goal", "LIST_AGENT": "agents", "MESSAGES": "messages",
+    "GOAL": "goal", "MESSAGES": "messages",
     "USER_MESSAGES": "user_messages", "ASSISTANT_MESSAGES": "assistant_messages",
     "FIRST_USER_MSG": "first_user_msg", "LAST_USER_MSG": "last_user_msg",
     "LAST_ASSISTANT_MSG": "last_assistant_msg", "PREVIOUS_USER_MSG": "previous_user_msg",
@@ -486,7 +636,7 @@ _OBJECT_ATTRS = {"CURRENT_MESSAGE": "current_message", "CURRENT_STEP": "current_
 # Vars that need the WHOLE thread (used to gate the extra thread-spans read in the service).
 CONVERSATION_SCOPED_VARS = frozenset({
     "HISTORY", "MESSAGES", "USER_MESSAGES", "ASSISTANT_MESSAGES", "FIRST_USER_MSG",
-    "LAST_USER_MSG", "LAST_ASSISTANT_MSG", "GOAL", "LIST_AGENT",
+    "LAST_USER_MSG", "LAST_ASSISTANT_MSG", "GOAL", "AGENTS",
     "PREVIOUS_USER_MSG", "PREVIOUS_ASSISTANT_MSG",
 })
 
@@ -572,9 +722,11 @@ def build_context(
         ctx.last_user_msg = users[-1] if users else None
     if need("LAST_ASSISTANT_MSG"):
         ctx.last_assistant_msg = answers[-1] if answers else None
-    if need("LIST_AGENT"):
-        # prefer the user-declared catalog (richer) when present, else derive from spans
-        ctx.agents = format_agent_catalog(declared_agents) if declared_agents else _format_agents(thread_spans)
+    if need("AGENTS"):
+        # Like @HISTORY, stops at the graded turn: a tool first called in turn 5 is hindsight to a
+        # judge grading turn 2.
+        seen = thread_spans if cl == CL_CONVERSATION else [s for _, t in turns[: cur_idx + 1] for s in t]
+        ctx.agents = collect_agents(seen, declared_agents) or None
 
     if cl == CL_CONVERSATION:
         return ctx
@@ -630,6 +782,8 @@ def _resolve_variable(name: str, prop: str | None, ctx: EvaluationContext) -> st
     if name == "METRIC_PREVIOUS_RESULT":
         r = ctx.metric_previous_result
         return json.dumps(r, ensure_ascii=False, indent=2) if r else None
+    if name == "AGENTS":
+        return format_agents(ctx.agents, prop) if ctx.agents else None
     if name == "CURRENT_STEPS" and prop:
         wanted = prop.upper()
         return _format_steps(

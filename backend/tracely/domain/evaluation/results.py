@@ -95,5 +95,5 @@ class RunContext:
     thread_id: str = ""
     # All spans across the whole thread, populated by the service ONLY when an advanced
     # non-conversation judge references a conversation-scoped var (@HISTORY/@MESSAGES/@PREVIOUS_*/
-    # @GOAL/@LIST_AGENT). None ⇒ not fetched; the context builder falls back to `spans`.
+    # @GOAL/@AGENTS). None ⇒ not fetched; the context builder falls back to `spans`.
     thread_spans: list[dict[str, Any]] | None = None

@@ -407,7 +407,7 @@ async def resolve_prompt(
             "" if level == "CONVERSATION" or not body.trace_id else body.trace_id,
         )
     declared_agents = None
-    if thread_id and "LIST_AGENT" in base_names:
+    if thread_id and "AGENTS" in base_names:
         from tracely.services.conversation_agents_service import ConversationAgentsService
 
         declared_agents = await run_in_threadpool(

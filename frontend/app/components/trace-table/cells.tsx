@@ -116,16 +116,13 @@ export function CopyConvButton({ thread }: { thread: string }) {
 // IS the trace id and `session_turns` matches on either.
 export const convHref = (conv: ConvNode) => `/sessions/${encodeURIComponent(conv.thread)}`;
 
-// Roughly what the 260px column shows of a title before clipping it.
-const TITLE_FITS = 32;
-
 function ConvTitleCell({ conv }: { conv: ConvNode }) {
   const href = convHref(conv);
   const kind = conv.internal_kind;
   const title = deriveTitle(conv.first_input);
-  // Past what fits, the title reads as the opening message's pill — the one the Content column
-  // shows — rather than a clipped line. (A list with no user message has no pill to show.)
-  const pill = title.length > TITLE_FITS && lastTurnMessage(conv.first_input, "user") !== null;
+  // The title always reads as the opening message's pill — the one the Content column shows — so
+  // every row looks the same regardless of length. (A list with no user message has no pill.)
+  const pill = lastTurnMessage(conv.first_input, "user") !== null;
   return (
     // `w-0` + a floor: the table is auto-layout, so a cell's widest unbreakable run sets its
     // column's width — one pasted URL stretched this column across the screen. Sized to nothing,

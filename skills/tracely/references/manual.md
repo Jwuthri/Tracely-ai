@@ -182,7 +182,7 @@ result — emitted as-is.
 ## The agent catalog — `trace(agents=…)` / `set_agents(...)`
 
 Tracing shows which agents *fired*; the catalog declares which agents, tools, prompts and models
-*exist*. It fills the Conversation Agents panel and is readable from judge prompts as `@LIST_AGENT`.
+*exist*. It fills the Conversation Agents panel and is readable from judge prompts as `@AGENTS`.
 
 ```python
 AGENTS = [

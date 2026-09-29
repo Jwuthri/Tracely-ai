@@ -92,7 +92,7 @@ All levels:
 | `@HISTORY` | full formatted conversation history |
 | `@ROLLING_SUMMARY` | accumulated compact summary of the thread so far (empty if none yet) |
 | `@GOAL` | the user's overall goal — first request in the thread |
-| `@LIST_AGENT` | agents seen, with the tools they called (or the declared catalog) |
+| `@AGENTS` | this conversation's agents and their tools — declared, offered to the model, or seen being called (`.tools` every tool, `.called` only the used ones) |
 
 Conversation level:
 

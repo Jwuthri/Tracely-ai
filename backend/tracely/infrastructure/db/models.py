@@ -671,7 +671,7 @@ class ConversationAgent(Base):
     One row per (project, thread); `agents` is the declared list
     `[{name, description, tools: {tool_name: {name, description, parameters}}}]`. Distinct from the
     `agents` REGISTRY table (those are observed agent ids); this is optional, richer, user-supplied
-    metadata surfaced in the Conversation Agents panel and `@LIST_AGENT`."""
+    metadata surfaced in the Conversation Agents panel and `@AGENTS`."""
 
     __tablename__ = "conversation_agents"
     __table_args__ = (

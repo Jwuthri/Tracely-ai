@@ -1,6 +1,6 @@
 """Read access to the user-declared conversation agent catalog (Postgres `conversation_agents`).
 
-Tiny sync service so the eval path (`@LIST_AGENT`) can fetch a thread's declared agents through one
+Tiny sync service so the eval path (`@AGENTS`) can fetch a thread's declared agents through one
 guarded seam — it never raises, so a lookup failure degrades to the spans-derived agent view.
 """
 

@@ -209,7 +209,7 @@ def _needs_thread_context(specs: list[dict]) -> bool:
     is two cases:
 
     - an advanced llm_judge referencing a conversation-scoped variable (`@HISTORY`/`@MESSAGES`/
-      `@PREVIOUS_*`/`@GOAL`/`@LIST_AGENT`). Purely step-local advanced columns (only
+      `@PREVIOUS_*`/`@GOAL`/`@AGENTS`). Purely step-local advanced columns (only
       `@CURRENT_STEP.*` / `@METRIC_PREVIOUS_RESULT`) pay nothing;
     - a sequential MESSAGE-level judge, which grades this message in the light of the earlier
       turns — without the thread it would fall back to grading it alone, i.e. batch. (A

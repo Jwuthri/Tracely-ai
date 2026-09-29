@@ -158,7 +158,7 @@ Standard `gen_ai.*` / OpenInference attributes, plus first-class hints that beco
 Declare the agents and tools a conversation *has* — not just the ones that fired — and the
 **Conversation Agents** panel renders your actual setup: names, descriptions, system prompts,
 models, tool schemas, each tool annotated with how often it really executed. The LLM judge can read
-the same catalog as `@LIST_AGENT`.
+the same catalog as `@AGENTS`.
 
 ```python
 AGENTS = [
@@ -308,7 +308,7 @@ drop-ins, manual spans). Highlights:
 | `examples/manual_spans.py` | the manual escape-hatch API as a full agent (no provider/key needed). |
 | `examples/weather_agent.py` / `weather_agent_cli.py` | a real agent wired with `call_tool`/`call_llm` for `tracely replay --entrypoint` / `--cmd`. |
 | `examples/seed_conversations.py` | rich demo data using **every** SDK helper — single/multi-turn, multi-agent fan-out (1 question → 5 specialists, named skills, sub-agents, declared agent catalogs, shared state), RAG (guardrail→embed→retrieve→chain), thinking, multimodal, structured output, multi-model. `make seed-demo`. |
-| `examples/seed_multiturn.py` | one multi-turn conversation (manual API, no key) — the showcase for the **rolling summary** + **declared agents** (`@LIST_AGENT`). |
+| `examples/seed_multiturn.py` | one multi-turn conversation (manual API, no key) — the showcase for the **rolling summary** + **declared agents** (`@AGENTS`). |
 | `examples/seed_regression.py` | promote a failing trace → run red→green CI gates (fills Cases + Gates). `make seed-regression`. |
 | `examples/seed_multicall.py` / `seed_handler.py` | repeated-call + handler examples for fixture replay. |
 

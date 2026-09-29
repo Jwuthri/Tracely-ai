@@ -228,7 +228,7 @@ class TracelyContextSpanProcessor(SpanProcessor):
                 )
         # Conversation agent catalog (declared by the user) — stamped as one JSON attribute. The
         # backend extracts it per conversation (and strips it before ClickHouse) for the Agents
-        # panel + @LIST_AGENT. Typically set once on the first turn; the redundancy is harmless.
+        # panel + @AGENTS. Typically set once on the first turn; the redundancy is harmless.
         agents = ctx.get("agents")
         if agents:
             span.set_attribute("tracely.agents", json.dumps(agents, default=str))
@@ -805,7 +805,7 @@ def trace(
 
     `agents` declares the conversation's agent catalog — a list of
     `{name, description, tools: {tool_name: {name, description, parameters}}}` — surfaced in the
-    Conversation Agents panel and usable in evaluation (`@LIST_AGENT`). Set it once on the first
+    Conversation Agents panel and usable in evaluation (`@AGENTS`). Set it once on the first
     turn (or every turn; the backend keeps the latest per conversation).
 
     Each agent is free-form JSON: only `name`/`description`/`tools` are interpreted, and every
@@ -1262,7 +1262,7 @@ def set_agents(span: Span, agents: list[dict]) -> None:
     """Declare the conversation's agent catalog on a span: a list of
     `{name, description, tools: {tool_name: {name, description, parameters}}}`, plus any extra
     keys you want kept verbatim (`system_prompt`, `model`, `guardrails`, `config`, …). Surfaced in
-    the Conversation Agents panel and usable in evaluation (`@LIST_AGENT`). Prefer
+    the Conversation Agents panel and usable in evaluation (`@AGENTS`). Prefer
     `tracely.trace(..., agents=[...])`, which flows it onto every span; use this to set it on one
     specific (e.g. the root) span."""
     if agents:

@@ -432,10 +432,10 @@ class LLMJudgeEvaluator(Evaluator):
             return None
 
     def _declared_agents(self, ctx: RunContext, wanted: list[str]) -> list[dict] | None:
-        """The user-declared agent catalog for `@LIST_AGENT`, when one was sent for this thread —
+        """The user-declared agent catalog for `@AGENTS`, when one was sent for this thread —
         a richer (description + tool params) substitute for the spans-derived agent list."""
         names = {w.split(".", 1)[0] for w in (wanted or [])}
-        if "LIST_AGENT" not in names:
+        if "AGENTS" not in names:
             return None
         try:
             from tracely.services.conversation_agents_service import ConversationAgentsService

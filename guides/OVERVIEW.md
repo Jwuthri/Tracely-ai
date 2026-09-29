@@ -190,7 +190,7 @@ Plus a **⌘K command palette** to jump anywhere.
 1. **Observed** — derived from spans (`agent_id` + executed TOOL spans + `tool_call_names` for requested-but-not-executed).
 2. **Declared** — the user sends a rich catalog via `tracely.trace(agents=[{name, description, tools: {...}}])` on the first turn; the ingestion service parses + upserts to `conversation_agents` and **strips it from metadata** before the ClickHouse insert (lossless-metadata path, no mapper change).
 
-The judge gets the **declared** catalog via `@LIST_AGENT` when present, falls back to observed otherwise — a major quality win for multi-agent traces.
+The judge reads `@AGENTS`: the **declared** catalog merged with what the traces show — tools the model was offered and tools it called, each marked by source — a major quality win for multi-agent traces.
 
 `services/rolling_summary_service.py` · `domain/evaluation/rolling_summary.py` · `components/AgentsSidePanel.tsx`
 

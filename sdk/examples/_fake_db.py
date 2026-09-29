@@ -183,7 +183,7 @@ class Conversation:
 
 # The DECLARED agent catalog a user sends with the conversation via `tracely.trace(agents=AGENTS)`.
 # Shape: [{name, description, tools: {tool_name: {name, description, parameters}}}] — surfaced in the
-# Conversation Agents panel and usable in evaluation (@LIST_AGENT).
+# Conversation Agents panel and usable in evaluation (@AGENTS).
 def _catalog(name: str, description: str, names: list[str]) -> dict:
     return {
         "name": name,

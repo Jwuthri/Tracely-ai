@@ -9,7 +9,7 @@ single call. Each guards on its instrumentor + API key, printing setup hints ins
 a dependency or key is missing.
 
 Each run also declares its two-agent catalog once via `tracely.trace(agents=AGENTS)` (so the
-Conversation Agents panel + the judge's `@LIST_AGENT` see it) and tags itself with its own filename
+Conversation Agents panel + the judge's `@AGENTS` see it) and tags itself with its own filename
 via `example=os.path.basename(__file__)`, so each span carries `tracely.metadata.example = <file>.py`
 — filter on it in the Tracely UI to find the traces a given example produced.
 

@@ -140,7 +140,7 @@ tracely.set_metadata(span, tenant="acme", prompt_version="v3", feature_flag="rag
 
 Tracing shows which agents *fired*; the catalog declares which agents (and tools, prompts, models)
 *exist*. It fills the **Conversation Agents** panel with your real setup and is readable from
-evaluator prompts as `@LIST_AGENT`:
+evaluator prompts as `@AGENTS`:
 
 ```python
 AGENTS = [

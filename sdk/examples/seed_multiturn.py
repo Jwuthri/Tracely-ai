@@ -6,7 +6,7 @@ spans with deterministic fake content — no provider key, no cost). Each turn i
 the same `conversation`, so:
   • the rolling summary accumulates across the turns (see the "Rolling summary" column), and
   • the declared agent catalog (sent once via `tracely.trace(agents=...)`) shows in the Conversation
-    Agents panel and is available to evaluation as `@LIST_AGENT`.
+    Agents panel and is available to evaluation as `@AGENTS`.
 
     TRACELY_API=http://localhost:8000 uv run python sdk/examples/seed_multiturn.py
 """
