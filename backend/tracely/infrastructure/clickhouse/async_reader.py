@@ -91,8 +91,7 @@ async def traces_overview(project_id: str, limit: int, advisory: Sequence[str] =
                -- server span, say), every span here has a parent and this went empty — which the
                -- dashboard then rendered as the literal word "trace" on every row. Fall back to
                -- the earliest span, which is the closest thing to a root we hold.
-               if(anyIf(name, parent_span_id = '') != '',
-                  anyIf(name, parent_span_id = ''),
+               if({_root("name")} != '', {_root("name")},
                   argMin(name, start_time))          AS root_name,
                {_TRACE_AGENT}                        AS agent_id,
                maxIf(1, level = 'ERROR')             AS has_error
@@ -463,11 +462,30 @@ def session_order_clause(sort: str, order: str) -> str:
 # A trace's display text: its ROOT span's input and output — the same two values every judge
 # grades (`domain/evaluation/text.user_message` / `agent_answer`), so what the table shows is what
 # was graded. No other span is consulted. Assumes a GROUP BY over one trace's spans.
-_TRACE_INPUT = "anyIf(input, parent_span_id = '')"
-_TRACE_OUTPUT = "anyIf(output, parent_span_id = '')"
+#
+# "Root" is `root_span`'s rule, ordered like `_TRACE_AGENT`: the parentless span, else the
+# `is_app_root` one. The second half is most of production — an app whose spans hang off a server
+# span it never exports has no parentless span at all, and keying on `parent_span_id = ''` alone
+# showed every such conversation as "—" while the judges (Python `root_span`) graded it fine.
+def _root(col: str) -> str:
+    return (
+        f"if(countIf(parent_span_id = '') > 0, anyIf({col}, parent_span_id = ''), "
+        f"anyIf({col}, is_app_root))"
+    )
+
+
+def _root_has(col: str) -> str:
+    return (
+        f"if(countIf(parent_span_id = '') > 0, max({col} != '' AND parent_span_id = ''), "
+        f"max({col} != '' AND is_app_root))"
+    )
+
+
+_TRACE_INPUT = _root("input")
+_TRACE_OUTPUT = _root("output")
 # Whether `_TRACE_INPUT` / `_TRACE_OUTPUT` would be non-empty — without holding the text.
-_TRACE_HAS_INPUT = "max(input != '' AND parent_span_id = '')"
-_TRACE_HAS_OUTPUT = "max(output != '' AND parent_span_id = '')"
+_TRACE_HAS_INPUT = _root_has("input")
+_TRACE_HAS_OUTPUT = _root_has("output")
 
 
 async def sessions_overview(
@@ -583,7 +601,7 @@ async def sessions_overview(
             maxIf(1, trace_id IN ({_FAILING}))                            AS t_failing,
             max(internal_kind)                                            AS t_internal,
             max(subject_id)                                               AS t_subject,
-            anyIf(name, parent_span_id = '')                              AS t_root_name,
+            {_root("name")}                                               AS t_root_name,
             {_TRACE_AGENT}                                                AS t_agent,
             CAST(
               (groupArrayArray(mapKeys(mapFilter((k, v) -> startsWith(k, 'tracely.metadata.'), CAST(metadata, 'Map(String, String)')))),
@@ -725,12 +743,11 @@ async def session_turns(
           SELECT trace_id,
             max(conversation_id)                                          AS conv,
             max(internal_kind)                                            AS internal,
-            concat(anyIf(name, parent_span_id = ''), '\n\n',
-                   coalesce(anyIf(input, parent_span_id = ''), ''))       AS root_in,
-            coalesce(anyIf(output, parent_span_id = ''), '')              AS root_out,
+            concat({_root("name")}, '\n\n', coalesce({_TRACE_INPUT}, '')) AS root_in,
+            coalesce({_TRACE_OUTPUT}, '')                                 AS root_out,
             -- the ROOT span's input/output: exactly what every judge grades (see _TRACE_INPUT)
-            anyIf(input, parent_span_id = '')                            AS t_input,
-            anyIf(output, parent_span_id = '')                           AS t_output,
+            {_TRACE_INPUT}                                                AS t_input,
+            {_TRACE_OUTPUT}                                               AS t_output,
             toUInt64(sum(arraySum(mapValues(usage_details))))             AS tokens,
             toUInt64(sum(usage_details['input']))                         AS input_tokens,
             toUInt64(sum(usage_details['output']))                        AS output_tokens,
