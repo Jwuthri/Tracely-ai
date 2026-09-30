@@ -17,6 +17,7 @@ from tracely.api.advisory import advisory_score_names
 from tracely.config import settings
 from tracely.api.auth import get_project_id, require_user
 from tracely.domain.traces.replay import build_replay
+from tracely.domain.evaluation.template_resolver import AgentView, collect_agents
 from tracely.domain.evaluation.verdict import rollup_verdict
 from tracely.infrastructure.clickhouse import async_reader, deletes
 from tracely.infrastructure.db import repositories as repo
@@ -347,13 +348,33 @@ def _shape_declared_agent(ag: dict, obs_counts: dict[str, int]) -> dict:
     }
 
 
+def _shape_merged_agent(agent: AgentView) -> dict:
+    return {
+        "name": agent.name,
+        "description": agent.description,
+        "agent_ids": sorted(agent.agent_ids),
+        "tools": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "source": t.source,
+                "calls": t.calls,
+                "parameters": t.parameters,
+            }
+            for t in agent.tools.values()
+        ],
+    }
+
+
 @router.get("/sessions/{thread_id}/agents")
 async def get_session_agents(thread_id: str, project_id: str = Depends(get_project_id)) -> dict:
-    """A conversation's agents — both the user-DECLARED catalog (sent via the SDK, rich: name,
-    description, tools with parameters) and the OBSERVED agents derived from the trace spans (with
-    tool-execution counts). The panel shows declared first; observed fills in when nothing was
-    declared. Declared tools are annotated with their observed execution counts."""
-    observed = await async_reader.thread_agents(project_id, thread_id)
+    """A conversation's agents. `agents` is exactly what a judge reads as `@AGENTS` — the
+    user-DECLARED catalog merged with the tools the spans show the model being offered and
+    calling, each tool marked by source — and is what the panel renders. `declared` (the raw
+    catalog, free-form keys and all) and `observed` (per-`agent_id` span rollups: system prompt,
+    models) are the detail the panel hangs off it."""
+    spans = await async_reader.thread_spans_full(project_id, thread_id)
+    observed = await async_reader.thread_agents(project_id, thread_id, spans)
     ids = [a["agent_id"] for a in observed if a["agent_id"]]
 
     def work() -> tuple[dict[str, dict], list]:
@@ -381,7 +402,8 @@ async def get_session_agents(thread_id: str, project_id: str = Depends(get_proje
         _shape_declared_agent(ag, obs_counts) for ag in declared_raw if isinstance(ag, dict)
     ]
 
-    return {"thread_id": thread_id, "declared": declared, "observed": observed}
+    merged = [_shape_merged_agent(a) for a in collect_agents(spans, declared_raw)]
+    return {"thread_id": thread_id, "agents": merged, "declared": declared, "observed": observed}
 
 
 def _declared_tools(agent: dict) -> list[dict]:

@@ -278,3 +278,16 @@ def test_agents_attributes_graph_nodes_to_the_declared_sub_agent():
     assert format_agents(collect_agents(spans, declared)) == (
         "- lg-supervisor\n- lg-support\n    • get_order — Look up. [declared · called 1×]"
     )
+
+
+def test_agents_keeps_each_tools_parameters_for_the_drawer():
+    spans = _turn("t1", offered=[("get_order", "Look up.")])
+    spans[1]["metadata"]["llm.tools.0.tool.json_schema"] = json.dumps(
+        {"type": "function", "function": {"name": "get_order", "parameters": {"properties": {"id": {}}}}}
+    )
+    declared = [{"name": "other", "tools": {"refund": {"description": "Refund.", "parameters": {"amount": "number"}}}}]
+    by_name = {t.name: t for a in collect_agents(spans, declared) for t in a.tools.values()}
+    assert by_name["get_order"].parameters == {"properties": {"id": {}}}
+    assert by_name["refund"].parameters == {"amount": "number"}
+    # …and the judge's rendering still leaves them out
+    assert "properties" not in format_agents(collect_agents(spans, declared))

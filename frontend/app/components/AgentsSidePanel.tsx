@@ -1,31 +1,26 @@
 "use client";
 
-// Right-side drawer listing a conversation's agents. Two sources:
-//   • DECLARED — the rich catalog the user sent via the SDK (tracely.trace(agents=[...])): name,
-//     description, and tools with parameters. Annotated with how often each tool actually ran.
-//     Any OTHER key declared (system_prompt, model, guardrails, config, …) renders as its own
-//     expandable row — the catalog is free-form, so the panel must not assume a fixed shape.
-//   • OBSERVED — agents derived from the trace spans (agent id, tools used, plus the system prompt
-//     and models recovered from the spans themselves), the fallback when nothing was declared.
+// Right-side drawer listing a conversation's agents — exactly what a judge reads as `@AGENTS`.
+// The backend merges three sources per tool, best first, and marks each tool with where it came from:
+//   • DECLARED — the catalog the user sent via the SDK (tracely.trace(agents=[...])).
+//   • OFFERED — in the tool list an instrumented model call was given, but not in the catalog.
+//   • CALLED — only seen being called; nothing describes it.
+// A declared agent's other keys (system_prompt, model, guardrails, config, …) render as expandable
+// rows — the catalog is free-form, so the panel must not assume a fixed shape. An undeclared agent
+// shows the system prompt and models recovered from its own spans instead.
 // Everything here is click-to-expand: prompts, tool schemas, and arbitrary config blobs are all
 // too big to render inline. Rendered via a portal so it escapes the table/timeline overflow.
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { HighlightedJson, prettyJson } from "./JsonView";
-
-type DeclaredTool = { name: string; description: string; parameters: Record<string, unknown>; count: number } & Record<string, unknown>;
-type DeclaredAgent = { name: string; description: string; tools: DeclaredTool[] } & Record<string, unknown>;
-type ObservedTool = { name: string; count: number };
-type ObservedAgent = {
-  agent_id: string; name: string; slug: string; tools: ObservedTool[]; span_count: number;
-  system_prompt?: string; models?: string[];
-};
-type AgentsData = { declared: DeclaredAgent[]; observed: ObservedAgent[] };
+import { notInCatalog, observedDetail, type AgentsData, type MergedTool } from "./agentsPanel";
 
 // Keys the card renders itself — everything else becomes a generic expandable row.
 const DECLARED_OWN = new Set(["name", "description", "tools"]);
 const TOOL_OWN = new Set(["name", "description", "parameters", "count"]);
+
+const EMPTY: AgentsData = { agents: [], declared: [], observed: [] };
 
 export function AgentsSidePanel({ threadId, onClose }: { threadId: string; onClose: () => void }) {
   const [data, setData] = useState<AgentsData | null>(null);
@@ -37,11 +32,12 @@ export function AgentsSidePanel({ threadId, onClose }: { threadId: string; onClo
       .then((d) => {
         if (!live) return;
         setData({
+          agents: Array.isArray(d?.agents) ? d.agents : [],
           declared: Array.isArray(d?.declared) ? d.declared : [],
           observed: Array.isArray(d?.observed) ? d.observed : [],
         });
       })
-      .catch(() => live && setData({ declared: [], observed: [] }));
+      .catch(() => live && setData(EMPTY));
     return () => {
       live = false;
     };
@@ -53,7 +49,7 @@ export function AgentsSidePanel({ threadId, onClose }: { threadId: string; onClo
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const empty = data && data.declared.length === 0 && data.observed.length === 0;
+  const missing = data ? notInCatalog(data) : 0;
 
   return createPortal(
     <>
@@ -81,7 +77,7 @@ export function AgentsSidePanel({ threadId, onClose }: { threadId: string; onClo
               <div className="h-24 animate-pulse rounded-lg bg-hilite/[0.03]" />
               <div className="h-24 animate-pulse rounded-lg bg-hilite/[0.03]" />
             </div>
-          ) : empty ? (
+          ) : data.agents.length === 0 ? (
             <p className="mt-8 text-center text-[13px] text-fg-faint">
               No agents found for this conversation.
               <br />
@@ -90,91 +86,54 @@ export function AgentsSidePanel({ threadId, onClose }: { threadId: string; onClo
               </span>
             </p>
           ) : (
-            <div className="space-y-5">
-              {data.declared.length > 0 && (
-                <section>
-                  <SectionLabel>Declared</SectionLabel>
-                  <div className="space-y-3">
-                    {data.declared.map((a, i) => (
-                      <div key={`${a.name}-${i}`} className="rounded-lg border border-line bg-hilite/[0.02] p-4">
-                        <div className="text-[13.5px] font-semibold text-fg">{a.name}</div>
-                        {a.description && (
-                          <div className="mt-0.5 text-[12px] text-fg-muted">{a.description}</div>
-                        )}
-
-                        {/* every key the card doesn't render itself — system_prompt, model, guardrails, … */}
-                        {Object.entries(a)
-                          .filter(([k, v]) => !DECLARED_OWN.has(k) && v != null && v !== "")
-                          .map(([k, v]) => <ConfigRow key={k} label={k} value={v} />)}
-
-                        <div className="mt-3 space-y-1.5">
-                          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-fg-faint">
-                            Tools{a.tools.length > 0 && <span className="text-fg-muted"> · {a.tools.length}</span>}
-                          </div>
-                          {a.tools.length === 0 ? (
-                            <p className="text-[12px] text-fg-faint">No tools declared.</p>
-                          ) : (
-                            a.tools.map((t) => <ToolRow key={t.name} tool={t} />)
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
+            <div className="space-y-3">
+              <p className="text-[11.5px] text-fg-faint">
+                What a judge reads as <code className="font-mono text-fg-muted">@AGENTS</code>.
+              </p>
+              {missing > 0 && (
+                <p className="rounded-md border border-warn/30 bg-warn/[0.06] px-3 py-2 text-[12px] text-fg-muted">
+                  {missing} tool{missing === 1 ? " isn't" : "s aren't"} in your agent definition — the traces
+                  show {missing === 1 ? "it" : "them"} offered to the model or being called.
+                </p>
               )}
+              {data.agents.map((a, i) => {
+                const declared = data.declared.find((d) => d.name.toLowerCase() === a.name.toLowerCase());
+                const observed = declared ? undefined : observedDetail(a, data);
+                return (
+                  <div key={`${a.name}-${i}`} className="rounded-lg border border-line bg-hilite/[0.02] p-4">
+                    <div className="text-[13.5px] font-semibold text-fg">{a.name}</div>
+                    {a.description && <div className="mt-0.5 text-[12px] text-fg-muted">{a.description}</div>}
 
-              {/* ponytail: declared wins outright — the observed view duplicates it and reads badly */}
-              {data.declared.length === 0 && data.observed.length > 0 && (
-                <section>
-                  <SectionLabel>Agents</SectionLabel>
-                  <div className="space-y-3">
-                    {data.observed.map((a) => (
-                      <div key={a.agent_id || a.name} className="rounded-lg border border-line bg-hilite/[0.02] p-4">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="truncate text-[13.5px] font-semibold text-fg">{a.name}</div>
-                            {a.slug && a.slug !== a.name && (
-                              <div className="truncate font-mono text-[10.5px] text-fg-faint">{a.slug}</div>
-                            )}
-                          </div>
-                          <span className="shrink-0 font-mono text-[10.5px] text-fg-faint">
-                            {a.span_count} span{a.span_count === 1 ? "" : "s"}
-                          </span>
-                        </div>
+                    {/* every key the card doesn't render itself — system_prompt, model, guardrails, … */}
+                    {declared &&
+                      Object.entries(declared)
+                        .filter(([k, v]) => !DECLARED_OWN.has(k) && v != null && v !== "")
+                        .map(([k, v]) => <ConfigRow key={k} label={k} value={v} />)}
+                    {/* recovered from the agent's own spans, not declared by anyone */}
+                    {observed?.system_prompt && <ConfigRow label="system_prompt" value={observed.system_prompt} derived />}
+                    {observed?.models && observed.models.length > 0 && (
+                      <ConfigRow label="models" value={observed.models} derived />
+                    )}
 
-                        {/* recovered from the agent's own spans, not declared by anyone */}
-                        {a.system_prompt && <ConfigRow label="system_prompt" value={a.system_prompt} derived />}
-                        {a.models && a.models.length > 0 && (
-                          <ConfigRow label="models" value={a.models} derived />
-                        )}
-
-                        <div className="mt-3">
-                          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-fg-faint">
-                            Tools {a.tools.length > 0 && <span className="text-fg-muted">· {a.tools.length}</span>}
-                          </div>
-                          {a.tools.length === 0 ? (
-                            <p className="text-[12px] text-fg-faint">No tools observed.</p>
-                          ) : (
-                            <div className="flex flex-wrap gap-1.5">
-                              {a.tools.map((t) => (
-                                <span
-                                  key={t.name}
-                                  title={t.count ? `${t.count} call${t.count === 1 ? "" : "s"}` : "requested, no execution span"}
-                                  className="inline-flex items-center gap-1.5 rounded-md border border-line bg-hilite/[0.04] px-2 py-1 font-mono text-[11px] text-fg-muted"
-                                >
-                                  <span className="h-1.5 w-1.5 rounded-[3px] bg-t_tool" />
-                                  {t.name}
-                                  {t.count > 0 && <span className="text-fg-faint">×{t.count}</span>}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                    <div className="mt-3 space-y-1.5">
+                      <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-fg-faint">
+                        Tools{a.tools.length > 0 && <span className="text-fg-muted"> · {a.tools.length}</span>}
                       </div>
-                    ))}
+                      {a.tools.length === 0 ? (
+                        <p className="text-[12px] text-fg-faint">No tools.</p>
+                      ) : (
+                        a.tools.map((t) => (
+                          <ToolRow
+                            key={t.name}
+                            tool={t}
+                            extras={declared?.tools.find((d) => d.name === t.name)}
+                          />
+                        ))
+                      )}
+                    </div>
                   </div>
-                </section>
-              )}
+                );
+              })}
             </div>
           )}
         </div>
@@ -224,12 +183,20 @@ function ConfigRow({ label, value, derived }: { label: string; value: unknown; d
   );
 }
 
-// A declared tool: name + run count always visible, full parameter schema + any extra keys on click.
-function ToolRow({ tool }: { tool: DeclaredTool }) {
+const SOURCE_BADGE: Record<MergedTool["source"], { label: string; title: string }> = {
+  declared: { label: "declared", title: "in the agent definition the SDK sent" },
+  offered: { label: "offered", title: "not in the agent definition — the model was offered it" },
+  called: { label: "called only", title: "not in the agent definition, and nothing describes it — only seen being called" },
+};
+
+// A tool: name, source and call count always visible; the parameter schema and any extra keys the
+// agent definition gave it on click.
+function ToolRow({ tool, extras: declared }: { tool: MergedTool; extras?: Record<string, unknown> }) {
   const [open, setOpen] = useState(false);
-  const extras = Object.fromEntries(Object.entries(tool).filter(([k]) => !TOOL_OWN.has(k)));
+  const extras = Object.fromEntries(Object.entries(declared ?? {}).filter(([k]) => !TOOL_OWN.has(k)));
   const params = tool.parameters || {};
   const hasDetail = Object.keys(params).length > 0 || Object.keys(extras).length > 0;
+  const badge = SOURCE_BADGE[tool.source] ?? SOURCE_BADGE.called;
 
   return (
     <div className="overflow-hidden rounded-md border border-line/70 bg-ink-950/60">
@@ -243,28 +210,21 @@ function ToolRow({ tool }: { tool: DeclaredTool }) {
             {hasDetail ? <Chevron open={open} /> : <span className="h-1.5 w-1.5 rounded-[3px] bg-t_tool" />}
             <span className="truncate">{tool.name}</span>
           </span>
-          <span
-            className="shrink-0 font-mono text-[10px] text-fg-faint"
-            title={tool.count ? `executed ${tool.count}×` : "not executed in this conversation"}
-          >
-            {tool.count > 0 ? `×${tool.count}` : "unused"}
+          <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-fg-faint">
+            <span
+              title={badge.title}
+              className={`rounded border px-1 py-px uppercase tracking-wide ${
+                tool.source === "declared" ? "border-line" : "border-warn/40 text-warn"
+              }`}
+            >
+              {badge.label}
+            </span>
+            <span title={tool.calls ? `called ${tool.calls}×` : "not called in this conversation"}>
+              {tool.calls > 0 ? `×${tool.calls}` : "unused"}
+            </span>
           </span>
         </div>
-        {tool.description && (
-          <div className="mt-0.5 text-[11.5px] text-fg-muted">{tool.description}</div>
-        )}
-        {!open && Object.keys(params).length > 0 && (
-          <div className="mt-1 flex flex-wrap gap-1">
-            {Object.keys(params).map((p) => (
-              <span
-                key={p}
-                className="rounded border border-line bg-hilite/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-fg-faint"
-              >
-                {p}
-              </span>
-            ))}
-          </div>
-        )}
+        {tool.description && <div className="mt-0.5 text-[11.5px] text-fg-muted">{tool.description}</div>}
       </button>
       {open && (
         <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-line/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-fg-muted">

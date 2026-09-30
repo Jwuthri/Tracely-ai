@@ -280,6 +280,8 @@ class ToolView:
     source: str = _CALLED
     ran: int = 0  # TOOL spans that executed it
     requested: int = 0  # times a model call asked for it (`tool_call_names`)
+    # the argument schema — for the Agents drawer; the judge's rendering leaves it out
+    parameters: dict = field(default_factory=dict)
 
     @property
     def calls(self) -> int:
@@ -293,15 +295,21 @@ class AgentView:
     name: str
     description: str = ""
     tools: dict[str, ToolView] = field(default_factory=dict)
+    agent_ids: set[str] = field(default_factory=set)  # the span `agent_id`s folded into it
 
-    def tool(self, name: str, description: str = "", source: str = _CALLED) -> ToolView:
+    def tool(
+        self, name: str, description: str = "", source: str = _CALLED, parameters: Any = None
+    ) -> ToolView:
+        params = parameters if isinstance(parameters, dict) else {}
         t = self.tools.get(name)
         if t is None:
-            t = self.tools[name] = ToolView(name, description, source)
+            t = self.tools[name] = ToolView(name, description, source, parameters=params)
         elif _SOURCE_RANK[source] < _SOURCE_RANK[t.source]:
             t.source, t.description = source, description or t.description
-        elif not t.description:
-            t.description = description
+            t.parameters = params or t.parameters
+        else:
+            t.description = t.description or description
+            t.parameters = t.parameters or params
         return t
 
 
@@ -315,24 +323,24 @@ def _span_meta(span: dict) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-def _tool_defs(raw: Any) -> list[tuple[str, str]]:
-    """(name, description) of every tool in one tool-definition attribute — a single OpenAI-style
+def _tool_defs(raw: Any) -> list[tuple[str, str, Any]]:
+    """(name, description, parameters) of every tool in one tool-definition attribute — a single OpenAI-style
     `{"type": "function", "function": {...}}`, a flat `{name, description}`, or a list of them."""
     try:
         obj = json.loads(raw) if isinstance(raw, str) else raw
     except ValueError:
         return []
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, Any]] = []
     for item in obj if isinstance(obj, list) else [obj]:
         if not isinstance(item, dict):
             continue
         fn = item["function"] if isinstance(item.get("function"), dict) else item
         if fn.get("name"):
-            out.append((str(fn["name"]), str(fn.get("description") or "")))
+            out.append((str(fn["name"]), str(fn.get("description") or ""), fn.get("parameters")))
     return out
 
 
-def _offered_tools(meta: dict) -> list[tuple[str, str]]:
+def _offered_tools(meta: dict) -> list[tuple[str, str, Any]]:
     """The tools a model call was offered, in the order it was offered them."""
 
     def index(key: str) -> int:
@@ -374,7 +382,7 @@ def collect_agents(spans: list[dict], declared: list[dict] | None = None) -> lis
         for key, tdef in items:
             tdef = tdef if isinstance(tdef, dict) else {}
             if name := str(tdef.get("name") or key or ""):
-                view.tool(name, str(tdef.get("description") or ""), _DECLARED)
+                view.tool(name, str(tdef.get("description") or ""), _DECLARED, tdef.get("parameters"))
 
     names = _agent_names(spans)
     only_declared = next(iter(agents.values())) if len(agents) == 1 else None
@@ -411,8 +419,10 @@ def collect_agents(spans: list[dict], declared: list[dict] | None = None) -> lis
         if not (offered or requested or ran or stype == "AGENT"):
             continue
         agent = agent_of(s)
-        for name, desc in offered:
-            agent.tool(name, desc, _OFFERED)
+        if aid := str(s.get("agent_id") or ""):
+            agent.agent_ids.add(aid)
+        for name, desc, params in offered:
+            agent.tool(name, desc, _OFFERED, params)
         for name in requested:
             agent.tool(name).requested += 1
         if ran:

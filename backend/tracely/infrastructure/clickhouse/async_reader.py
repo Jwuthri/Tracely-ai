@@ -653,15 +653,19 @@ async def _trace_texts(
     return {r[0]: (r[1], r[2]) for r in res.result_rows}
 
 
-async def thread_agents(project_id: str, thread_id: str) -> list[dict]:
+async def thread_agents(
+    project_id: str, thread_id: str, spans: list[dict] | None = None
+) -> list[dict]:
     """The agents that participated in a thread and the tools each used, DERIVED from the thread's
     spans (Tracely ingests OTLP — there is no richer agent catalog than the trace itself). Each:
     `{agent_id, tools: [{name, count}], span_count, tool_call_count, system_prompt, models}` where
     `count` is the number of executed TOOL spans for that tool (a tool only *requested* — seen in
     `tool_call_names` — shows count 0). `system_prompt` is recovered from the agent's own messages
     and is "" when its traces never sent one; `models` are the distinct `model_id`s it ran on.
-    Sorted by tool activity then span volume. The router resolves friendly names."""
-    spans = await thread_spans_full(project_id, thread_id)
+    Sorted by tool activity then span volume. The router resolves friendly names. `spans` are the
+    thread's `thread_spans_full`, for a caller that already read them."""
+    if spans is None:
+        spans = await thread_spans_full(project_id, thread_id)
     spans_by_agent: dict[str, int] = defaultdict(int)
     tools_touched: dict[str, set[str]] = defaultdict(set)
     tool_execs: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))

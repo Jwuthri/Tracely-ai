@@ -103,7 +103,11 @@ describe("TraceTable (render safety net)", () => {
         ok: true,
         json: () => Promise.resolve(
           url.includes("/agents")
-            ? { declared: [{ name: "Support Agent", description: "Handles support", tools: [] }], observed: [] }
+            ? {
+                agents: [{ name: "Support Agent", description: "Handles support", agent_ids: ["a1"], tools: [] }],
+                declared: [{ name: "Support Agent", description: "Handles support", tools: [] }],
+                observed: [],
+              }
             : {},
         ),
       }),
