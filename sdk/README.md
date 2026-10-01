@@ -261,14 +261,15 @@ All three **exit 0 (PASS) / 1 (FAIL) / 2 (no answer — timeout, unreachable API
 ## 4. Export a workspace
 
 ```bash
-tracely export [--out dump.ndjson] [--limit N] [--from-ts …] [--to-ts …] [--evals]
+tracely export [--out dump.ndjson] [--limit N] [--from-ts …] [--to-ts …] [--evals] [--meta KEY=VALUE]
 ```
 
 NDJSON — one line per conversation, each line the full object (turns, per-turn steps, scores,
 tokens, cost) that `GET /api/sessions/{thread}/export` returns for a single thread. Streamed and
 paged server-side (`GET /api/export`), so a workspace bigger than memory still exports. Without
 `--out` it goes to stdout and pipes into `jq`; the "wrote …" line goes to stderr so stdout stays
-pure NDJSON.
+pure NDJSON. `--meta business_id=2a73…` keeps only conversations whose span metadata carries that
+exact key/value — one tenant's traffic out of a shared workspace.
 
 In Python, the same dump as a generator — nothing is materialised twice, so `break` when you have
 enough:
