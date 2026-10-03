@@ -112,3 +112,31 @@ def cap_system_logs(days: int | None = None) -> dict:
     if capped:
         log.info("system_logs_capped", tables=capped, days=days, bytes_under_ttl=freed)
     return {"capped": capped, "skipped": skipped, "bytes": freed, "days": days}
+
+
+def compact_tables() -> dict:
+    """`OPTIMIZE TABLE … FINAL` on `events` and `scores` (beat, nightly).
+
+    Nothing else ever rewrites the big parts, and two kinds of dead rows only leave a table when
+    a part is rewritten:
+
+    - **Lightweight-deleted rows.** `DELETE FROM` (a workspace wipe, thread delete, retention)
+      only *masks* rows; they stay on disk and every query still reads them. Prod after one wipe:
+      733,788 physical rows behind 1,083 visible ones, every read paying for all of them.
+    - **Superseded eval recordings.** `deletes.delete_trace` tombstones the previous recording
+      instead of mutating; `ReplacingMergeTree` only collapses a span with its tombstone when the
+      two land in the same merge.
+
+    Measured on prod: 406 MiB -> 202 KiB in 2 s, visible rows unchanged — FINAL reads already
+    see the collapsed, unmasked view, this just makes the disk agree with it.
+
+    ponytail: whole-table rewrite. Fine at hundreds of MiB; once `events` is in the GiBs, switch
+    to `OPTIMIZE … PARTITION <id> FINAL` for partitions whose parts carry a delete mask.
+    """
+    client = get_client()
+    done = []
+    for table in ("events", "scores"):
+        client.command(f"OPTIMIZE TABLE {table} FINAL")
+        done.append(table)
+    log.info("tables_compacted", tables=done)
+    return {"compacted": done}

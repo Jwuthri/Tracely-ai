@@ -8,6 +8,7 @@ Pure HTTP shaping — ClickHouse deletes live in `infrastructure.clickhouse.dele
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,12 +19,11 @@ from tracely.api.auth import get_project_id, require_role, require_user
 from tracely.auth import Principal
 from tracely.config import settings
 from tracely.domain.evaluation.rolling_summary import budget_problem
-from tracely.infrastructure.blob import s3
 from tracely.infrastructure.clickhouse import async_reader, deletes
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.llm import checkpointer, provider
-from tracely.services import demo_seed
+from tracely.services import demo_seed, purge_service
 
 log = structlog.get_logger()
 
@@ -49,18 +49,18 @@ async def wipe_project_data(body: WipeBody, project_id: str = Depends(get_projec
     while leaving every byte on disk, and nothing left in the product could ever reach them again.
     Chat attachments stay: they are not traces (a workspace delete takes those).
 
-    Not transactional across the stores: ClickHouse goes first, then Postgres, then the blobs. If the Postgres
-    half fails you're left with derived rows pointing at deleted traces — run it again, it's
-    idempotent.
+    Inline: mask the ClickHouse rows, then Postgres — the fast part, so the UI is empty on the next
+    fetch. Queued (`purge_service.schedule_purge`): the blobs and the rewrite that takes the masked
+    rows off disk. Those used to run here and took longer than any request lives — MinIO needed
+    197 s just to list one workspace's bodies — so a deploy killed the wipe half-way and the bucket
+    kept 2 GB. Only bodies written before this request go: anything ingested while the purge is
+    queued is new data. Idempotent — run it again if the Postgres half fails.
     """
     if body.confirm != CONFIRM:
         raise HTTPException(status_code=400, detail=f"confirm must be exactly '{CONFIRM}'")
 
+    pressed_at = datetime.now(timezone.utc)
     events = await deletes.delete_project_events(project_id)
-    # The raw OTLP bodies. Without this the ClickHouse rows go and every byte the customer sent
-    # stays in the bucket for ever — the wipe looks complete in the UI while the payloads it
-    # promised to delete are all still there, unreachable by anything that could clean them up.
-    blobs = await run_in_threadpool(s3.delete_project_blobs, project_id, traces_only=True)
 
     def work():
         with SyncSessionLocal() as s:
@@ -72,13 +72,16 @@ async def wipe_project_data(body: WipeBody, project_id: str = Depends(get_projec
     # just removed the chain-progress rows they pair with — leaving them would keep a copy of the
     # very data this endpoint promises to delete.
     chats = await run_in_threadpool(checkpointer.delete_project_chats, project_id)
+    # The raw OTLP bodies + the masked rows' disk. Without this the UI empties while every byte
+    # the customer sent stays in the bucket — see the docstring for why it is not inline.
+    await run_in_threadpool(purge_service.schedule_purge, project_id, pressed_at)
     return {
         "deleted": {
             **events,
             **registry,
-            **({"blobs": blobs} if blobs else {}),
             **({"judge_chats": chats} if chats else {}),
-        }
+        },
+        "purge": "queued",
     }
 
 
@@ -146,7 +149,9 @@ async def delete_workspace(
             return repo.project_delete(s, project_id, usage_heir_id=siblings[0])
 
     deleted = await run_in_threadpool(work)
-    deleted["blobs"] = await run_in_threadpool(s3.delete_project_blobs, project_id)
+    # Every blob (attachments too) + the masked rows' disk, in the background — inline, a large
+    # workspace's purge outlives the request. The nightly orphan sweep backstops it.
+    await run_in_threadpool(purge_service.schedule_purge, project_id, None)
     # A deleted workspace never grades again, so nothing would ever reset these conversations —
     # without this they would sit until the 90-day retention sweep reached them.
     if chats := await run_in_threadpool(checkpointer.delete_project_chats, project_id):

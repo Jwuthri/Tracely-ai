@@ -119,3 +119,22 @@ def test_leaves_an_unrecognized_ttl_expression_alone(client):
     c = client([("query_log", 900)], [("query_log", "MergeTree TTL toDate(event_time) + 7", 1)])
     assert maintenance.cap_system_logs(3)["capped"] == []
     assert c.commands == []
+
+
+# ── nightly compaction ────────────────────────────────────────────────────────
+
+
+def test_compaction_rewrites_both_tables(monkeypatch):
+    """A lightweight DELETE leaves rows on disk until a part is rewritten; nothing else rewrites
+    the big parts, so without this a workspace wipe keeps every read slow indefinitely."""
+    fake = FakeClient([], [])
+    monkeypatch.setattr(maintenance, "get_client", lambda **_: fake)
+    assert maintenance.compact_tables() == {"compacted": ["events", "scores"]}
+    assert fake.commands == ["OPTIMIZE TABLE events FINAL", "OPTIMIZE TABLE scores FINAL"]
+
+
+def test_compaction_is_scheduled_nightly():
+    from tracely.infrastructure.queue.celery_app import celery_app
+
+    entry = celery_app.conf.beat_schedule["tracely.compact_tables-nightly"]
+    assert entry["task"] == "tracely.compact_tables"

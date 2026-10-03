@@ -157,10 +157,14 @@ def test_the_order_is_total():
 
 
 def _fn_body(path: Path, name: str) -> str:
+    """The function's code with its docstring and comments removed — so a comment that merely
+    *mentions* PREWHERE cannot satisfy a guard that the SQL dropped."""
     src = path.read_text()
     body = src[src.index(f"def {name}(") :]
     nxt = re.search(r"\n(?:async def |def |    def )", body[1:])
-    return body[: nxt.start()] if nxt else body
+    body = body[: nxt.start()] if nxt else body
+    body = re.sub(r'"""[\s\S]*?"""', "", body, count=1)
+    return "\n".join(line.split("#", 1)[0] for line in body.splitlines())
 
 
 def test_by_trace_span_reads_use_prewhere():
@@ -174,6 +178,7 @@ def test_by_trace_span_reads_use_prewhere():
         ("trace_reader.py", "member_meta"),
         ("async_reader.py", "thread_spans_full"),
         ("async_reader.py", "trace_spans"),
+        ("deletes.py", "delete_trace"),  # ran per evaluation; was a full scan without it
     ):
         assert "PREWHERE" in _fn_body(_CH_DIR / filename, fn), f"{filename}:{fn} lost its PREWHERE"
 
@@ -226,3 +231,13 @@ def test_is_deleted_is_never_pushed_into_prewhere():
             assert "is_deleted" not in q[pre : where if where > 0 else len(q)], (
                 f"{f}:{line} filters is_deleted in PREWHERE — it must sit in WHERE"
             )
+
+
+
+def test_the_threads_list_skips_internal_recordings_in_prewhere():
+    """Eval recordings carry the judge prompt (the whole conversation) — the widest rows, and
+    ~75% of them in prod. Filtering them in WHERE under FINAL decompressed every one of them on
+    each page load of the threads list, which is what made it take seconds."""
+    body = _fn_body(_CH_DIR / "async_reader.py", "sessions_overview")
+    assert 'internal_prewhere = "" if include_internal else f"PREWHERE {_REAL} "' in body
+    assert "FROM events FINAL {internal_prewhere}WHERE" in body

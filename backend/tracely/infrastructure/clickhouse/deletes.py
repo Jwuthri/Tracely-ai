@@ -1,11 +1,18 @@
 """ClickHouse deletes for the API — the write twin of `async_reader` (same rule: no SQL in routers).
 
 Conversation deletion and the whole-project wipe live here. Uses lightweight `DELETE FROM` (GA
-since CH 23.3): rows are masked from every read immediately and dropped on the next merge, so the
-UI reflects a delete on the next fetch without waiting for a mutation.
+since CH 23.3): rows are masked from every read immediately, so the UI reflects a delete on the
+next fetch without waiting for a mutation.
+
+Masked is not gone. The rows stay on disk until their part is rewritten, and a big part is never
+merged again on its own — after one workspace wipe prod held 733,788 physical rows behind 1,083
+visible ones, and every query read all of them. `services/purge_service` (right after a wipe) and
+`maintenance.compact_tables` (nightly) are what actually remove them.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from tracely.infrastructure.clickhouse.client import get_async_client, get_client, insert_rows
 from tracely.infrastructure.clickhouse.events_schema import EVENT_COLUMNS, to_rows
@@ -42,12 +49,15 @@ def delete_trace(project_id: str, trace_id: str, step_names: list[str] | None = 
     """
     client = get_client()
     params = {"p": project_id, "t": trace_id, "n": step_names or []}
-    where = "project_id = {p:String} AND trace_id = {t:String}" + (
+    where = "project_id = {p:String}" + (
         " AND (step_name IN {n:Array(String)} OR step_name = '')" if step_names else ""
     )
+    # trace_id in PREWHERE (identical across a row's versions, so safe under FINAL) — without it
+    # this read scanned the whole table on every evaluation. step_name stays in WHERE: a
+    # tombstone does not carry it, so filtering on it before FINAL would split a row's versions.
     doomed = client.query(
         f"SELECT span_id, start_time, internal_kind FROM events FINAL "
-        f"WHERE {where} AND is_deleted = 0",
+        f"PREWHERE trace_id = {{t:String}} WHERE {where} AND is_deleted = 0",
         parameters=params,
     ).result_rows
     if not doomed:
@@ -161,3 +171,31 @@ def delete_expired(project_ids: list[str], days: int) -> int:
         parameters=params,
     )
     return spans
+
+
+def delete_project_rows(project_id: str) -> None:
+    """Mask every span and score of one project — the worker's twin of `delete_project_events`,
+    for the orphan sweep. Masking only; `maintenance.compact_tables` is what takes them off disk.
+    No count first: the sweep only calls this for a project it already found rows or blobs for."""
+    client = get_client()
+    for table in ("events", "scores"):
+        client.command(
+            f"DELETE FROM {table} WHERE project_id = {{p:String}}", parameters={"p": project_id}
+        )
+
+
+def last_write_by_project() -> dict[str, datetime]:
+    """`{project_id: newest event_ts}` across `events` and `scores` — the orphan sweep's guard.
+
+    A deleted workspace cannot receive data (its keys go with it), so a "deleted" project that
+    wrote yesterday means the registry read was wrong, and the sweep must stop rather than act.
+    Masked rows are invisible here, which is the point: a workspace delete masks its rows before
+    the sweep ever sees it."""
+    client = get_client()
+    out: dict[str, datetime] = {}
+    for table in ("events", "scores"):
+        for pid, ts in client.query(
+            f"SELECT project_id, max(event_ts) FROM {table} GROUP BY project_id"
+        ).result_rows:
+            out[pid] = max(ts, out[pid]) if pid in out else ts
+    return out

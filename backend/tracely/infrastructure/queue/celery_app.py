@@ -64,6 +64,19 @@ celery_app.conf.update(
             "task": "tracely.cap_system_logs",
             "schedule": crontab(hour="5", minute="7"),
         },
+        # A lightweight DELETE only masks rows and a tombstoned eval recording only collapses in a
+        # merge — neither leaves the disk until a part is rewritten, and every read pays for them
+        # until then. After the system-log sweep so the solo worker takes one at a time.
+        "tracely.compact_tables-nightly": {
+            "task": "tracely.compact_tables",
+            "schedule": crontab(hour="5", minute="27"),
+        },
+        # Data whose workspace no longer exists (a delete whose purge never finished, or one from
+        # before purges existed). Refuses on any sign the registry read is wrong.
+        "tracely.purge_orphans-nightly": {
+            "task": "tracely.purge_orphans",
+            "schedule": crontab(hour="5", minute="47"),
+        },
     },
     timezone="UTC",
 )

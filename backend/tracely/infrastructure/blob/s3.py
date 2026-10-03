@@ -5,6 +5,8 @@ nothing is queued unless the blob is durable). The worker reads it back.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import boto3
 import structlog
 from botocore.config import Config
@@ -73,30 +75,60 @@ def get_blob_typed(key: str) -> tuple[bytes, str]:
     return obj["Body"].read(), obj.get("ContentType") or "application/octet-stream"
 
 
-def _delete_prefix(prefix: str) -> int:
-    """Delete every object under one key prefix. Returns how many went.
+def _delete_prefix(prefix: str, before: datetime | None = None) -> int:
+    """Delete every object under one key prefix — only those written before `before`, when given.
+    Returns how many went.
 
-    Best-effort: object storage being unavailable must not block the delete (the rows are already
-    gone), so failures are counted as zero rather than raised.
+    RAISES on failure, including the per-key `Errors` a `delete_objects` call reports without
+    raising. This used to swallow everything and return 0, and run inside the HTTP request: on a
+    workspace with 108k bodies, MinIO alone took 197 s to *list* the prefix, the request outlived
+    the browser, a deploy killed it, and 2 GB stayed in the bucket with nothing to say so. It now
+    only runs in `tracely.purge_project`, which retries — so failing loudly is what makes it finish.
+
+    `before` is what makes a background purge safe on a workspace that keeps ingesting: a wipe
+    deletes the bodies that existed when the user pressed the button, never the ones that
+    arrived while the purge was queued.
     """
     client = _s3()
     removed = 0
-    try:
-        for page in client.get_paginator("list_objects_v2").paginate(
-            Bucket=settings.s3_bucket, Prefix=prefix
-        ):
-            batch = [{"Key": o["Key"]} for o in page.get("Contents", [])]
-            if not batch:
-                continue
-            # delete_objects caps at 1000 keys, which is exactly one page's default maximum.
-            client.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": batch})
-            removed += len(batch)
-    except Exception as exc:
-        log.warning("blob_prefix_delete_failed", prefix=prefix, error=str(exc))
+    for page in client.get_paginator("list_objects_v2").paginate(
+        Bucket=settings.s3_bucket, Prefix=prefix
+    ):
+        batch = [
+            {"Key": o["Key"]}
+            for o in page.get("Contents", [])
+            if before is None or o["LastModified"] < before
+        ]
+        if not batch:
+            continue
+        # delete_objects caps at 1000 keys, which is exactly one page's default maximum.
+        res = client.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": batch})
+        if res.get("Errors"):
+            raise RuntimeError(f"delete_objects under {prefix!r}: {res['Errors'][:3]}")
+        removed += len(batch)
     return removed
 
 
-def delete_project_blobs(project_id: str, *, traces_only: bool = False) -> int:
+def project_ids_in_storage() -> set[str]:
+    """Every project id that owns at least one object, at any of the three depths a project's
+    keys live at. Delimiter listing — a handful of entries, not the objects themselves."""
+    base = settings.s3_event_prefix
+    client = _s3()
+    found: set[str] = set()
+    for sub in ("", "fixtures/", "cases/"):
+        for page in client.get_paginator("list_objects_v2").paginate(
+            Bucket=settings.s3_bucket, Prefix=f"{base}{sub}", Delimiter="/"
+        ):
+            for cp in page.get("CommonPrefixes", []):
+                name = cp["Prefix"][len(base) + len(sub) :].rstrip("/")
+                if name and not (sub == "" and name in ("fixtures", "cases")):
+                    found.add(name)
+    return found
+
+
+def delete_project_blobs(
+    project_id: str, *, traces_only: bool = False, before: datetime | None = None
+) -> int:
     """Delete a project's blobs. Returns how many objects went.
 
     The blobs are the source of truth — the customer's payloads verbatim — so anything that
@@ -115,8 +147,8 @@ def delete_project_blobs(project_id: str, *, traces_only: bool = False) -> int:
     base = settings.s3_event_prefix
     project_prefix = f"{base}{project_id}/otlp/" if traces_only else f"{base}{project_id}/"
     return (
-        _delete_prefix(project_prefix)
-        + _delete_prefix(f"{base}fixtures/{project_id}/")
+        _delete_prefix(project_prefix, before)
+        + _delete_prefix(f"{base}fixtures/{project_id}/", before)
         # the durable case artifacts (`domain/regression/artifact.py`) — deleted with the cases
-        + _delete_prefix(f"{base}cases/{project_id}/")
+        + _delete_prefix(f"{base}cases/{project_id}/", before)
     )

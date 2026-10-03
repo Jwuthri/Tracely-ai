@@ -336,6 +336,50 @@ def cap_system_logs_task(self) -> dict:
         return {"error": str(exc)}
 
 
+@celery_app.task(
+    name="tracely.purge_project",
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_backoff_max=3600,
+    max_retries=10,
+)
+def purge_project_task(self, project_id: str, before: str | None = None) -> dict:
+    """Physically remove a wiped / deleted workspace's data — its blobs and its masked
+    ClickHouse rows (`services/purge_service`). Retried with backoff and acks-late, because the
+    whole point is that it finishes: the version that ran inside the HTTP request was killed by a
+    deploy and left 2 GB in the bucket. Idempotent, so a retry just finishes the job."""
+    from tracely.services.purge_service import purge_project
+
+    return purge_project(project_id, before)
+
+
+@celery_app.task(name="tracely.purge_orphans", bind=True, max_retries=0)
+def purge_orphans_task(self) -> dict:
+    """Nightly backstop: ClickHouse rows and objects whose workspace no longer exists. Refuses
+    (deletes nothing) when the registry read looks wrong — see `purge_service.purge_orphans`."""
+    from tracely.services.purge_service import purge_orphans
+
+    try:
+        return purge_orphans()
+    except Exception as exc:  # noqa: BLE001 — tomorrow's run retries; this one deletes nothing more
+        log.warning("purge_orphans_failed", error=str(exc))
+        return {"error": str(exc)}
+
+
+@celery_app.task(name="tracely.compact_tables", bind=True, max_retries=0)
+def compact_tables_task(self) -> dict:
+    """Physically drop masked and superseded rows from `events`/`scores` (beat, nightly) — see
+    `maintenance.compact_tables`. Never retried: a missed night costs read speed, not data."""
+    from tracely.infrastructure.clickhouse.maintenance import compact_tables
+
+    try:
+        return compact_tables()
+    except Exception as exc:  # noqa: BLE001 — a missed compaction costs speed, never a grade
+        log.warning("compact_tables_failed", error=str(exc))
+        return {"error": str(exc)}
+
+
 @celery_app.task(name="tracely.selfcheck", bind=True, max_retries=0)
 def selfcheck_task(self) -> dict:
     """Watch our own deployment (beat, every 5 min). Tracely's failure modes are quiet — a dead

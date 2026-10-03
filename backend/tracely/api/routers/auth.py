@@ -37,11 +37,11 @@ from tracely.auth.principal import Principal, select_membership
 from tracely.config import settings
 from tracely.domain.billing import KIND_COMPANY
 from tracely.infrastructure import mailer
-from tracely.infrastructure.blob import s3
 from tracely.infrastructure.clickhouse import deletes
 from tracely.infrastructure.db import repositories
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.session import get_session
+from tracely.services import purge_service
 
 log = structlog.get_logger()
 
@@ -221,7 +221,9 @@ async def delete_organization(
                 repositories.project_delete(s, pid, usage_heir_id=None)
 
         await run_in_threadpool(drop)
-        await run_in_threadpool(s3.delete_project_blobs, pid)
+        # Blobs + masked rows in the background: inline, one big workspace's bucket purge
+        # outlived the request and was killed half-way. The nightly orphan sweep backstops it.
+        await run_in_threadpool(purge_service.schedule_purge, pid, None)
 
     def finish() -> dict:
         with SyncSessionLocal() as s:

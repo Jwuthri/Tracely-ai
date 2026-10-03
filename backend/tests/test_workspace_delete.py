@@ -59,7 +59,6 @@ def _stores(tmp_path, monkeypatch, engine):
         return {"events": 0}
 
     monkeypatch.setattr(admin.deletes, "delete_project_events", _no_events)
-    monkeypatch.setattr(admin.s3, "delete_project_blobs", lambda project_id: 0)
     yield
     sync_eng.dispose()
 
@@ -86,7 +85,7 @@ async def _second_workspace(session, project, slug="second") -> str:
     return sib.id
 
 
-async def test_admin_deletes_the_active_workspace(client, make_workspace, session):
+async def test_admin_deletes_the_active_workspace(client, make_workspace, session, purges):
     proj, _user, _key = await make_workspace("acme", "tk_acme", "boss@x.test")
     sib_id = await _second_workspace(session, proj)
     proj_id = proj.id
@@ -100,6 +99,8 @@ async def test_admin_deletes_the_active_workspace(client, make_workspace, sessio
     )
     assert r.status_code == 200, r.text
     assert r.json()["switch_to"] == sib_id  # the caller's cookie must move here
+    # every blob of it (attachments too) — no cutoff, the workspace is gone — in the background
+    assert purges == [(proj_id, None)]
 
     session.expire_all()
     assert await session.get(models.Project, proj_id) is None

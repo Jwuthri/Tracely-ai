@@ -536,6 +536,11 @@ async def sessions_overview(
     order_clause = session_order_clause(sort, order)
     time_clause = ""
     internal_clause = "" if include_internal else f" AND {_REAL}"
+    # PREWHERE, so an eval recording's judge prompt — which embeds the whole conversation, making
+    # these the widest rows in the table, ~75% of them in prod — is never decompressed just to be
+    # dropped. Safe under FINAL only because `internal_kind` is identical across every version of
+    # a row (a tombstone copies it); `is_deleted` is NOT, which is why it stays in WHERE.
+    internal_prewhere = "" if include_internal else f"PREWHERE {_REAL} "
     params: dict = {"p": project_id, "n": max(limit, 0), "o": max(offset, 0), "adv": list(advisory)}
     if from_ts:
         time_clause += " AND start_time >= parseDateTimeBestEffort({from:String})"
@@ -607,7 +612,7 @@ async def sessions_overview(
               (groupArrayArray(mapKeys(mapFilter((k, v) -> startsWith(k, 'tracely.metadata.'), CAST(metadata, 'Map(String, String)')))),
                groupArrayArray(mapValues(mapFilter((k, v) -> startsWith(k, 'tracely.metadata.'), CAST(metadata, 'Map(String, String)'))))),
               'Map(String, String)')                                      AS t_meta{q_inner}
-          FROM events FINAL WHERE project_id = {{p:String}} AND is_deleted = 0{time_clause}{internal_clause}
+          FROM events FINAL {internal_prewhere}WHERE project_id = {{p:String}} AND is_deleted = 0{time_clause}
           GROUP BY trace_id
           {agent_clause}
         )

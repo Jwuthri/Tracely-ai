@@ -97,6 +97,10 @@ def test_delete_trace_scopes_to_the_recorded_groups(monkeypatch):
     deletes.delete_trace("p1", "t1", ["on_topic"])
     sql, params = read[-1]
     assert "step_name IN" in sql and params["n"] == ["on_topic"]
+    # trace_id narrows before FINAL; step_name must not (a tombstone does not carry it)
+    prewhere, where = sql.split("PREWHERE", 1)[1].split(" WHERE ", 1)
+    assert "trace_id = {t:String}" in prewhere and "step_name" not in prewhere
+    assert "step_name" in where and "is_deleted = 0" in where
 
     read.clear()
     deletes.delete_trace("p1", "t1")  # no groups → the old whole-trace replace

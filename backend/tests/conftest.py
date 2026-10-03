@@ -188,3 +188,15 @@ def make_workspace(session):
         return proj, user, k
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def purges(monkeypatch):
+    """Every workspace-level delete hands its slow half to `tracely.purge_project` via
+    `purge_service.schedule_purge`. Unstubbed, a test would reach for a real Redis broker. The
+    list records `(project_id, before)` so tests can assert the hand-off itself."""
+    from tracely.services import purge_service
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(purge_service, "schedule_purge", lambda pid, before=None: calls.append((pid, before)))
+    return calls

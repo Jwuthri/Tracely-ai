@@ -72,22 +72,6 @@ def no_clickhouse(monkeypatch):
     return calls
 
 
-@pytest.fixture(autouse=True)
-def no_blobs(monkeypatch):
-    """Stub object storage. Autouse: without it the wipe reaches for a real bucket, and
-    `_delete_prefix` swallows the failure — so the leak this pins would come back green."""
-    import tracely.api.routers.admin as admin_router
-
-    calls: list[tuple[str, bool]] = []
-
-    def fake(project_id: str, *, traces_only: bool = False) -> int:
-        calls.append((project_id, traces_only))
-        return 42
-
-    monkeypatch.setattr(admin_router.s3, "delete_project_blobs", fake)
-    return calls
-
-
 async def _owner(client) -> tuple[str, str]:
     r = await client.post("/auth/register", json={"email": "o@x.test", "password": "hunter2-pw"})
     assert r.status_code == 200, r.text
@@ -294,12 +278,16 @@ async def test_wipe_is_project_scoped_and_idempotent(client, sync_db, no_clickho
         assert s.get(models.EvaluationCase, other) is not None  # another project is untouched
 
 
-async def test_wipe_deletes_the_raw_otlp_bodies(client, sync_db, no_clickhouse, no_blobs):
+async def test_wipe_queues_the_purge_of_the_raw_otlp_bodies(client, sync_db, no_clickhouse, purges):
     """The bug this pins: the wipe used to clear ClickHouse and Postgres and leave every raw OTLP
-    body in the bucket — gigabytes of the customer's payloads, unreachable by anything in the
-    product, on an endpoint whose docstring promises to delete their data."""
+    body in the bucket. Then it ran the purge inline — 197 s just to list one workspace's bodies,
+    killed by a deploy, 2 GB left behind. Now it hands the purge to the worker, with the moment
+    the button was pressed as the cutoff so bodies that arrive afterwards survive."""
+    from datetime import datetime, timezone
+
     tok, project_id = await _owner(client)
     _seed_case(sync_db, project_id)
+    t0 = datetime.now(timezone.utc)
 
     r = await client.request(
         "DELETE",
@@ -308,15 +296,16 @@ async def test_wipe_deletes_the_raw_otlp_bodies(client, sync_db, no_clickhouse, 
         json={"confirm": "DELETE"},
     )
     assert r.status_code == 200, r.text
-    # traces_only: the OTLP bodies and the deleted cases' fixtures, not the chat attachments
-    assert no_blobs == [(project_id, True)]
-    assert r.json()["deleted"]["blobs"] == 42
+    assert r.json()["purge"] == "queued"
+    [(pid, before)] = purges
+    assert pid == project_id
+    assert before is not None and t0 <= before <= datetime.now(timezone.utc)
 
 
-async def test_wipe_refused_before_anything_is_deleted(client, sync_db, no_clickhouse, no_blobs):
+async def test_wipe_refused_before_anything_is_deleted(client, sync_db, no_clickhouse, purges):
     tok, _ = await _owner(client)
     r = await client.request(
         "DELETE", "/api/project/data", headers={"Authorization": f"Bearer {tok}"}, json={}
     )
     assert r.status_code == 400
-    assert no_blobs == []  # the confirm guard covers the blobs too
+    assert purges == []  # the confirm guard covers the purge too
