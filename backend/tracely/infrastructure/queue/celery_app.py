@@ -77,6 +77,12 @@ celery_app.conf.update(
             "task": "tracely.purge_orphans",
             "schedule": crontab(hour="5", minute="47"),
         },
+        # Raw OTLP bodies past the 90-day horizon the tables already enforce. Last in the window:
+        # it lists every body, so it holds the solo worker longest.
+        "tracely.expire_otlp_blobs-nightly": {
+            "task": "tracely.expire_otlp_blobs",
+            "schedule": crontab(hour="6", minute="7"),
+        },
     },
     timezone="UTC",
 )

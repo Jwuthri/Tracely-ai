@@ -36,6 +36,11 @@ log = structlog.get_logger()
 ORPHAN_QUIET_DAYS = 7
 
 
+# Raw OTLP bodies used to outlive the traces they carry: `events` drops a span 90 days after it
+# happened (ddl/0003_events_ttl), but nothing ever expired the body it was ingested from.
+OTLP_RETENTION_DAYS = 90
+
+
 def schedule_purge(project_id: str, before: datetime | None = None) -> None:
     """Queue the physical purge of one workspace's deleted data.
 
@@ -100,3 +105,23 @@ def purge_orphans(now: datetime | None = None) -> dict:
 def _aware(ts: datetime) -> datetime:
     """ClickHouse hands back naive UTC datetimes."""
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def expire_otlp_blobs(now: datetime | None = None) -> dict:
+    """Delete raw OTLP bodies older than OTLP_RETENTION_DAYS, in every workspace (beat, nightly).
+
+    Only `{project}/otlp/`: case fixtures and artifacts stay (a promoted case must keep running
+    after its source trace has expired), and so do chat attachments. Nothing reads a body after
+    ingest, so past the table's own horizon it is bytes no feature can reach.
+
+    ponytail: lists every body nightly (~550 objects/s on this MinIO) — minutes at today's volume.
+    When that gets slow, tag bodies on upload and let a bucket lifecycle rule expire them instead.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=OTLP_RETENTION_DAYS)
+    removed = {pid: s3.delete_otlp_blobs(pid, cutoff) for pid in sorted(s3.project_ids_in_storage())}
+    removed = {pid: n for pid, n in removed.items() if n}
+    if removed:
+        log.info("otlp_blobs_expired", before=cutoff.isoformat(), by_project=removed)
+    return {"expired": sum(removed.values()), "before": cutoff.isoformat()}
+

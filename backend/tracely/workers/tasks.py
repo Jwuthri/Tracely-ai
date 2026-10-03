@@ -367,6 +367,20 @@ def purge_orphans_task(self) -> dict:
         return {"error": str(exc)}
 
 
+@celery_app.task(name="tracely.expire_otlp_blobs", bind=True, max_retries=0)
+def expire_otlp_blobs_task(self) -> dict:
+    """Delete raw OTLP bodies past the 90-day horizon the ClickHouse tables already enforce
+    (beat, nightly) — see `purge_service.expire_otlp_blobs`. A run cut short by the time limit
+    just leaves the rest for tomorrow."""
+    from tracely.services.purge_service import expire_otlp_blobs
+
+    try:
+        return expire_otlp_blobs()
+    except Exception as exc:  # noqa: BLE001 — a missed night costs disk, never data
+        log.warning("expire_otlp_blobs_failed", error=str(exc))
+        return {"error": str(exc)}
+
+
 @celery_app.task(name="tracely.compact_tables", bind=True, max_retries=0)
 def compact_tables_task(self) -> dict:
     """Physically drop masked and superseded rows from `events`/`scores` (beat, nightly) — see

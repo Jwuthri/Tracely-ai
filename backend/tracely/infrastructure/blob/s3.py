@@ -126,6 +126,13 @@ def project_ids_in_storage() -> set[str]:
     return found
 
 
+def delete_otlp_blobs(project_id: str, before: datetime) -> int:
+    """Delete one project's raw OTLP bodies written before `before` — and ONLY those. Not
+    `delete_project_blobs`: that also takes `fixtures/` and `cases/`, which a promoted regression
+    case needs long after its source trace has expired."""
+    return _delete_prefix(f"{settings.s3_event_prefix}{project_id}/otlp/", before)
+
+
 def delete_project_blobs(
     project_id: str, *, traces_only: bool = False, before: datetime | None = None
 ) -> int:

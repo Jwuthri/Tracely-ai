@@ -237,3 +237,37 @@ def test_sweep_handles_naive_clickhouse_timestamps(world):
     """ClickHouse hands back naive UTC; comparing one with an aware `now` raises."""
     world(storage=set(), last_write={"gone": (NOW - timedelta(days=30)).replace(tzinfo=None)}, registry={"x"})
     assert purge_service.purge_orphans(now=NOW)["purged"] == ["gone"]
+
+
+# ── 90-day expiry of raw OTLP bodies ──────────────────────────────────────────
+
+
+def test_expiry_takes_only_old_otlp_bodies(bucket):
+    """Past the 90-day horizon the tables already enforce, a raw body is bytes nothing can reach.
+    But case fixtures and artifacts must outlive their source trace — a promoted regression case
+    keeps running after the trace it came from has expired — and chat attachments aren't traces."""
+    ancient = NOW - timedelta(days=91)
+    recent = NOW - timedelta(days=89)
+    b = bucket({
+        "events/p1/otlp/old.json": ancient,
+        "events/p1/otlp/new.json": recent,
+        "events/p2/otlp/old.pb": ancient,
+        "events/fixtures/p1/bundle.json": ancient,
+        "events/cases/p1/artifact.json": ancient,
+        "events/p1/assistant/chat.png": ancient,
+    })
+    out = purge_service.expire_otlp_blobs(now=NOW)
+    assert out["expired"] == 2
+    assert set(b.objects) == {
+        "events/p1/otlp/new.json",
+        "events/fixtures/p1/bundle.json",
+        "events/cases/p1/artifact.json",
+        "events/p1/assistant/chat.png",
+    }
+
+
+def test_expiry_is_scheduled_nightly():
+    from tracely.infrastructure.queue.celery_app import celery_app
+
+    entry = celery_app.conf.beat_schedule["tracely.expire_otlp_blobs-nightly"]
+    assert entry["task"] == "tracely.expire_otlp_blobs"
