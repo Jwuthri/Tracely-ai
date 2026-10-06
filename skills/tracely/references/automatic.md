@@ -14,7 +14,7 @@ pip install "tracely-ai[openai]"
 | Providers | `openai` · `anthropic` · `google` · `mistral` · `bedrock` · `groq` |
 | Harnesses | `langchain` (covers LangGraph) · `llama-index` · `crewai` · `litellm` · `openrouter` |
 | Agent SDKs | `openai-agents` · `google-adk` · `claude-agent-sdk` |
-| Drop-ins (no instrumentor) | `xai` · `openrouter-openai` · `google-genai` · `mistral-sdk` |
+| Drop-ins (no instrumentor) | `xai` · `atlascloud` · `openrouter-openai` · `google-genai` · `mistral-sdk` |
 | Everything | `all` (the four drop-ins and `openllmetry` stay separate installs) |
 
 Extras install [OpenInference](https://github.com/Arize-ai/openinference) packages by default.
@@ -149,8 +149,8 @@ client = OpenAI()                    # pre-wrapped
 client = wrap_openai(existing)       # or wrap one you built
 ```
 
-Six presets: `openai`, `anthropic`, `google`, `mistral`, plus OpenAI-compatible `openrouter` and
-`xai` (`from tracely_sdk.xai import Grok`). Same attributes as the manual `llm()` helper, so they
+Seven presets: `openai`, `anthropic`, `google`, `mistral`, plus OpenAI-compatible `openrouter`,
+`xai` (`from tracely_sdk.xai import Grok`) and `atlascloud` (`from tracely_sdk.atlascloud import AtlasCloud`). Same attributes as the manual `llm()` helper, so they
 inherit `trace()` context. Non-streaming sync + async capture model · messages · output · usage ·
 tool calls; for **full streaming capture prefer the instrumentor path**.
 

@@ -46,6 +46,7 @@ claude-agent-sdk = ["openinference-instrumentation-claude-agent-sdk>=0.1.0", "cl
 openrouter = ["langchain-openrouter>=0.1.0"]  # first-party OpenRouter chat model (traced via langchain)
 # non-patching drop-ins — install just the provider SDK (no extra instrumentor needed; tracely_sdk.<provider> wraps the client instance)
 xai = ["openai>=1.0"]                # tracely_sdk.xai — Grok via OpenAI-compatible endpoint
+atlascloud = ["openai>=1.0"]         # tracely_sdk.atlascloud — Atlas Cloud via OpenAI-compatible endpoint
 openrouter-openai = ["openai>=1.0"]  # tracely_sdk.openrouter — OpenAI-compatible drop-in (alt to the langchain path)
 google-genai = ["google-genai>=0.3"] # tracely_sdk.google — native google-genai SDK drop-in
 mistral-sdk = ["mistralai>=2.9.4"]     # tracely_sdk.mistral — native mistralai SDK drop-in

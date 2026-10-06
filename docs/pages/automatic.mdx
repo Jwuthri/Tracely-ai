@@ -24,7 +24,7 @@ Each extra pulls the matching auto-instrumentor:
 | Providers | `openai` · `anthropic` · `google` · `mistral` · `bedrock` · `groq` |
 | Harnesses | `langchain` (covers LangGraph) · `llama-index` · `crewai` · `litellm` · `openrouter` (installs `langchain-openrouter`, traced via the `langchain` instrumentor) |
 | Agent SDKs | `openai-agents` · `google-adk` · `claude-agent-sdk` |
-| Drop-ins (no instrumentor) | `xai` · `openrouter-openai` · `google-genai` · `mistral-sdk` |
+| Drop-ins (no instrumentor) | `xai` · `atlascloud` · `openrouter-openai` · `google-genai` · `mistral-sdk` |
 | Everything | `all` — every instrumentor extra above (the four drop-in extras and `openllmetry` stay separate installs) |
 
 Tracely adopts the OpenTelemetry ecosystem rather than reinventing it: the extras install
@@ -191,8 +191,8 @@ client = wrap_openai(OpenAI())
 openai.OpenAI().chat.completions.create(...)
 ```
 
-Six providers ship a drop-in — `openai`, `anthropic`, `google`, `mistral`, plus the OpenAI-compatible
-`openrouter` and `xai` presets:
+Seven providers ship a drop-in — `openai`, `anthropic`, `google`, `mistral`, plus the OpenAI-compatible
+`openrouter`, `xai` and `atlascloud` presets:
 
 ```python
 from tracely_sdk.anthropic import Anthropic, wrap_anthropic
