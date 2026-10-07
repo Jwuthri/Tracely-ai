@@ -41,7 +41,7 @@ crewai = ["openinference-instrumentation-crewai>=0.1.0", "crewai"]
 litellm = ["litellm>=1.40"]
 # first-party agent SDKs (instrumentor + the SDK itself)
 openai-agents = ["openinference-instrumentation-openai-agents>=2.2.1", "openai-agents"]
-google-adk = ["openinference-instrumentation-google-adk>=0.1.0", "google-adk"]
+google-adk = ["openinference-instrumentation-google-adk>=1.0.2", "google-adk"]
 claude-agent-sdk = ["openinference-instrumentation-claude-agent-sdk>=0.1.0", "claude-agent-sdk"]  # also needs the Claude Code CLI on PATH
 openrouter = ["langchain-openrouter>=0.1.0"]  # first-party OpenRouter chat model (traced via langchain)
 # non-patching drop-ins — install just the provider SDK (no extra instrumentor needed; tracely_sdk.<provider> wraps the client instance)
