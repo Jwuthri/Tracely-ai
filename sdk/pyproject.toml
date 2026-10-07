@@ -29,7 +29,7 @@ Issues = "https://github.com/Jwuthri/Tracely-ai/issues"
 [project.optional-dependencies]
 # frontier providers
 openai = ["openinference-instrumentation-openai>=0.1.0"]
-anthropic = ["openinference-instrumentation-anthropic>=2.1.2", "anthropic"]
+anthropic = ["openinference-instrumentation-anthropic>=3.0.1", "anthropic"]
 google = ["openinference-instrumentation-google-genai>=0.1.0", "google-genai>=2.23.0"]
 mistral = ["openinference-instrumentation-mistralai>=0.1.0", "mistralai>=2.9.4"]
 bedrock = ["openinference-instrumentation-bedrock>=0.1.0"]
