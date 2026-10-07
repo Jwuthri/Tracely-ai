@@ -51,7 +51,7 @@ dependencies = [
   "mcp>=1.27",
   # Hosted-cloud billing (services/billing_service.py). Pure-Python and small; self-hosters
   # carry the wheel but the code paths are dead unless BILLING_ENABLED + Stripe keys are set.
-  "stripe>=11",
+  "stripe>=16.0.0",
   # Alert rule flows (domain/alerting): every user-authored string field is a Jinja template
   # rendered in a sandbox, and the `python_expression` step is one expression evaluated with an
   # allowlist instead of eval(). Both are user input from the browser, so neither runs unsandboxed.
