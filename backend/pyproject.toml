@@ -39,7 +39,7 @@ dependencies = [
   # unconditionally below that, which doesn't exist on langchain>=1.0 (moved to langchain_core).
   "posthog>=7",
   # auth & multi-tenancy: JWT sign/verify (HS256 local + RS256/JWKS Clerk), argon2 password hashing
-  "pyjwt[crypto]>=2.8",
+  "pyjwt[crypto]>=2.15.1",
   "argon2-cffi>=23.1",
   # Fernet symmetric encryption for workspace-supplied secrets at rest (e.g. a project's own
   # OpenRouter key) — already pulled in transitively by pyjwt[crypto]; declared directly since we
