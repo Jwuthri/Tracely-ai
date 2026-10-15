@@ -645,9 +645,13 @@ export function Assistant() {
                 )}
                 {noKey && (
                   <div className="animate-fadeup rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 text-[12px] leading-relaxed text-warn">
-                    The assistant has no model configured on this deployment — set
+                    The assistant has no model configured — add an OpenRouter key in{" "}
+                    <a href="/settings/api-keys" className="underline underline-offset-2">
+                      Settings → API keys
+                    </a>{" "}
+                    (or set
                     <code className="mx-1 font-mono text-[11px]">OPENROUTER_API_KEY</code>
-                    on the backend and ask again.
+                    on the backend) and ask again.
                   </div>
                 )}
               </div>

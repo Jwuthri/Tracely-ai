@@ -168,6 +168,7 @@ def test_the_prompt_names_the_surfaces_the_assistant_can_send_people_to():
 async def test_no_llm_key_is_a_state_not_a_crash(db, monkeypatch):
     monkeypatch.setattr(svc.provider, "use_server_key", contextlib.nullcontext)
     monkeypatch.setattr(svc.provider, "llm_enabled", lambda: False)
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: None)  # nor a workspace key
     assert await turn("p1", "u1", chat_id=None, message="hi") == {"type": "disabled"}
 
 
@@ -192,8 +193,9 @@ async def test_the_agent_gets_the_callers_own_credentials(db, model):
     assert svc.assistant_tools.build_tools.__module__ == "tracely.services.assistant_tools"
 
 
-async def test_the_assistant_never_spends_the_customers_key(db, monkeypatch):
-    """The widget explains OUR product; it must not bill — or depend on — a workspace's key."""
+async def test_with_our_key_the_assistant_never_spends_the_customers(db, monkeypatch):
+    """The widget explains OUR product; while we have a key it must not bill — or depend on — a
+    workspace's key."""
     monkeypatch.setattr(
         svc.provider,
         "use_project_key",
@@ -209,6 +211,34 @@ async def test_the_assistant_never_spends_the_customers_key(db, monkeypatch):
     monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: None)
     out = await turn("p1", "u1", chat_id=None, message="hi")
     assert out["reply"] == "ok"
+
+
+async def test_without_our_key_the_assistant_runs_on_the_workspaces_own(db, monkeypatch):
+    """A self-host sets no server key. Rather than a dead widget in every workspace, the model
+    runs on the key that workspace brought — the same one its evaluators already spend."""
+    monkeypatch.setattr(provider.settings, "openrouter_api_key", "")
+    monkeypatch.setattr(provider.settings, "llm_judge_api_key", "")
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: "token")
+    monkeypatch.setattr(provider, "_decrypt_project_key", lambda _t: "sk-theirs")
+    seen: dict = {}
+    monkeypatch.setattr(
+        svc.provider,
+        "stream_agent",
+        lambda prompt, **kw: (
+            seen.update(key=provider.effective_openrouter_key())
+            or _stream({"type": "final", "text": "ok", "usage": {}})
+        ),
+    )
+    out = await turn("p1", "u1", chat_id=None, message="hi")
+    assert out["reply"] == "ok"
+    assert seen["key"] == "sk-theirs"
+
+
+def test_our_key_wins_over_the_workspaces(monkeypatch):
+    monkeypatch.setattr(provider.settings, "openrouter_api_key", "sk-ours")
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: pytest.fail("looked up theirs"))
+    with provider.use_assistant_key("p1"):
+        assert provider.effective_openrouter_key() == "sk-ours"
 
 
 def test_server_scope_survives_the_hosted_bring_your_own_key_gate(monkeypatch):

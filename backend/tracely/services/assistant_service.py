@@ -6,7 +6,9 @@ workspace — a new evaluator column, a scenario, a regression case — on the u
 
 Two keys are in play and they are not the same key. The MODEL runs on TRACELY'S OpenRouter key
 (`provider.use_server_key`, CLAUDE.md's one sanctioned exception) because the assistant explains
-our product and must work in a workspace that configured no key of its own. The TOOLS run on the
+our product and must work in a workspace that configured no key of its own. Only a deployment
+with no key of ours (a self-host) runs it on the workspace's key instead
+(`provider.use_assistant_key`). The TOOLS run on the
 caller's own credentials, forwarded from the request — so what the agent can see and change is
 exactly what the person chatting can see and change. We pay for the tokens; we do not widen
 anybody's access.
@@ -313,11 +315,12 @@ async def answer_stream(
 
     # OUR key for the model, deliberately: the assistant explains Tracely, so it must answer in a
     # workspace that has configured no key of its own (CLAUDE.md's one exception to
-    # `use_project_key`). `llm_enabled()` is checked INSIDE the wrap because under
-    # REQUIRE_PROJECT_LLM_KEY an unscoped call fails closed — "we pay for this one" must not look
-    # like a forgot-to-wrap bug. Nothing yields inside the wrap: `stream_agent` bakes the key into
-    # the model as it is constructed, so the streaming itself belongs outside.
-    with provider.use_server_key():
+    # `use_project_key`). A deployment with no key of ours falls back to the workspace's own.
+    # `llm_enabled()` is checked INSIDE the wrap because under REQUIRE_PROJECT_LLM_KEY an unscoped
+    # call fails closed — "we pay for this one" must not look like a forgot-to-wrap bug. Nothing
+    # yields inside the wrap: `stream_agent` bakes the key into the model as it is constructed,
+    # so the streaming itself belongs outside.
+    with provider.use_assistant_key(project_id):
         enabled = provider.llm_enabled()
         if enabled:
             text = await run_in_threadpool(_transcript, project_id, history, path, context)

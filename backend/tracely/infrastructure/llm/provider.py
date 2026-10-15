@@ -371,6 +371,19 @@ def use_server_key() -> Iterator[None]:
         _project_key_ctx.reset(token)
 
 
+@contextlib.contextmanager
+def use_assistant_key(project_id: str) -> Iterator[None]:
+    """The in-app assistant's scope: OUR key when this deployment has one (`use_server_key`),
+    otherwise the workspace's own (`use_project_key`). A self-host typically sets no server key
+    and would otherwise ship a dead widget in every workspace, even ones that brought a key."""
+    with use_server_key():
+        if llm_enabled():
+            yield
+            return
+    with use_project_key(project_id):
+        yield
+
+
 def project_scoped() -> bool:
     """True inside `use_project_key()` — i.e. server-wide credentials do not apply here."""
     return _project_key_ctx.get() is not None
