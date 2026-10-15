@@ -216,7 +216,9 @@ workspace.
 
 Prefer to wire it yourself, or deploying somewhere else? The manual walkthrough is
 [`deploy/railway/README.md`](deploy/railway/README.md) (every variable pre-written in
-[`.env.railway.example`](deploy/railway/.env.railway.example)), and the production-hardening runbook
+[`.env.railway.example`](deploy/railway/.env.railway.example)). On AWS EKS or any other Kubernetes cluster,
+[`deploy/eks/README.md`](deploy/eks/README.md) runs the whole stack in one namespace with no cloud IAM.
+The production-hardening runbook
 — auth guards, backups, worker pool, post-deploy verification — is
 [`guides/DEPLOY.md`](guides/DEPLOY.md).
 

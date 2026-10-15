@@ -1,0 +1,256 @@
+# Tracely on Kubernetes (EKS or any cluster): the docker-compose stack in one namespace.
+# Infra runs in-cluster (MinIO, not S3) so nothing here needs cloud IAM. No ingress.
+# ponytail: single-replica StatefulSets, no backups; move to RDS/S3 if this outlives a trial.
+# Don't apply this file directly: point an overlay at this directory. See README.md.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tracely-env
+  namespace: tracely
+data:
+  TRACELY_ENV: prod             # refuse-to-boot guards on, no published dev key seeded
+  AUTH_MODE: local              # email/password; first sign-up claims the deployment
+  ALLOW_PUBLIC_SIGNUP: "false"
+  ALLOW_PRIVATE_URLS: "true"    # agent endpoints are in-cluster Connectly services
+  CLICKHOUSE_HOST: clickhouse
+  CLICKHOUSE_PORT: "8123"
+  CLICKHOUSE_USER: default
+  CLICKHOUSE_DATABASE: tracely
+  CH_SYSTEM_LOG_TTL_DAYS: "3"
+  CELERY_POOL: solo
+  CELERY_CONCURRENCY: "1"
+  CELERY_QUEUE: ingestion
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_REGION: us-east-1
+  S3_ACCESS_KEY_ID: tracely
+  S3_BUCKET: tracely-events
+  S3_EVENT_PREFIX: events/
+  INTERNAL_API_URL: http://backend:8000
+  FRONTEND_ORIGIN: http://localhost:3001
+  APP_BASE_URL: http://localhost:3001
+  LLM_MAX_OUTPUT_TOKENS: "4096"
+  INTROSPECTION_ENABLED: "true"
+  EVAL_CHAT_ENABLED: "true"
+---
+# ── infra ────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, namespace: tracely }
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres, namespace: tracely }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg17
+          env:
+            - { name: POSTGRES_USER, value: tracely }
+            - { name: POSTGRES_DB, value: tracely }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }   # EBS root has lost+found
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: tracely-secrets, key: POSTGRES_PASSWORD } }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe: { exec: { command: [pg_isready, -U, tracely] }, periodSeconds: 5 }
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], storageClassName: gp3, resources: { requests: { storage: 20Gi } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: clickhouse, namespace: tracely }
+spec:
+  selector: { app: clickhouse }
+  ports: [{ name: http, port: 8123 }, { name: native, port: 9000 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: clickhouse, namespace: tracely }
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector: { matchLabels: { app: clickhouse } }
+  template:
+    metadata: { labels: { app: clickhouse } }
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.8
+          env:
+            - { name: CLICKHOUSE_DB, value: tracely }
+            - { name: CLICKHOUSE_USER, value: default }
+            - { name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: "1" }
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: { secretKeyRef: { name: tracely-secrets, key: CLICKHOUSE_PASSWORD } }
+          ports: [{ containerPort: 8123 }, { containerPort: 9000 }]
+          readinessProbe: { httpGet: { path: /ping, port: 8123 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 250m, memory: 1Gi }, limits: { memory: 3Gi } }
+          volumeMounts: [{ name: data, mountPath: /var/lib/clickhouse }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], storageClassName: gp3, resources: { requests: { storage: 50Gi } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: redis, namespace: tracely }
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: redis, namespace: tracely }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: redis } }
+  template:
+    metadata: { labels: { app: redis } }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          # ponytail: no persistence, a restart drops queued tasks; fine for a broker on a trial
+          command: [sh, -c, 'exec redis-server --maxmemory-policy noeviction --requirepass "$REDIS_PASSWORD"']
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: tracely-secrets, key: REDIS_PASSWORD } }
+          ports: [{ containerPort: 6379 }]
+          readinessProbe: { tcpSocket: { port: 6379 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 512Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: minio, namespace: tracely }
+spec:
+  selector: { app: minio }
+  ports: [{ port: 9000 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: minio, namespace: tracely }
+spec:
+  serviceName: minio
+  replicas: 1
+  selector: { matchLabels: { app: minio } }
+  template:
+    metadata: { labels: { app: minio } }
+    spec:
+      containers:
+        - name: minio
+          # Docker Hub no longer serves minio/minio: mirror a build into your registry (README §2)
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+          args: [server, /data]
+          env:
+            - { name: MINIO_ROOT_USER, value: tracely }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: tracely-secrets, key: S3_SECRET_ACCESS_KEY } }
+          ports: [{ containerPort: 9000 }]
+          readinessProbe: { httpGet: { path: /minio/health/ready, port: 9000 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 50m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [{ name: data, mountPath: /data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], storageClassName: gp3, resources: { requests: { storage: 20Gi } } }
+---
+# ── app ──────────────────────────────────────────────────────────────────────
+# one-shot: bucket, ClickHouse DDL, Alembic, LangGraph checkpointer tables, default project
+apiVersion: batch/v1
+kind: Job
+metadata: { name: migrate, namespace: tracely }
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: tracely-backend
+          command:
+            - sh
+            - -c
+            # ensure_bucket swallows errors, so wait for MinIO first or the bucket is silently skipped
+            - >-
+              until python -c "import urllib.request as u; u.urlopen('http://minio:9000/minio/health/ready')" 2>/dev/null; do sleep 2; done &&
+              python -c "from tracely.infrastructure.blob.s3 import ensure_bucket; ensure_bucket()" &&
+              python -m tracely.infrastructure.clickhouse.migrations && (cd backend && alembic upgrade head) && python -m tracely.infrastructure.llm.checkpointer && python -m tracely.services.seeding_service
+          envFrom: [{ configMapRef: { name: tracely-env } }, { secretRef: { name: tracely-secrets } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: backend, namespace: tracely }
+spec:
+  selector: { app: backend }
+  ports: [{ port: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: backend, namespace: tracely }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: backend } }
+  template:
+    metadata: { labels: { app: backend } }
+    spec:
+      containers:
+        - name: backend
+          image: tracely-backend
+          command: [uvicorn, tracely.api.main:app, --host, 0.0.0.0, --port, "8000"]
+          envFrom: [{ configMapRef: { name: tracely-env } }, { secretRef: { name: tracely-secrets } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, periodSeconds: 10, failureThreshold: 6 }
+          resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: worker, namespace: tracely }
+spec:
+  replicas: 1                   # exactly one: it also runs beat (-B)
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker } }
+    spec:
+      containers:
+        - name: worker
+          image: tracely-backend
+          command: [sh, -c, "celery -A tracely_workers.worker worker --pool=$CELERY_POOL --concurrency=$CELERY_CONCURRENCY --beat --loglevel=info"]
+          envFrom: [{ configMapRef: { name: tracely-env } }, { secretRef: { name: tracely-secrets } }]
+          resources: { requests: { cpu: 250m, memory: 1Gi }, limits: { memory: 3Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: frontend, namespace: tracely }
+spec:
+  selector: { app: frontend }
+  ports: [{ port: 3000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: frontend, namespace: tracely }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: frontend } }
+  template:
+    metadata: { labels: { app: frontend } }
+    spec:
+      containers:
+        - name: frontend
+          image: tracely-frontend
+          env:
+            - { name: TRACELY_API, value: http://backend:8000 }
+            - { name: NEXT_PUBLIC_AUTH_MODE, value: local }
+          ports: [{ containerPort: 3000 }]
+          readinessProbe: { tcpSocket: { port: 3000 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }

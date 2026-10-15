@@ -1,0 +1,19 @@
+# Copy this directory to overlays/<your-cluster>/ (gitignored) and fill in your registry.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - { name: tracely-backend, newName: <account>.dkr.ecr.<region>.amazonaws.com/tracely-backend, newTag: <git-sha> }
+  - { name: tracely-frontend, newName: <account>.dkr.ecr.<region>.amazonaws.com/tracely-frontend, newTag: <git-sha> }
+  - { name: minio/minio, newName: <account>.dkr.ecr.<region>.amazonaws.com/tracely-minio }
+# Optional: pin pods to the architecture you built for, and tolerate a tainted node pool.
+# patches:
+#   - target: { kind: (Deployment|StatefulSet|Job) }
+#     patch: |-
+#       - op: add
+#         path: /spec/template/spec/nodeSelector
+#         value: { kubernetes.io/arch: arm64 }
+#       - op: add
+#         path: /spec/template/spec/tolerations
+#         value: [{ key: karpenter.sh/nodepool, operator: Equal, value: arm64, effect: NoSchedule }]

@@ -33,3 +33,7 @@ out/
 dist/
 dist-sdk/
 .env.bak-video
+
+# per-cluster kustomize overlays (registry/account ids); only the example is committed
+deploy/eks/overlays/*
+!deploy/eks/overlays/example/
