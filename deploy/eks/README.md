@@ -134,11 +134,18 @@ OpenRouter key. With none set, ingestion and structural clustering still run.
 
 ## 6. Upgrade
 
+Pull the new Tracely version, log in to your registry, then run one command:
+
 ```bash
-TAG=$(git rev-parse --short HEAD)    # rebuild + push both images (§1), bump newTag in the overlay
-kubectl -n tracely delete job migrate   # Job specs are immutable; the new one re-runs migrations
-kubectl apply -k deploy/eks/overlays/my-cluster
+git pull
+PUBLIC_API=<backend URL users should see> deploy/eks/redeploy.sh deploy/eks/overlays/my-cluster
 ```
+
+[`redeploy.sh`](redeploy.sh) builds and pushes both images tagged with the current commit, rewrites
+`newTag` in the overlay, deletes and re-runs the `migrate` Job (Job specs are immutable), applies,
+and waits for the rollout. It refuses to run with uncommitted changes, so the tag always names real
+code. Rolling back is the same command after a `git checkout <older-commit>`. Data stays on the volumes,
+but a migration that already ran is not undone.
 
 **A StatefulSet won't replace a pod that never became ready** (for example one stuck in
 `ImagePullBackOff`). After fixing its spec, `kubectl -n tracely delete pod <name>-0`.
