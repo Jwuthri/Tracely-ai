@@ -92,6 +92,7 @@ _CURATED_MODELS: list[tuple[str, str]] = [
     # Anthropic
     ("anthropic/claude-haiku-4.5", "Anthropic Claude Haiku 4.5"),
     ("anthropic/claude-sonnet-5", "Anthropic Claude Sonnet 5"),
+    ("anthropic/claude-sonnet-5.5", "Anthropic Claude Sonnet 5.5"),
     ("anthropic/claude-opus-5.5", "Anthropic Claude Opus 5.5"),
     ("anthropic/claude-fable-5.1", "Anthropic Claude Fable 5.1"),
     # xAI
@@ -131,6 +132,7 @@ _FALLBACK_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "google/gemini-3.1-pro-preview":   (2.00, 12.00),
     "anthropic/claude-haiku-4.5":      (1.00,  5.00),
     "anthropic/claude-sonnet-5":       (2.00, 10.00),
+    "anthropic/claude-sonnet-5.5":     (2.00, 10.00),  # the assistant's default (2026-10-15)
     "anthropic/claude-opus-5.5":       (4.00, 20.00),
     "anthropic/claude-fable-5.1":      (10.00, 50.00),
     "x-ai/grok-4.7":                   (1.60,  4.80),

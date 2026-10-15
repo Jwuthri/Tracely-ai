@@ -13,6 +13,7 @@ DESTRUCTIVE = [
     ("DELETE", "/api/project/data", {"confirm": "DELETE"}),
     ("PUT", "/api/project/llm-key", {"api_key": "sk-or-leaked"}),
     ("DELETE", "/api/project/llm-key", None),
+    ("PUT", "/api/project/assistant-model", {"model": "anthropic/claude-opus-5.5"}),
     ("POST", "/api/project/agents/prune", None),
     ("POST", "/api/project/seed", None),
     ("DELETE", "/api/sessions", {"threads": ["t1"]}),

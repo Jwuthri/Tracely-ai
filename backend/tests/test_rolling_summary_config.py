@@ -91,3 +91,36 @@ async def test_settings_api_roundtrip(client, sync_db):
     # both fields omitted = back to the defaults
     r = await client.put("/api/project/rolling-summary-config", headers=h, json={})
     assert r.json()["custom"] is False
+
+
+async def test_assistant_model_api_roundtrip(client, sync_db, monkeypatch):
+    """Same settings shape for the assistant's model: the server default until a workspace picks
+    its own, null resets, and the choices are listed under the assistant's own key scope."""
+    from tracely.infrastructure.llm import provider
+
+    monkeypatch.setattr(provider, "list_models", lambda: [
+        {"id": "anthropic/claude-opus-5.5", "label": "Opus", "kind": "llm", "context_tokens": None},
+        {"id": "typesafe/jev-1.13", "label": "Jev", "kind": "decision", "context_tokens": None},
+    ])
+    monkeypatch.setattr(provider, "is_decision_model", lambda m: m.startswith("typesafe/"))
+    tok = await _owner_token(client)
+    h = {"Authorization": f"Bearer {tok}"}
+
+    r = await client.get("/api/project/assistant-model", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["custom"] is False and body["model"] == body["default"] == "anthropic/claude-sonnet-5.5"
+    ids = [m["id"] for m in body["models"]]
+    assert "anthropic/claude-sonnet-5.5" in ids  # the default is always choosable
+    assert "typesafe/jev-1.13" not in ids  # classifiers can't hold a conversation
+
+    r = await client.put("/api/project/assistant-model", headers=h, json={"model": "anthropic/claude-opus-5.5"})
+    assert r.status_code == 200, r.text
+    assert r.json()["model"] == "anthropic/claude-opus-5.5" and r.json()["custom"]
+
+    for bad in ("claude", "typesafe/jev-1.13"):
+        r = await client.put("/api/project/assistant-model", headers=h, json={"model": bad})
+        assert r.status_code == 400, bad
+
+    r = await client.put("/api/project/assistant-model", headers=h, json={"model": None})
+    assert r.json()["custom"] is False and r.json()["model"] == "anthropic/claude-sonnet-5.5"

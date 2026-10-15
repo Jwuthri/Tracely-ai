@@ -23,6 +23,7 @@ def db(tmp_path, monkeypatch):
     """A real database behind the service, so the repository's own SQL is what runs."""
     engine = create_engine(f"sqlite:///{tmp_path}/assistant.db")
     models.AssistantChat.__table__.create(engine)
+    models.Project.__table__.create(engine)  # the workspace's own assistant model lives here
     monkeypatch.setattr(svc, "SyncSessionLocal", sessionmaker(bind=engine, expire_on_commit=False))
     return engine
 
@@ -180,6 +181,27 @@ async def test_reply_is_the_model_text_on_the_configured_model(db, model):
     assert "Tracely" in model["system_prompt"]
     assert model["model"] == svc.settings.assistant_model
     assert model["reasoning_effort"] == svc.settings.assistant_reasoning_effort
+
+
+async def test_a_workspace_that_picked_a_model_is_answered_on_it(db, model, monkeypatch):
+    picker: dict = {}
+    monkeypatch.setattr(svc.provider, "agent_middleware", lambda **kw: picker.update(kw) or [])
+    with svc.SyncSessionLocal() as s:
+        s.add(models.Project(id="p1", slug="p1", name="P1", assistant_model="anthropic/claude-opus-5.5"))
+        s.commit()
+    await turn("p1", "u1", chat_id=None, message="hi")
+    assert model["model"] == "anthropic/claude-opus-5.5"
+    # the tool picker compares against the model that answers, not the server default
+    assert picker["answering_model"] == "anthropic/claude-opus-5.5"
+
+
+def test_the_default_assistant_model_is_sonnet():
+    from tracely.config import Settings
+
+    assert Settings().assistant_model == "anthropic/claude-sonnet-5.5"
+    # priced offline too: a model missing from the fallback table costs $0 when OpenRouter is
+    # unreachable, which silently switches the per-conversation budget off
+    assert provider._FALLBACK_PRICING_USD_PER_MTOK["anthropic/claude-sonnet-5.5"] == (2.00, 10.00)
 
 
 async def test_the_agent_gets_the_callers_own_credentials(db, model):
