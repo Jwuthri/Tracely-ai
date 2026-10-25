@@ -1,0 +1,193 @@
+# Tracely on Coolify — the whole stack as one Docker Compose resource (deploy/coolify/README.md).
+# Production shape of the root docker-compose.yml: built images instead of live source mounts,
+# `next start` instead of `next dev`, no host ports (Coolify's proxy routes the two public
+# services), named volumes, and AUTH_MODE=local with secrets Coolify generates on first deploy
+# (SERVICE_PASSWORD_* / SERVICE_USER_* are Coolify magic variables).
+
+x-app-env: &app-env
+  TRACELY_ENV: prod
+  AUTH_MODE: local
+  SESSION_SECRET: ${SERVICE_PASSWORD_64_SESSION}
+  SECRETS_ENCRYPTION_KEY: ${SERVICE_PASSWORD_64_SECRETS}
+  DATABASE_URL: postgresql+asyncpg://tracely:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/tracely
+  ALEMBIC_DATABASE_URL: postgresql+psycopg://tracely:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/tracely
+  CLICKHOUSE_HOST: clickhouse
+  CLICKHOUSE_PORT: "8123"
+  CLICKHOUSE_USER: tracely
+  CLICKHOUSE_PASSWORD: ${SERVICE_PASSWORD_CLICKHOUSE}
+  CLICKHOUSE_DATABASE: tracely
+  CLICKHOUSE_ASYNC_INSERT: "1"
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_REGION: us-east-1
+  S3_ACCESS_KEY_ID: ${SERVICE_USER_MINIO}
+  S3_SECRET_ACCESS_KEY: ${SERVICE_PASSWORD_MINIO}
+  S3_BUCKET: tracely-events
+  S3_EVENT_PREFIX: events/
+  # Public origins: the UI (invite/alert links, CORS) and the API (SDK/OTLP ingest endpoint).
+  APP_BASE_URL: ${APP_BASE_URL:-https://tracely.scribely.xyz}
+  FRONTEND_ORIGIN: ${APP_BASE_URL:-https://tracely.scribely.xyz}
+  CELERY_POOL: ${CELERY_POOL:-solo}
+  CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-1}
+  CH_SYSTEM_LOG_TTL_DAYS: ${CH_SYSTEM_LOG_TTL_DAYS:-3}
+  # Optional server-wide keys; normally each workspace brings its own OpenRouter key in Settings.
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
+  EMAIL_FROM: ${EMAIL_FROM:-Tracely <onboarding@resend.dev>}
+  OPS_ALERT_WEBHOOK: ${OPS_ALERT_WEBHOOK:-}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+
+services:
+  # ── infra (private: no domains, reachable only on the compose network) ──
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: tracely
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
+      POSTGRES_DB: tracely
+    volumes:
+      - tracely-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracely"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: tracely
+      CLICKHOUSE_USER: tracely
+      CLICKHOUSE_PASSWORD: ${SERVICE_PASSWORD_CLICKHOUSE}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - tracely-clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user tracely --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - tracely-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${SERVICE_USER_MINIO}
+      MINIO_ROOT_PASSWORD: ${SERVICE_PASSWORD_MINIO}
+    volumes:
+      - tracely-minio:/data
+
+  minio-init:
+    image: minio/mc
+    exclude_from_hc: true
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_USER: ${SERVICE_USER_MINIO}
+      MINIO_PASSWORD: ${SERVICE_PASSWORD_MINIO}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 \"$$MINIO_USER\" \"$$MINIO_PASSWORD\"; do echo waiting for minio; sleep 1; done &&
+      mc mb -p local/tracely-events && echo 'bucket ready'
+      "
+
+  # ── app ──
+  # One-shot, idempotent: ClickHouse DDL → alembic → LangGraph checkpointer → seed default project.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    exclude_from_hc: true
+    restart: "no"
+    environment: *app-env
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "python -m tracely.infrastructure.clickhouse.migrations && (cd backend && alembic upgrade head) && python -m tracely.infrastructure.llm.checkpointer && python -m tracely.services.seeding_service"]
+
+  # Public: the API + OTLP ingest endpoint (give it a domain on port 8000 in Coolify).
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      <<: *app-env
+      INTERNAL_API_URL: http://localhost:8000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: ["uvicorn", "tracely.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Private: Celery scoring + failure intelligence. A single worker, so it also runs beat (-B).
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      <<: *app-env
+      INTERNAL_API_URL: http://backend:8000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: ["sh", "-c", "exec celery -A tracely_workers.worker worker --pool=$${CELERY_POOL:-solo} --concurrency=$${CELERY_CONCURRENCY:-1} --beat --loglevel=info"]
+
+  # Public: the Next.js UI (give it a domain on port 3000 in Coolify).
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.railway
+      args:
+        NEXT_PUBLIC_AUTH_MODE: local
+        NEXT_PUBLIC_TRACELY_PUBLIC_API: ${TRACELY_PUBLIC_API:-https://tracely-api.scribely.xyz}
+    environment:
+      TRACELY_API: http://backend:8000
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      PORT: "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["sh", "-c", "exec pnpm exec next start -H 0.0.0.0 -p 3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 40s
+
+volumes:
+  tracely-postgres:
+  tracely-clickhouse:
+  tracely-redis:
+  tracely-minio:
