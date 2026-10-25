@@ -214,6 +214,12 @@ Migrations and seeding run on the first deploy; set `SESSION_SECRET` and `SECRET
 (`openssl rand -hex 32` each) when prompted, then open the frontend's domain and create your
 workspace.
 
+**Self-hosting on [Coolify](https://coolify.io)?** One command sets up the same layout, one card
+per component with its own logs, metrics and CPU/RAM limits:
+`python3 deploy/coolify/setup.py --coolify-url … --app-domain … --api-domain …`. See
+[`deploy/coolify/README.md`](deploy/coolify/README.md), which also covers the single-bundle
+[`docker-compose.coolify.yml`](docker-compose.coolify.yml).
+
 Prefer to wire it yourself, or deploying somewhere else? The manual walkthrough is
 [`deploy/railway/README.md`](deploy/railway/README.md) (every variable pre-written in
 [`.env.railway.example`](deploy/railway/.env.railway.example)). On AWS EKS or any other Kubernetes cluster,
