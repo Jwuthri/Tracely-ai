@@ -82,8 +82,10 @@ services:
       timeout: 3s
       retries: 30
 
+  # MinIO stopped publishing images (minio/minio and minio/mc are gone from Docker Hub);
+  # pgsty/* is the community-maintained drop-in build.
   minio:
-    image: minio/minio
+    image: pgsty/minio
     command: server /data
     environment:
       MINIO_ROOT_USER: ${SERVICE_USER_MINIO}
@@ -92,7 +94,7 @@ services:
       - tracely-minio:/data
 
   minio-init:
-    image: minio/mc
+    image: pgsty/mc
     exclude_from_hc: true
     restart: "no"
     depends_on:
