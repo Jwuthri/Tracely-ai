@@ -129,6 +129,9 @@ class Project(Base):
     # The workspace's rolling-summary budget (migration 0037): `{max_tokens, step_max_tokens}`,
     # validated by `domain/evaluation/rolling_summary.summary_budget`. NULL = server defaults.
     rolling_summary_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The OpenRouter model the in-app assistant answers on (migration 0039). NULL = the server
+    # default (`Settings.assistant_model`).
+    assistant_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Hosted-cloud billing (migration 0021). `free | pro | unlimited` — `unlimited` is for
     # operator workspaces (set via SQL) and is never written by webhooks. Both defaults (Python +
     # server) so none of the Project-creation sites need to name the column.

@@ -215,6 +215,22 @@ def project_rolling_summary_config_set(s: Session, project_id: str, config: dict
     return dict(config)
 
 
+def project_assistant_model_get(s: Session, project_id: str) -> str | None:
+    """This workspace's own assistant model, or None for the server default."""
+    proj = project_get(s, project_id)
+    return proj.assistant_model if proj else None
+
+
+def project_assistant_model_set(s: Session, project_id: str, model: str | None) -> bool:
+    """Set (or, with None, clear back to the server default). False if the project is gone."""
+    proj = project_get(s, project_id)
+    if proj is None:
+        return False
+    proj.assistant_model = model
+    s.commit()
+    return True
+
+
 def project_ui_prefs_get(s: Session, project_id: str) -> dict:
     """This workspace's UI defaults (`{}` when unset or the project is gone)."""
     proj = s.get(Project, project_id)

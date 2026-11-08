@@ -1,6 +1,7 @@
 import { DocLink } from "@/app/components/DocLink";
 import { CopyId } from "@/app/components/CopyId";
 import { LlmKeyPanel } from "@/app/components/LlmKeyPanel";
+import { AssistantModelPanel } from "@/app/components/AssistantModelPanel";
 import { getMe } from "@/app/lib/auth";
 
 function mask(k: string) {
@@ -40,6 +41,7 @@ export default async function ApiKeysPage() {
       </section>
 
       <LlmKeyPanel />
+      <AssistantModelPanel />
 
       <section className="card p-5">
         <div className="mb-2 text-[13px] font-semibold text-fg">Send your first trace</div>

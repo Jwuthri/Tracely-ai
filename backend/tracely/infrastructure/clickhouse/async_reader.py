@@ -475,9 +475,13 @@ def _root(col: str) -> str:
 
 
 def _root_has(col: str) -> str:
+    """Whether the root span's `col` is non-empty, from the stored 1-byte `has_<col>` flag (DDL
+    0006) — never the text itself, which for `input` is whole prompts: testing `input != ''`
+    decompressed the entire column on every traces-list load."""
+    flag = f"has_{col}"
     return (
-        f"if(countIf(parent_span_id = '') > 0, max({col} != '' AND parent_span_id = ''), "
-        f"max({col} != '' AND is_app_root))"
+        f"if(countIf(parent_span_id = '') > 0, max({flag} AND parent_span_id = ''), "
+        f"max({flag} AND is_app_root))"
     )
 
 

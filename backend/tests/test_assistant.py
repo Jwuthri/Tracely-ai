@@ -23,6 +23,7 @@ def db(tmp_path, monkeypatch):
     """A real database behind the service, so the repository's own SQL is what runs."""
     engine = create_engine(f"sqlite:///{tmp_path}/assistant.db")
     models.AssistantChat.__table__.create(engine)
+    models.Project.__table__.create(engine)  # the workspace's own assistant model lives here
     monkeypatch.setattr(svc, "SyncSessionLocal", sessionmaker(bind=engine, expire_on_commit=False))
     return engine
 
@@ -168,6 +169,7 @@ def test_the_prompt_names_the_surfaces_the_assistant_can_send_people_to():
 async def test_no_llm_key_is_a_state_not_a_crash(db, monkeypatch):
     monkeypatch.setattr(svc.provider, "use_server_key", contextlib.nullcontext)
     monkeypatch.setattr(svc.provider, "llm_enabled", lambda: False)
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: None)  # nor a workspace key
     assert await turn("p1", "u1", chat_id=None, message="hi") == {"type": "disabled"}
 
 
@@ -181,6 +183,27 @@ async def test_reply_is_the_model_text_on_the_configured_model(db, model):
     assert model["reasoning_effort"] == svc.settings.assistant_reasoning_effort
 
 
+async def test_a_workspace_that_picked_a_model_is_answered_on_it(db, model, monkeypatch):
+    picker: dict = {}
+    monkeypatch.setattr(svc.provider, "agent_middleware", lambda **kw: picker.update(kw) or [])
+    with svc.SyncSessionLocal() as s:
+        s.add(models.Project(id="p1", slug="p1", name="P1", assistant_model="anthropic/claude-opus-5.5"))
+        s.commit()
+    await turn("p1", "u1", chat_id=None, message="hi")
+    assert model["model"] == "anthropic/claude-opus-5.5"
+    # the tool picker compares against the model that answers, not the server default
+    assert picker["answering_model"] == "anthropic/claude-opus-5.5"
+
+
+def test_the_default_assistant_model_is_sonnet():
+    from tracely.config import Settings
+
+    assert Settings().assistant_model == "anthropic/claude-sonnet-5.5"
+    # priced offline too: a model missing from the fallback table costs $0 when OpenRouter is
+    # unreachable, which silently switches the per-conversation budget off
+    assert provider._FALLBACK_PRICING_USD_PER_MTOK["anthropic/claude-sonnet-5.5"] == (2.00, 10.00)
+
+
 async def test_the_agent_gets_the_callers_own_credentials(db, model):
     """We pay for the tokens; the TOOLS still run as the person chatting. Handing them the server
     key — or nothing — would either widen their reach or silently blind the agent."""
@@ -192,8 +215,9 @@ async def test_the_agent_gets_the_callers_own_credentials(db, model):
     assert svc.assistant_tools.build_tools.__module__ == "tracely.services.assistant_tools"
 
 
-async def test_the_assistant_never_spends_the_customers_key(db, monkeypatch):
-    """The widget explains OUR product; it must not bill — or depend on — a workspace's key."""
+async def test_with_our_key_the_assistant_never_spends_the_customers(db, monkeypatch):
+    """The widget explains OUR product; while we have a key it must not bill — or depend on — a
+    workspace's key."""
     monkeypatch.setattr(
         svc.provider,
         "use_project_key",
@@ -209,6 +233,34 @@ async def test_the_assistant_never_spends_the_customers_key(db, monkeypatch):
     monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: None)
     out = await turn("p1", "u1", chat_id=None, message="hi")
     assert out["reply"] == "ok"
+
+
+async def test_without_our_key_the_assistant_runs_on_the_workspaces_own(db, monkeypatch):
+    """A self-host sets no server key. Rather than a dead widget in every workspace, the model
+    runs on the key that workspace brought — the same one its evaluators already spend."""
+    monkeypatch.setattr(provider.settings, "openrouter_api_key", "")
+    monkeypatch.setattr(provider.settings, "llm_judge_api_key", "")
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: "token")
+    monkeypatch.setattr(provider, "_decrypt_project_key", lambda _t: "sk-theirs")
+    seen: dict = {}
+    monkeypatch.setattr(
+        svc.provider,
+        "stream_agent",
+        lambda prompt, **kw: (
+            seen.update(key=provider.effective_openrouter_key())
+            or _stream({"type": "final", "text": "ok", "usage": {}})
+        ),
+    )
+    out = await turn("p1", "u1", chat_id=None, message="hi")
+    assert out["reply"] == "ok"
+    assert seen["key"] == "sk-theirs"
+
+
+def test_our_key_wins_over_the_workspaces(monkeypatch):
+    monkeypatch.setattr(provider.settings, "openrouter_api_key", "sk-ours")
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: pytest.fail("looked up theirs"))
+    with provider.use_assistant_key("p1"):
+        assert provider.effective_openrouter_key() == "sk-ours"
 
 
 def test_server_scope_survives_the_hosted_bring_your_own_key_gate(monkeypatch):

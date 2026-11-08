@@ -6,7 +6,9 @@ workspace — a new evaluator column, a scenario, a regression case — on the u
 
 Two keys are in play and they are not the same key. The MODEL runs on TRACELY'S OpenRouter key
 (`provider.use_server_key`, CLAUDE.md's one sanctioned exception) because the assistant explains
-our product and must work in a workspace that configured no key of its own. The TOOLS run on the
+our product and must work in a workspace that configured no key of its own. Only a deployment
+with no key of ours (a self-host) runs it on the workspace's key instead
+(`provider.use_assistant_key`). The TOOLS run on the
 caller's own credentials, forwarded from the request — so what the agent can see and change is
 exactly what the person chatting can see and change. We pay for the tokens; we do not widen
 anybody's access.
@@ -244,7 +246,7 @@ def spent_usd(history: list[dict]) -> float:
     return sum(float(m.get("cost_usd") or 0.0) for m in history if m.get("role") == "assistant")
 
 
-def _turn_cost_usd(usage: dict) -> float:
+def _turn_cost_usd(usage: dict, model: str) -> float:
     """What this turn cost, from the ANSWERING model's tokens.
 
     The tool picker's own call is not counted: it happens inside middleware, so its usage never
@@ -253,7 +255,7 @@ def _turn_cost_usd(usage: dict) -> float:
     spend rather than an exact invoice, and that is worth knowing before trusting the number.
     """
     return provider.estimate_cost_usd(
-        usage.get("model") or settings.assistant_model,
+        usage.get("model") or model,
         int(usage.get("input_tokens") or 0),
         int(usage.get("output_tokens") or 0),
     )
@@ -286,12 +288,14 @@ async def answer_stream(
     """
     attachments = attachments or []
 
-    def load() -> tuple[list[dict], str]:
+    def load() -> tuple[list[dict], str, str]:
         with SyncSessionLocal() as s:
             row = repo.assistant_chat_get(s, project_id, user_id, chat_id) if chat_id else None
-            return (list(row.messages or []) if row else [], row.title if row else "")
+            # The workspace's own pick (Settings → API keys), else the server default.
+            model = repo.project_assistant_model_get(s, project_id) or settings.assistant_model
+            return (list(row.messages or []) if row else [], row.title if row else "", model)
 
-    history, existing_title = await run_in_threadpool(load)
+    history, existing_title, model = await run_in_threadpool(load)
 
     # This conversation's own budget of OUR credit. Checked here so a chat that already spent it
     # costs nothing more, and passed to the loop below so a single runaway turn can't blow it in
@@ -313,11 +317,12 @@ async def answer_stream(
 
     # OUR key for the model, deliberately: the assistant explains Tracely, so it must answer in a
     # workspace that has configured no key of its own (CLAUDE.md's one exception to
-    # `use_project_key`). `llm_enabled()` is checked INSIDE the wrap because under
-    # REQUIRE_PROJECT_LLM_KEY an unscoped call fails closed — "we pay for this one" must not look
-    # like a forgot-to-wrap bug. Nothing yields inside the wrap: `stream_agent` bakes the key into
-    # the model as it is constructed, so the streaming itself belongs outside.
-    with provider.use_server_key():
+    # `use_project_key`). A deployment with no key of ours falls back to the workspace's own.
+    # `llm_enabled()` is checked INSIDE the wrap because under REQUIRE_PROJECT_LLM_KEY an unscoped
+    # call fails closed — "we pay for this one" must not look like a forgot-to-wrap bug. Nothing
+    # yields inside the wrap: `stream_agent` bakes the key into the model as it is constructed,
+    # so the streaming itself belongs outside.
+    with provider.use_assistant_key(project_id):
         enabled = provider.llm_enabled()
         if enabled:
             text = await run_in_threadpool(_transcript, project_id, history, path, context)
@@ -327,7 +332,7 @@ async def answer_stream(
                 prompt,
                 tools=assistant_tools.build_tools(headers or {}, path=path),
                 system_prompt=SYSTEM,
-                model=settings.assistant_model,
+                model=model,
                 temperature=0.3,
                 reasoning_effort=settings.assistant_reasoning_effort,
                 # Built inside the key scope on purpose: the tool-picker constructs its own
@@ -337,7 +342,7 @@ async def answer_stream(
                     max_tools=settings.assistant_max_tools,
                     max_model_calls=settings.assistant_max_model_calls,
                     always_include=always_tools(path),
-                    answering_model=settings.assistant_model,
+                    answering_model=model,
                 ),
                 budget_usd=(budget - already) if budget > 0 else None,
                 posthog_session_id=posthog_session_id,
@@ -350,8 +355,8 @@ async def answer_stream(
                     project_id=project_id,
                     images=len(images),
                     attachments=len(attachments),
-                    cost_usd=round(_turn_cost_usd(usage), 6),
-                    chat_spent_usd=round(already + _turn_cost_usd(usage), 6),
+                    cost_usd=round(_turn_cost_usd(usage, model), 6),
+                    chat_spent_usd=round(already + _turn_cost_usd(usage, model), 6),
                     **usage,
                 ),
             )
@@ -412,7 +417,7 @@ async def answer_stream(
                 "role": "assistant",
                 "content": reply,
                 "ts": _now(),
-                "cost_usd": round(_turn_cost_usd(usage), 6),
+                "cost_usd": round(_turn_cost_usd(usage, model), 6),
             }
         )
 

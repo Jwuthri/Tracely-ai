@@ -54,7 +54,7 @@ x-app-env: &app-env
   # The dashboard's chat widget. Runs on OUR OpenRouter key (it explains the product, so it has
   # to answer in a workspace that brought no key of its own) — the one LLM call customers don't
   # pay for. ASSISTANT_REASONING_EFFORT: ""|minimal|low|medium|high.
-  ASSISTANT_MODEL: ${ASSISTANT_MODEL:-google/gemini-3.5-flash-lite}
+  ASSISTANT_MODEL: ${ASSISTANT_MODEL:-anthropic/claude-sonnet-5.5}
   ASSISTANT_REASONING_EFFORT: ${ASSISTANT_REASONING_EFFORT:-medium}
   # A cheap model picks which of the assistant's ~30 tools a question needs, so the expensive
   # one never carries all of them. ASSISTANT_MAX_TOOLS=0 turns selection off.
@@ -188,8 +188,10 @@ services:
       timeout: 3s
       retries: 30
 
+  # MinIO stopped publishing images (minio/minio and minio/mc are gone from Docker Hub);
+  # pgsty/* is the community-maintained drop-in build.
   minio:
-    image: minio/minio
+    image: pgsty/minio
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -201,7 +203,7 @@ services:
       - ./.data/minio:/data
 
   minio-init:
-    image: minio/mc
+    image: pgsty/mc
     depends_on:
       minio:
         condition: service_started

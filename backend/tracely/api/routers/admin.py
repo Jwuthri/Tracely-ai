@@ -296,6 +296,68 @@ async def set_rolling_summary_config(
     return await run_in_threadpool(work)
 
 
+class AssistantModelBody(BaseModel):
+    model: str | None = None  # None / "" = back to the server default
+
+
+def _assistant_model(s, project_id: str) -> dict:
+    own = repo.project_assistant_model_get(s, project_id)
+    # The choices the assistant can actually run on: listed under its own key scope, not the
+    # evaluators' (`use_project_key`), which narrows to openai/* in a workspace with no key.
+    with provider.use_assistant_key(project_id):
+        models = [m for m in provider.list_models() if m["kind"] == "llm"]
+    ids = {m["id"] for m in models}
+    for mid in {settings.assistant_model, own} - ids - {None}:
+        models.insert(0, {"id": mid, "label": mid, "kind": "llm", "context_tokens": None})
+    return {
+        "model": own or settings.assistant_model,
+        "default": settings.assistant_model,
+        "custom": bool(own),
+        "models": models,
+    }
+
+
+@router.get("/project/assistant-model")
+async def get_assistant_model(project_id: str = Depends(get_project_id)) -> dict:
+    """The model the in-app assistant answers on in this workspace, the server default it falls
+    back to, whether it has been customized, and the models it can be set to."""
+
+    def work() -> dict:
+        with SyncSessionLocal() as s:
+            return _assistant_model(s, project_id)
+
+    return await run_in_threadpool(work)
+
+
+@router.put("/project/assistant-model", dependencies=[Depends(require_user)])
+async def set_assistant_model(
+    body: AssistantModelBody, project_id: str = Depends(get_project_id)
+) -> dict:
+    """Pick the assistant's model (null = back to the server default). Behind `require_user`: on a
+    deployment with a server key this spends OUR credit at the chosen model's price — a people
+    decision, not a CI key's. The per-conversation budget still caps it."""
+    model = (body.model or "").strip() or None
+    if model and ("/" not in model or len(model) > 128):
+        raise HTTPException(
+            status_code=400, detail="model must be an OpenRouter id like anthropic/claude-sonnet-5.5"
+        )
+    if model and provider.is_decision_model(model):
+        raise HTTPException(
+            status_code=400, detail=f"{model} is a classifier, it can't hold a conversation"
+        )
+
+    def work() -> dict | None:
+        with SyncSessionLocal() as s:
+            if not repo.project_assistant_model_set(s, project_id, model):
+                return None
+            return _assistant_model(s, project_id)
+
+    out = await run_in_threadpool(work)
+    if out is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return out
+
+
 @router.get("/project/llm-key", response_model=OpenRouterKeyOut)
 async def get_llm_key(project_id: str = Depends(get_project_id)) -> OpenRouterKeyOut:
     def work() -> bool:

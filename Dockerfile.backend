@@ -19,3 +19,6 @@ RUN uv sync --frozen --all-packages
 # put the venv on PATH so `uvicorn` / `celery` / `alembic` / `python` resolve directly
 ENV PATH="/app/.venv/bin:${PATH}"
 EXPOSE 8000
+# api | worker | migrate, picked by TRACELY_ROLE (scripts/docker-start.sh). Compose, Railway and
+# EKS override this with their own command.
+CMD ["sh", "scripts/docker-start.sh"]
