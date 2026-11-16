@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_project_id
-from tracely.infrastructure.clickhouse import async_reader
+from tracely.infrastructure.spans import async_reader
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.text import message_text

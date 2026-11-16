@@ -39,7 +39,7 @@ from tracely.domain.evaluation.rolling_summary import (
     user_input_for_turn,
 )
 from tracely.domain.traces.spans import root_span
-from tracely.infrastructure.clickhouse.trace_reader import TraceReader
+from tracely.infrastructure.spans import TraceReader
 from tracely.infrastructure.db import repositories
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.llm import provider

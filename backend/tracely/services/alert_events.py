@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from tracely.config import settings
 from tracely.domain.traces.spans import root_span
-from tracely.infrastructure.clickhouse.trace_reader import TraceReader
+from tracely.infrastructure.spans import TraceReader
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.models import Agent, FailureCluster, GateRun, Project
 

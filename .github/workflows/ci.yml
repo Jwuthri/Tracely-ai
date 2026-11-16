@@ -20,6 +20,19 @@ jobs:
   backend:
     name: backend · ruff + pytest
     runs-on: ubuntu-latest
+    # A scratch Postgres for the span-store tests (backend/tests/test_span_store_pg.py). They skip
+    # without TRACELY_TEST_PG_URL, so the local suite stays infra-free.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: spans
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      TRACELY_TEST_PG_URL: postgresql://postgres:test@localhost:5432/spans
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5

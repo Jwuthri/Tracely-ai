@@ -18,9 +18,11 @@ import structlog
 
 from tracely.config import settings
 from tracely.domain.billing import retention_days_for
-from tracely.infrastructure.clickhouse.deletes import delete_expired
+from tracely.infrastructure.spans import deletes as _store
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.repositories import project_plans
+
+delete_expired = _store.delete_expired
 
 log = structlog.get_logger()
 

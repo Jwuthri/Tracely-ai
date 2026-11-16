@@ -37,7 +37,7 @@ from tracely.api import mcp_server
 from tracely.api.routers import auth as auth_router
 from tracely.auth import AuthError
 from tracely.config import settings
-from tracely.infrastructure.clickhouse.client import close_async_client
+from tracely.infrastructure import spans
 from tracely.infrastructure.db.engine import AsyncSessionLocal, async_engine, sync_engine
 from tracely.infrastructure.db.models import IngestKey
 from tracely.log_config import configure_logging
@@ -105,7 +105,10 @@ async def lifespan(app: FastAPI):
     async with mcp_server.mcp.session_manager.run():
         yield
     # Release pooled connections so reloads/restarts/shutdowns don't leak sockets + file descriptors.
-    await close_async_client()
+    if not spans.POSTGRES:
+        from tracely.infrastructure.clickhouse.client import close_async_client
+
+        await close_async_client()
     await async_engine.dispose()
     sync_engine.dispose()
 

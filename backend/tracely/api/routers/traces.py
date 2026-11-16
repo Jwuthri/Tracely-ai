@@ -11,7 +11,7 @@ from tracely.api.advisory import advisory_score_names
 from tracely.api.auth import get_project_id
 from tracely.api.dto.traces import SpanOut, TraceDetail
 from tracely.domain.evaluation.verdict import rollup_verdict
-from tracely.infrastructure.clickhouse import async_reader
+from tracely.infrastructure.spans import async_reader
 
 router = APIRouter(prefix="/api")
 

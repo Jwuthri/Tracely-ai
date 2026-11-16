@@ -58,6 +58,12 @@ celery_app.conf.update(
             "task": "tracely.enforce_retention",
             "schedule": crontab(hour="4", minute="47"),
         },
+        # The Postgres span store's 90-day horizon (ClickHouse's table TTL did this itself; on
+        # ClickHouse the task is a no-op). Every deployment, billing or not.
+        "tracely.expire_spans-nightly": {
+            "task": "tracely.expire_spans",
+            "schedule": crontab(hour="4", minute="57"),
+        },
         # ClickHouse's own logs have no TTL and outgrow the product's data on a small box. Same
         # nightly window, offset again so the solo worker takes one sweep at a time.
         "tracely.cap_system_logs-nightly": {

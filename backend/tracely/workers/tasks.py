@@ -323,6 +323,23 @@ def enforce_retention_task(self) -> dict:
         return {"error": str(exc)}
 
 
+@celery_app.task(name="tracely.expire_spans", bind=True, max_retries=0)
+def expire_spans_task(self) -> dict:
+    """Drop traces past `SPAN_RETENTION_DAYS` on the Postgres span store (beat, nightly) — the
+    ClickHouse table TTL's twin, for every deployment. A no-op on ClickHouse, whose TTL does it.
+    Runs after `enforce_retention`, so tonight's case-artifact snapshot already happened."""
+    from tracely.config import settings
+    from tracely.infrastructure import spans
+
+    if not spans.POSTGRES:
+        return {"skipped": "clickhouse ttl"}
+    try:
+        return {"spans": spans.deletes.expire_all(settings.span_retention_days)}
+    except Exception as exc:  # noqa: BLE001 — a missed night costs disk, never a grade
+        log.warning("expire_spans_failed", error=str(exc))
+        return {"error": str(exc)}
+
+
 @celery_app.task(name="tracely.cap_system_logs", bind=True, max_retries=0)
 def cap_system_logs_task(self) -> dict:
     """Cap ClickHouse's own telemetry tables with a TTL (beat, nightly).
@@ -330,6 +347,10 @@ def cap_system_logs_task(self) -> dict:
     The database fills its disk with `query_log` / `trace_log` / `part_log` long before customer
     traces get near it, and nothing reads those. Idempotent — once a table carries a TTL this is
     a few reads. Never retried: reclaiming space is not correctness, and the next night retries."""
+    from tracely.infrastructure import spans
+
+    if spans.POSTGRES:
+        return {"skipped": "postgres span store"}
     from tracely.infrastructure.clickhouse.maintenance import cap_system_logs
 
     try:
@@ -388,6 +409,10 @@ def expire_otlp_blobs_task(self) -> dict:
 def compact_tables_task(self) -> dict:
     """Physically drop masked and superseded rows from `events`/`scores` (beat, nightly) — see
     `maintenance.compact_tables`. Never retried: a missed night costs read speed, not data."""
+    from tracely.infrastructure import spans
+
+    if spans.POSTGRES:
+        return {"skipped": "postgres span store"}
     from tracely.infrastructure.clickhouse.maintenance import compact_tables
 
     try:

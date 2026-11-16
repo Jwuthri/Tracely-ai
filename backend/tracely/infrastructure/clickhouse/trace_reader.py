@@ -97,6 +97,18 @@ class TraceReader:
         ).result_rows
         return [tid for (tid,) in rows]
 
+    def trace_generations(self, project_id: str, trace_id: str) -> list[tuple]:
+        """`(input, output, start_time)` of one trace's GENERATION spans — the ingest-time
+        "Agent workflow" root fill (was raw SQL inside `IngestionService`)."""
+        return [
+            tuple(r)
+            for r in self.client.query(
+                "SELECT input, output, start_time FROM events FINAL PREWHERE trace_id = {t:String} "
+                "WHERE project_id = {p:String} AND is_deleted = 0 AND type = 'GENERATION'",
+                parameters={"t": trace_id, "p": project_id},
+            ).result_rows
+        ]
+
     def candidate_metrics(
         self, project_id: str, trace_ids: Iterable[str]
     ) -> tuple[float, int, dict[str, tuple[float, int]]]:

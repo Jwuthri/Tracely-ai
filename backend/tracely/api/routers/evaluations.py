@@ -31,7 +31,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_project_id
 from tracely.domain import introspection
-from tracely.infrastructure.clickhouse import async_reader
+from tracely.infrastructure.spans import async_reader
 from tracely.services.evaluation_service import EvaluationService
 
 log = structlog.get_logger()

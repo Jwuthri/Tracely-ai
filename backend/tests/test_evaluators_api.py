@@ -361,7 +361,7 @@ async def test_chain_progress_reports_sequential_columns(client, sync_db, monkey
     count, the next seed payload, freshness. Batch columns don't chain, so they don't appear."""
     from sqlalchemy import select
 
-    from tracely.infrastructure.clickhouse import async_reader
+    from tracely.infrastructure.spans import async_reader  # the active store
     from tracely.infrastructure.db import repositories as repo
     from tracely.infrastructure.db.models import Evaluator
 

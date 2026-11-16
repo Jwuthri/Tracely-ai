@@ -24,7 +24,7 @@ def _gen(i, inp, out):
 
 
 def test_the_empty_root_takes_the_first_call_input_and_last_call_output(monkeypatch):
-    monkeypatch.setattr(ingestion_service, "get_client", lambda: (_ for _ in ()).throw(RuntimeError("no db")))
+    monkeypatch.setattr(ingestion_service, "_stored_generations", lambda *a: (_ for _ in ()).throw(RuntimeError("no db")))
     call = [{"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "get_order"}}]}]
     events = [_root(), _gen(1, USER, call), _gen(2, USER + call, FINAL)]
     IngestionService._fill_agents_workflow_root("p", events)
@@ -34,7 +34,7 @@ def test_the_empty_root_takes_the_first_call_input_and_last_call_output(monkeypa
 
 
 def test_other_roots_are_never_touched(monkeypatch):
-    monkeypatch.setattr(ingestion_service, "get_client", lambda: (_ for _ in ()).throw(RuntimeError("no db")))
+    monkeypatch.setattr(ingestion_service, "_stored_generations", lambda *a: (_ for _ in ()).throw(RuntimeError("no db")))
     other = _root(name="lg-supervisor")
     recorded = _root(input="hi", output="hello")
     events = [other, recorded, _gen(1, USER, FINAL)]

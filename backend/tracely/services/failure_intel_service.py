@@ -25,7 +25,7 @@ from tracely.domain.failure.clustering import ClusterEngine
 from tracely.domain.failure.signature import text_part
 from tracely.domain.failure.text import embedding_text, summarize_failure
 from tracely.domain.traces.spans import root_span
-from tracely.infrastructure.clickhouse.trace_reader import TraceReader
+from tracely.infrastructure.spans import TraceReader
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.models import (
     ClusterMember,

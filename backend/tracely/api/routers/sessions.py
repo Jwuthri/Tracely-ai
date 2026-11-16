@@ -19,7 +19,7 @@ from tracely.api.auth import get_project_id, require_user
 from tracely.domain.traces.replay import build_replay
 from tracely.domain.evaluation.template_resolver import AgentView, collect_agents
 from tracely.domain.evaluation.verdict import rollup_verdict
-from tracely.infrastructure.clickhouse import async_reader, deletes
+from tracely.infrastructure.spans import async_reader, deletes
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.services.rolling_summary_service import RollingSummaryService

@@ -29,7 +29,7 @@ from tracely.domain.evaluation.template_resolver import (
     template_resolver,
     variables_for_level_json,
 )
-from tracely.infrastructure.clickhouse import async_reader
+from tracely.infrastructure.spans import async_reader
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.models import Evaluator
@@ -539,7 +539,7 @@ async def delete_evaluator(
 
 
 def _retract_scores(project_id: str, score_name: str) -> None:
-    from tracely.infrastructure.clickhouse.score_writer import ScoreWriter
+    from tracely.infrastructure.spans import ScoreWriter
 
     try:
         ScoreWriter().retract_evaluator(project_id, score_name)

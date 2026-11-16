@@ -17,8 +17,7 @@ import structlog
 from tracely.config import settings
 from tracely.domain.cost import cost_details
 from tracely.infrastructure.blob import s3 as blobstore
-from tracely.infrastructure.clickhouse.client import get_client, insert_rows
-from tracely.infrastructure.clickhouse.events_schema import EVENT_COLUMNS, to_rows
+from tracely.infrastructure import spans
 from tracely.infrastructure.db import repositories
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.llm.provider import resolve_rate
@@ -49,7 +48,7 @@ def ingest_otlp(project_id: str, content_type: str, raw: bytes) -> str:
 
 
 class IngestionService:
-    """Worker-side pipeline: blob → events → registry resolve → ClickHouse insert → schedule
+    """Worker-side pipeline: blob → events → registry resolve → span-store insert → schedule
     online eval. Called from the `ingest_otlp_blob` Celery task."""
 
     def process_blob(self, project_id: str, key: str, content_type: str) -> dict:
@@ -67,8 +66,7 @@ class IngestionService:
         self._extract_agent_definitions(project_id, events)
         self._fill_agents_workflow_root(project_id, events)
 
-        client = get_client()
-        insert_rows(client, "events", EVENT_COLUMNS, to_rows(events))
+        spans.insert_events(events)
 
         trace_ids = sorted({ev.get("trace_id") for ev in events if ev.get("trace_id")})
         # Recordings of Tracely's own work (an evaluation, a scenario run) are reported separately
@@ -115,21 +113,13 @@ class IngestionService:
         ]
         if not roots:
             return
-        try:
-            client = get_client()
-        except Exception:  # noqa: BLE001 — a missing fill must never fail ingestion
-            client = None  # the batch's own model spans still count
         for root in roots:
             tid = root.get("trace_id")
             gens = [ev for ev in events if ev.get("trace_id") == tid and ev.get("type") == "GENERATION"]
             try:
-                rows = [] if client is None else client.query(
-                    "SELECT input, output, start_time FROM events FINAL PREWHERE trace_id = {t:String} "
-                    "WHERE project_id = {p:String} AND is_deleted = 0 AND type = 'GENERATION'",
-                    parameters={"t": tid, "p": project_id},
-                ).result_rows
-            except Exception:  # noqa: BLE001
-                rows = []
+                rows = _stored_generations(project_id, tid)
+            except Exception:  # noqa: BLE001 — a missing fill must never fail ingestion
+                rows = []  # the batch's own model spans still count
             gens += [{"input": i, "output": o, "start_time": st} for i, o, st in rows]
             gens = sorted((g for g in gens if g.get("start_time") is not None), key=lambda g: g["start_time"])
             first_in = next((g["input"] for g in gens if g.get("input")), None)
@@ -140,7 +130,7 @@ class IngestionService:
 
     @staticmethod
     def _milestone_first_trace(project_id: str, events: list[dict]) -> None:
-        """`first_trace_received` — from a confirmed ClickHouse insert, not from a request."""
+        """`first_trace_received` — from a confirmed span-store insert, not from a request."""
         try:
             from tracely.infrastructure.db.engine import SyncSessionLocal
             from tracely.services import milestones
@@ -275,3 +265,8 @@ class IngestionService:
                         ev["agent_version_id"] = registry.upsert_agent_version(
                             session, slug_to_id[slug], ver
                         )
+
+
+def _stored_generations(project_id: str, trace_id: str) -> list[tuple]:
+    """`(input, output, start_time)` of the trace's GENERATION spans already in the span store."""
+    return spans.TraceReader().trace_generations(project_id, trace_id)

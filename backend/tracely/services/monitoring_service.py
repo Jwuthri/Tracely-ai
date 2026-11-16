@@ -38,7 +38,7 @@ from tracely.domain.monitoring.conditions import (
     event_matches,
     is_event_condition,
 )
-from tracely.infrastructure.clickhouse import async_reader
+from tracely.infrastructure.spans import async_reader
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.models import Monitor
