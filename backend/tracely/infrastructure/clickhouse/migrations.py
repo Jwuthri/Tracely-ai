@@ -92,6 +92,12 @@ def _cap_system_logs(admin: Client) -> None:
 
 
 def main() -> None:
+    # On the Postgres span store there is no ClickHouse to migrate — and every deploy's
+    # pre-deploy runs this BEFORE `alembic upgrade head` (`&&`-chained), so waiting for a
+    # deleted service here would block every deploy, Postgres migrations included.
+    if settings.span_store == "postgres":
+        print("SPAN_STORE=postgres: no ClickHouse migrations to run")
+        return
     admin = _connect_when_ready()
     admin.command(f"CREATE DATABASE IF NOT EXISTS {settings.clickhouse_database}")
     _cap_system_logs(admin)
