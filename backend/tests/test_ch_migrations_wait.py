@@ -37,3 +37,12 @@ def test_gives_up_with_the_host_it_tried(monkeypatch):
     # timeout=0 -> one attempt, then the actionable error (not the driver's DNS traceback)
     with pytest.raises(RuntimeError, match="clickhouse.railway.internal:8123"):
         m._connect_when_ready(timeout=0.0)
+
+
+def test_postgres_store_skips_clickhouse_entirely(monkeypatch, capsys):
+    """Pre-deploy runs this before `alembic upgrade head`; once ClickHouse is deleted it must
+    return at once instead of waiting for a service that no longer exists."""
+    monkeypatch.setattr(m.settings, "span_store", "postgres")
+    monkeypatch.setattr(m, "get_client", lambda *a, **k: pytest.fail("ClickHouse contacted"))
+    m.main()
+    assert "no ClickHouse migrations" in capsys.readouterr().out

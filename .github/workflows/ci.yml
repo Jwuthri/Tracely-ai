@@ -38,6 +38,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          # The runner's default python3 moved to 3.14, which onnxruntime 1.22 has no wheel for —
+          # `uv sync --frozen` failed before a single test ran. Match the Docker image instead.
+          python-version: "3.12"
       # --frozen installs exactly what uv.lock pins (incl. the tracely-ai[all] provider extras),
       # so CI also catches lock/extra drift — the "transitive-conflict minefield" risk.
       # --all-packages is required: the dev group pulls in tracely-ai (the SDK) but NOT
