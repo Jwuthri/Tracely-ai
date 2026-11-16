@@ -278,20 +278,6 @@ export async function getCase(caseId: string): Promise<EvalCase | null> {
   return getJsonOrNull<EvalCase>(`/api/cases/${caseId}`);
 }
 
-/** A durable activation milestone (W6): the first time a real outcome happened in this workspace. */
-export type Milestone = {
-  name: string;
-  first_at: string | null;
-  sample: boolean | null;
-  integration: string;
-  elapsed_ms: number | null;
-};
-
-export async function getMilestones(): Promise<Milestone[]> {
-  const r = await getJsonOrNull<{ items: Milestone[] }>("/api/onboarding/milestones");
-  return r?.items ?? [];
-}
-
 /** A run with exactly this case's input — a compatible candidate (W5). */
 export type CaseCandidate = {
   trace_id: string;

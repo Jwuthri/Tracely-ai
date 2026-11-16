@@ -18,6 +18,8 @@ export default withNextra({
         destination: "https://doc.tracely-ai.com/:path*",
         permanent: true,
       },
+      // The Dashboard page is gone — its headline numbers live on Trends; keep inbound links alive.
+      { source: "/product/dashboard", destination: "/product/trends", permanent: true },
     ];
   },
 });

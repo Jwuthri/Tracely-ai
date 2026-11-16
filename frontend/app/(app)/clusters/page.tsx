@@ -1,6 +1,4 @@
-import { Suspense } from "react";
 import { DocLink } from "@/app/components/DocLink";
-import { FirstRun } from "@/app/components/FirstRun";
 import { getClusters, getLlmKeyConfigured, PAGE_SIZE } from "@/app/lib/api";
 import { Badge } from "@/app/components/ui";
 import { ClusterList } from "@/app/components/ClusterList";
@@ -58,12 +56,6 @@ export default async function ClustersPage({
           <RebuildButton hasLlmKey={hasLlmKey} />
         </div>
       </header>
-
-      {/* The first-run checklist — it lived on the Overview page, which is gone. Streams in after
-          the page; renders nothing once the loop is closed or if its roll-up fails. */}
-      <Suspense fallback={null}>
-        <FirstRun />
-      </Suspense>
 
       {/* rows + multi-select delete (client) */}
       <ClusterList clusters={clusters} />

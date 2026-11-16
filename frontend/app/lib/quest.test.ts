@@ -54,7 +54,7 @@ describe("deriveSteps", () => {
       eval: true,
       trends: true,
       replay: true,
-      fail: true, // a cluster counts as a caught failure, same as Activation
+      fail: true, // a cluster counts as a caught failure
       case: false,
       gate: false,
     });

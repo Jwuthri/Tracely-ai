@@ -28,9 +28,9 @@ const nextConfig = {
         permanent: true,
       })),
       // There is no Overview page, but `/dashboard` stays the app's front door — login, register,
-      // invites, the marketing CTAs and the quest all link to it — so it forwards to the first nav
-      // item. A 307, not a 308: it is an alias and the landing page may move again.
-      { source: "/dashboard", destination: "/clusters", permanent: false },
+      // invites and the marketing CTAs link to it — so it forwards to the landing page (Trends).
+      // A 307, not a 308: it is an alias and the landing page may move again.
+      { source: "/dashboard", destination: "/trends", permanent: false },
     ];
   },
 };

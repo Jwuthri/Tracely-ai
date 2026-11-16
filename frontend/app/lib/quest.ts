@@ -1,5 +1,5 @@
 /* Pure logic for the onboarding quest — the gamified tour of every feature, plus the daily
-   challenges that keep it alive after day one. Same philosophy as Activation.tsx: anything the
+   challenges that keep it alive after day one. Anything the
    product can count is DERIVED from real data (no stored progress to drift out of sync); only
    "go look at a page" steps live in localStorage as visit markers. Dates are UTC day-keys
    ("YYYY-MM-DD") to match the backend's trends buckets. */
@@ -122,7 +122,7 @@ export function deriveSteps(s: QuestStatus, l: QuestLocal): QuestStep[] {
       group: "Set up",
       title: "Send your first trace",
       detail: "pip install the SDK and point it at this workspace — auto-instrumentation does the rest.",
-      href: "/clusters", // the first-run checklist (with the SDK snippet) sits on the landing page
+      href: "/settings/api-keys", // the SDK snippet sits next to the keys
       cta: "Get the snippet",
       done: real("first_trace_received", s.traces > 0),
     },

@@ -1,6 +1,5 @@
 export default {
   index: "Overview",
-  dashboard: "First-run checklist",
   traces: "Traces & conversations",
   evaluators: "Evaluators",
   trends: "Trends & cross-metric analysis",

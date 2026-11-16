@@ -60,7 +60,7 @@ All are **Server Components** unless noted; each lists the `lib/api.ts` calls it
 | Route | Fetches | Renders |
 |---|---|---|
 | `/` | — | **Public marketing landing page** (`(marketing)/`) — no auth, no app shell. Client component animated with GSAP; all motion behind `gsap.matchMedia("(prefers-reduced-motion: no-preference)")`. |
-| `/dashboard` | — | **Not a page** — `next.config.mjs` 307s it to `/clusters`, so login, register, invites and the marketing CTAs keep a stable front door. The old Overview is gone; its **Activation** checklist (trace → grade → failure → case → gate; the card disappears once the loop has been closed once) now streams in on top of `/clusters` via `FirstRun` (`getStats`, `getEvaluators`, `getGates`, `getMe`, `getMilestones`). |
+| `/dashboard` | — | **Not a page** — `next.config.mjs` 307s it to `/trends` (the landing page), so login, register, invites and the marketing CTAs keep a stable front door. |
 | `/traces` | `getSessions` | `TracesExplorer` (filter + search + date range) wrapping the hierarchical **TraceTable** in list mode. |
 | `/traces/[traceId]` | `getTrace` | Single trace header (spans/latency/**usage totals**, `PromoteButton` if failing) + `SingleTraceView` (Table / Timeline tabs + an Agents drawer). |
 | `/sessions/[threadId]` | `loadConversation` (`lib/conversation.ts`) | A conversation, pre-expanded: builds a `ConvNode` with all turns + spans and renders **TraceTable** in detail mode. `?view=timeline` opens on the waterfall. |

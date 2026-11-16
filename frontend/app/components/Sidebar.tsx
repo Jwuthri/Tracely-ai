@@ -12,7 +12,7 @@ type NavItem = { href: string; label: string; Icon: typeof IconGrid; exact?: boo
 
 // Organised around the workflow — Failures → Tests → Runs — with the routes exactly as they were:
 // every deep link and bookmark keeps working; only the grouping changed (W7). There is no Overview
-// page any more: `/dashboard` still resolves (next.config redirects it to /clusters, the first item).
+// page any more: `/dashboard` still resolves (next.config redirects it to /trends, the landing page).
 const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: "Failures",
