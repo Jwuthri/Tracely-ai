@@ -1,48 +1,7 @@
 import { getOps, type Ops } from "@/app/lib/api";
 import { StatCard } from "@/app/components/ui";
 import { Spark, Legend } from "@/app/components/Bars";
-import { fmtUsd } from "@/app/lib/usage";
-import { dur, modelCost, pct, tokens, totalCost, ttft } from "@/app/components/ops-format";
-
-/** Dashboard vitals strip: the same roll-up over a 24h window. The dashboard's cards are
- *  all-time counts, so this is the only thing on the page that answers "how is it doing *now*" —
- *  deliberately a one-line summary, not a second Trends page. */
-export async function OpsStrip() {
-  let ops: Ops;
-  try {
-    ops = await getOps(1);
-  } catch {
-    return null;
-  }
-  const s = ops.summary;
-  if (!s.traces) return null; // quiet 24h → no strip, rather than a row of zeros
-
-  const cost = totalCost(ops);
-  const vitals: [string, string, string?][] = [
-    ["traces", s.traces.toLocaleString()],
-    ["p50", dur(s.p50)],
-    ["p95", dur(s.p95), "text-warn"],
-    ["p99", dur(s.p99), "text-fail"],
-    ["errors", pct(s.error_rate), s.errors ? "text-fail" : "text-ok"],
-    ["tokens", tokens(s.tokens)],
-    ["cost", fmtUsd(cost)],
-  ];
-
-  return (
-    <section className="reveal card flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3" style={{ animationDelay: "200ms" }}>
-      <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-faint">Last 24h</span>
-      {vitals.map(([label, value, accent]) => (
-        <span key={label} className="flex items-baseline gap-1.5">
-          <span className={`font-mono text-[14px] tabular-nums ${accent ?? "text-fg"}`}>{value}</span>
-          <span className="text-[11.5px] text-fg-muted">{label}</span>
-        </span>
-      ))}
-      <a href="/trends" className="ml-auto text-[12px] text-fg-muted transition-colors hover:text-signal">
-        Trends →
-      </a>
-    </section>
-  );
-}
+import { dur, modelCost, pct, tokens, totalCost, ttft, usd } from "@/app/components/ops-format";
 
 export async function OpsPanel({ days = 14 }: { days?: number }) {
   let ops: Ops;
@@ -53,6 +12,17 @@ export async function OpsPanel({ days = 14 }: { days?: number }) {
   }
   const s = ops.summary;
   const cost = totalCost(ops);
+  // Daily spend as the tile's sparkline: a total alone can't say whether spend is climbing. Under
+  // three days there is no shape, and a one-point line just renders as a block.
+  const spend = ops.daily.map((d) => d.cost);
+  // Zero cost next to LLM calls means "no list price for these models", not "free" — the backend
+  // leaves cost_details empty for an unpriced model on purpose — so say that instead of "$0".
+  const costSub =
+    cost > 0 && s.traces
+      ? `${usd((cost / s.traces) * 1000)} per 1k traces`
+      : s.llm_calls
+        ? "no list price for these models"
+        : "no LLM calls in this window";
 
   return (
     <>
@@ -81,8 +51,13 @@ export async function OpsPanel({ days = 14 }: { days?: number }) {
         <StatCard label="Tokens" value={tokens(s.tokens)} sub={`${s.llm_calls.toLocaleString()} LLM calls`} delay={100} />
         <StatCard
           label="Cost"
-          value={fmtUsd(cost)}
-          sub={s.traces ? `${fmtUsd((cost / s.traces) * 1000)} per 1k traces` : "—"}
+          value={cost > 0 ? usd(cost) : "—"}
+          sub={costSub}
+          chart={
+            cost > 0 && spend.length >= 3 ? (
+              <Spark series={[{ values: spend, stroke: "stroke-warn/80", fill: "fill-warn/10", label: "cost" }]} height={30} grid={false} />
+            ) : undefined
+          }
           delay={130}
         />
       </div>
@@ -120,7 +95,7 @@ export async function OpsPanel({ days = 14 }: { days?: number }) {
             dur(m.p95),
             ttft(m.ttft_p50),
             tokens(m.tokens),
-            fmtUsd(modelCost(m)),
+            modelCost(m) > 0 ? usd(modelCost(m)) : "—", // no list price ≠ free
           ])}
           empty="No model spans in this window."
         />

@@ -10,13 +10,10 @@ import { IconActivity, IconBell, IconBolt, IconBook, IconCard, IconCheck, IconDa
 
 type NavItem = { href: string; label: string; Icon: typeof IconGrid; exact?: boolean; external?: boolean };
 
-// Organised around the workflow — Overview → Failures → Tests → Runs — with the routes exactly as
-// they were: every deep link and bookmark keeps working; only the grouping changed (W7).
+// Organised around the workflow — Failures → Tests → Runs — with the routes exactly as they were:
+// every deep link and bookmark keeps working; only the grouping changed (W7). There is no Overview
+// page any more: `/dashboard` still resolves (next.config redirects it to /clusters, the first item).
 const NAV: { group: string; items: NavItem[] }[] = [
-  {
-    group: "Overview",
-    items: [{ href: "/dashboard", label: "Overview", Icon: IconGrid, exact: true }],
-  },
   {
     group: "Failures",
     items: [

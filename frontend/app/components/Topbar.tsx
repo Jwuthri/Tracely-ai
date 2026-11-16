@@ -8,7 +8,6 @@ import { ThemeToggle } from "./ThemeToggle";
 
 const LABELS: Record<string, string> = {
   "": "Dashboard",
-  dashboard: "Dashboard",
   traces: "Traces",
   cases: "Regression cases",
   gates: "CI gates",

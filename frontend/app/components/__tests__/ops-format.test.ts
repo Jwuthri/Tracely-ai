@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dur, modelCost, totalCost, ttft } from "@/app/components/ops-format";
+import { dur, modelCost, tokens, totalCost, ttft, usd } from "@/app/components/ops-format";
 
 const model = (o: Partial<Parameters<typeof modelCost>[0]>) =>
   ({ model: "", calls: 0, p50: 0, p95: 0, ttft_p50: 0, errors: 0, tokens: 0,
@@ -17,6 +17,29 @@ describe("dur", () => {
   it("distinguishes an unreported TTFT from a fast one", () => {
     expect(ttft(0)).toBe("—");
     expect(ttft(120)).toBe("120ms");
+  });
+});
+
+describe("usd", () => {
+  it("drops precision as the number grows — no '$15680.2080'", () => {
+    expect(usd(2_400_000)).toBe("$2.40M");
+    expect(usd(15_680.208)).toBe("$15,680");
+    expect(usd(126.6985)).toBe("$126.70");
+    expect(usd(0.127)).toBe("$0.13");
+  });
+
+  it("keeps a real sub-cent amount distinct from zero", () => {
+    expect(usd(0)).toBe("$0");
+    expect(usd(0.0042)).toBe("<$0.01");
+  });
+});
+
+describe("tokens", () => {
+  it("scales to B so a big window reads as a number, not a typo", () => {
+    expect(tokens(8_310_800_000)).toBe("8.3B");
+    expect(tokens(1_234_567)).toBe("1.2M");
+    expect(tokens(12_500)).toBe("12.5k");
+    expect(tokens(999)).toBe("999");
   });
 });
 

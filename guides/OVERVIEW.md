@@ -63,7 +63,7 @@ One closed loop. The sidebar teaches it as four stages (+ Insights):
 
 | Stage | Sidebar nav | What it does |
 |---|---|---|
-| 👀 **Observe** | *Traces · Trends · Dashboard* | OTLP traces, grouped into **conversation threads**, with a tabbed detail view |
+| 👀 **Observe** | *Traces · Trends* | OTLP traces, grouped into **conversation threads**, with a tabbed detail view |
 | 🔬 **Detect** | *(automatic)* | Every run auto-graded — incl. **silent** failures |
 | 🧹 **Triage** | *Failure clusters* | Failures grouped into named **Issues** (Engine-style) |
 | 🧪 **Test** | *Regression cases · Judge calibration* | One failure → a fail-to-pass test with hermetic fixtures; ✓agree/✗disagree with judge verdicts |

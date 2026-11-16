@@ -122,7 +122,7 @@ export function deriveSteps(s: QuestStatus, l: QuestLocal): QuestStep[] {
       group: "Set up",
       title: "Send your first trace",
       detail: "pip install the SDK and point it at this workspace — auto-instrumentation does the rest.",
-      href: "/dashboard",
+      href: "/clusters", // the first-run checklist (with the SDK snippet) sits on the landing page
       cta: "Get the snippet",
       done: real("first_trace_received", s.traces > 0),
     },

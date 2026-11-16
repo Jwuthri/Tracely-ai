@@ -53,16 +53,6 @@ async function getJsonOrNull<T>(path: string): Promise<T | null> {
   return res.json() as Promise<T>;
 }
 
-export type TraceRow = {
-  trace_id: string;
-  ts: string;
-  spans: number;
-  root_name: string;
-  agent_id: string;
-  has_error: number;
-  eval?: string | null;
-};
-
 export type EvalScore = {
   name: string;
   evaluation_level: string;
@@ -101,10 +91,6 @@ export type SpanOut = {
   input: string | null;
   output: string | null;
 };
-
-export async function getTraces(): Promise<TraceRow[]> {
-  return getJson<TraceRow[]>(`/api/traces?limit=50`);
-}
 
 export type Thread = {
   thread: string;
