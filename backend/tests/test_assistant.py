@@ -215,24 +215,23 @@ async def test_the_agent_gets_the_callers_own_credentials(db, model):
     assert svc.assistant_tools.build_tools.__module__ == "tracely.services.assistant_tools"
 
 
-async def test_with_our_key_the_assistant_never_spends_the_customers(db, monkeypatch):
-    """The widget explains OUR product; while we have a key it must not bill — or depend on — a
-    workspace's key."""
+async def test_a_workspace_without_a_key_is_answered_on_ours(db, monkeypatch):
+    """The widget explains OUR product, so a workspace that configured no key still gets an
+    answer — on the server key."""
+    monkeypatch.setattr(provider.settings, "openrouter_api_key", "sk-ours")
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: None)
+    seen: dict = {}
     monkeypatch.setattr(
         svc.provider,
-        "use_project_key",
-        lambda _p: pytest.fail("the assistant must not use the customer's key"),
+        "stream_agent",
+        lambda prompt, **kw: (
+            seen.update(key=provider.effective_openrouter_key())
+            or _stream({"type": "final", "text": "ok", "usage": {}})
+        ),
     )
-    monkeypatch.setattr(svc.provider, "llm_enabled", lambda: True)
-    monkeypatch.setattr(
-        svc.provider, "stream_agent",
-        lambda prompt, **kw: _stream({"type": "final", "text": "ok", "usage": {}}),
-    )
-    monkeypatch.setattr(provider.settings, "openrouter_api_key", "sk-ours")
-    # a workspace with no key of its own still gets an answer, on the server key
-    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: None)
     out = await turn("p1", "u1", chat_id=None, message="hi")
     assert out["reply"] == "ok"
+    assert seen["key"] == "sk-ours"
 
 
 async def test_without_our_key_the_assistant_runs_on_the_workspaces_own(db, monkeypatch):
@@ -256,10 +255,23 @@ async def test_without_our_key_the_assistant_runs_on_the_workspaces_own(db, monk
     assert seen["key"] == "sk-theirs"
 
 
-def test_our_key_wins_over_the_workspaces(monkeypatch):
+def test_the_workspaces_key_wins_over_ours(monkeypatch):
+    """A workspace that set its own key runs everything on it, the assistant included."""
     monkeypatch.setattr(provider.settings, "openrouter_api_key", "sk-ours")
-    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: pytest.fail("looked up theirs"))
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: "token")
+    monkeypatch.setattr(provider, "_decrypt_project_key", lambda _t: "sk-theirs")
     with provider.use_assistant_key("p1"):
+        assert provider.effective_openrouter_key() == "sk-theirs"
+
+
+def test_our_key_covers_a_workspace_without_one(monkeypatch):
+    """No key configured: the assistant still answers, on ours — even under the hosted
+    bring-your-own-key gate, which only fails closed for calls that forgot their scope."""
+    monkeypatch.setattr(provider.settings, "require_project_llm_key", True)
+    monkeypatch.setattr(provider.settings, "openrouter_api_key", "sk-ours")
+    monkeypatch.setattr(provider, "_encrypted_key_for", lambda _p: None)
+    with provider.use_assistant_key("p1"):
+        assert provider.llm_enabled() is True
         assert provider.effective_openrouter_key() == "sk-ours"
 
 

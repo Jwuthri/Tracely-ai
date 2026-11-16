@@ -375,14 +375,15 @@ def use_server_key() -> Iterator[None]:
 
 @contextlib.contextmanager
 def use_assistant_key(project_id: str) -> Iterator[None]:
-    """The in-app assistant's scope: OUR key when this deployment has one (`use_server_key`),
-    otherwise the workspace's own (`use_project_key`). A self-host typically sets no server key
-    and would otherwise ship a dead widget in every workspace, even ones that brought a key."""
-    with use_server_key():
+    """The in-app assistant's scope: the workspace's OWN key when it configured one
+    (`use_project_key`), otherwise OURS (`use_server_key`), so the widget still works in a
+    workspace that brought no key. A workspace that set a key gets every LLM call on it, the
+    assistant included — and never pays for a broken server key it cannot see or fix."""
+    with use_project_key(project_id):
         if llm_enabled():
             yield
             return
-    with use_project_key(project_id):
+    with use_server_key():
         yield
 
 
