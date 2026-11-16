@@ -23,7 +23,9 @@ from datetime import datetime, timedelta, timezone
 import structlog
 
 from tracely.infrastructure.blob import s3
-from tracely.infrastructure.clickhouse import deletes, maintenance
+from tracely.infrastructure import spans
+from tracely.infrastructure.clickhouse import maintenance
+from tracely.infrastructure.spans import deletes
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.repositories import project_plans
 from tracely.infrastructure.llm import checkpointer
@@ -57,7 +59,7 @@ def purge_project(project_id: str, before: str | None) -> dict:
     Idempotent — a retry re-lists what is left and finishes the job."""
     cutoff = datetime.fromisoformat(before) if before else None
     blobs = s3.delete_project_blobs(project_id, traces_only=cutoff is not None, before=cutoff)
-    maintenance.compact_tables()
+    _compact()
     log.info("project_purged", project_id=project_id, blobs=blobs, before=before)
     return {"project_id": project_id, "blobs": blobs}
 
@@ -97,7 +99,7 @@ def purge_orphans(now: datetime | None = None) -> dict:
         blobs += s3.delete_project_blobs(pid)
         checkpointer.delete_project_chats(pid)
     if orphans:
-        maintenance.compact_tables()
+        _compact()
         log.info("orphans_purged", projects=orphans, blobs=blobs)
     return {"purged": orphans, "blobs": blobs}
 
@@ -125,3 +127,8 @@ def expire_otlp_blobs(now: datetime | None = None) -> dict:
         log.info("otlp_blobs_expired", before=cutoff.isoformat(), by_project=removed)
     return {"expired": sum(removed.values()), "before": cutoff.isoformat()}
 
+
+def _compact() -> None:
+    """Take masked rows off disk — a ClickHouse-only chore (Postgres DELETEs are real)."""
+    if not spans.POSTGRES:
+        maintenance.compact_tables()

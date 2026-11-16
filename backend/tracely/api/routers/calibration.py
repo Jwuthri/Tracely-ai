@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from tracely.api.auth import get_principal
 from tracely.auth import Principal
 from tracely.domain.evaluation.calibration import merge_catalog_with_agreement
-from tracely.infrastructure.clickhouse import async_reader
+from tracely.infrastructure.spans import async_reader
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 

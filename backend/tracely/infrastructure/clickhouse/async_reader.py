@@ -1245,3 +1245,21 @@ async def trace_failure_totals(project_id: str, advisory: Sequence[str] = ()) ->
         {"adv": list(advisory)},
     )
     return total, failures
+
+
+# ── ops ───────────────────────────────────────────────────────────────────────
+
+
+async def store_health() -> tuple[object, float | None]:
+    """`(newest span time, disk free %)` for the self-check. One connection: a full disk is the
+    failure mode that takes ClickHouse down entirely, and it arrives gradually enough to catch."""
+    client = await get_async_client()
+    rows = (await client.query("SELECT max(start_time) FROM events FINAL WHERE is_deleted = 0")).result_rows
+    newest = rows[0][0] if rows and rows[0] else None
+    disks = (
+        await client.query(
+            "SELECT free_space, total_space FROM system.disks ORDER BY total_space DESC LIMIT 1"
+        )
+    ).result_rows
+    free = 100.0 * float(disks[0][0]) / float(disks[0][1]) if disks and disks[0][1] else None
+    return newest, free

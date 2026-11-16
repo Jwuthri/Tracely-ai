@@ -34,8 +34,8 @@ from tracely.domain.trajectory import (
 )
 from tracely.domain.traces.spans import input_digest, root_span
 from tracely.infrastructure.blob import s3 as blobstore
-from tracely.infrastructure.clickhouse.score_writer import ScoreWriter
-from tracely.infrastructure.clickhouse.trace_reader import TraceReader
+from tracely.infrastructure.spans import ScoreWriter
+from tracely.infrastructure.spans import TraceReader
 from tracely.infrastructure.db.models import (
     CaseReplay,
     EvaluationCase,

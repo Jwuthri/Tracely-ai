@@ -7,6 +7,9 @@ x-app-env: &app-env
   TRACELY_ENV: docker
   DATABASE_URL: postgresql+asyncpg://tracely:tracely@postgres:5432/tracely
   ALEMBIC_DATABASE_URL: postgresql+psycopg://tracely:tracely@postgres:5432/tracely
+  # Span store: clickhouse (legacy) | postgres. API and worker must agree.
+  SPAN_STORE: ${SPAN_STORE:-clickhouse}
+  SPAN_RETENTION_DAYS: ${SPAN_RETENTION_DAYS:-90}
   CLICKHOUSE_HOST: clickhouse
   CLICKHOUSE_PORT: "8123"
   CLICKHOUSE_USER: default

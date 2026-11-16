@@ -71,25 +71,15 @@ async def snapshot() -> Snapshot:
 
     last_trace_age = disk_free_pct = None
     try:
-        from tracely.infrastructure.clickhouse.client import get_async_client
+        from tracely.infrastructure.spans import async_reader
 
-        ch = await get_async_client()
-        rows = (await ch.query("SELECT max(start_time) FROM events")).result_rows
-        newest = rows[0][0] if rows and rows[0] else None
+        # The store's newest span + its own disk (ClickHouse; Postgres reports no disk figure).
+        newest, disk_free_pct = await async_reader.store_health()
         if isinstance(newest, datetime):
             newest = newest if newest.tzinfo else newest.replace(tzinfo=timezone.utc)
             last_trace_age = (datetime.now(timezone.utc) - newest).total_seconds()
-        # The store's own disk. One query, same connection: a full disk is the failure mode that
-        # takes ClickHouse down entirely, and it arrives gradually enough to be caught.
-        disks = (
-            await ch.query(
-                "SELECT free_space, total_space FROM system.disks ORDER BY total_space DESC LIMIT 1"
-            )
-        ).result_rows
-        if disks and disks[0][1]:
-            disk_free_pct = 100.0 * float(disks[0][0]) / float(disks[0][1])
     except Exception as exc:  # noqa: BLE001
-        log.warning("selfcheck_clickhouse_unreachable", error=str(exc))
+        log.warning("selfcheck_span_store_unreachable", error=str(exc))
 
     return Snapshot(
         queue_depth=queue_depth,

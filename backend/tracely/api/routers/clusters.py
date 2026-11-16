@@ -21,7 +21,7 @@ from tracely.config import settings
 from tracely.domain.evaluation.evaluator_suggestion import suggest_evaluator
 from tracely.domain.failure.histogram import histogram
 from tracely.domain.failure.versions import VersionRow, introduced_in
-from tracely.infrastructure.clickhouse.trace_reader import TraceReader
+from tracely.infrastructure.spans import TraceReader
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.models import Agent, FailureCluster

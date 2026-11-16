@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,14 @@ class Settings(BaseSettings):
     # Postgres
     database_url: str = "postgresql+asyncpg://tracely:tracely@localhost:5432/tracely"
     alembic_database_url: str = "postgresql+psycopg://tracely:tracely@localhost:5432/tracely"
+
+    # Where spans (`events`) and `scores` live: "clickhouse" (legacy) or "postgres" (the same
+    # database as the registry). Read once at import by `tracely.infrastructure.spans`, so the API
+    # and the worker must agree — set it on both. See design/part2-tracely/14-clickhouse-to-postgres.md.
+    span_store: Literal["clickhouse", "postgres"] = "clickhouse"
+    # Days a trace is kept on the Postgres store (the ClickHouse TTL's twin; plan retention can
+    # only shorten it). 0 disables expiry.
+    span_retention_days: int = 90
 
     # ClickHouse
     clickhouse_host: str = "localhost"

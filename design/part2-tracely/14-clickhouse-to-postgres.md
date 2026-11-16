@@ -1,6 +1,6 @@
 # 14 — Moving `events` / `scores` from ClickHouse to Postgres
 
-**Status:** plan, not started · **Date:** 2026-11-15 · **Supersedes:** the ClickHouse half of
+**Status:** PRs 1–4 implemented (branch `feat/postgres-span-store`); cutover and PR 5 pending · **Date:** 2026-11-15 · **Supersedes:** the ClickHouse half of
 [`09-database-schema.md`](09-database-schema.md) and the "ClickHouse `events`" box in
 [`02-system-architecture.md`](02-system-architecture.md).
 
@@ -241,7 +241,9 @@ change at any time. The "failing" flag stays a read-time join against `scores_on
 ## 4. Read mapping
 
 New modules live under `backend/tracely/infrastructure/spans/`: `reads.py` (async, for the API),
-`trace_reader.py` (sync `TraceReader`, for workers), `writer.py`, `rollup.py`, `deletes.py`.
+`trace_reader.py` (sync `TraceReader`, for workers), `writer.py`, `rollup.py`, `pg_deletes.py`
+(not `deletes.py`: the package exports an attribute named `deletes`, and a same-named submodule
+would be swapped in by the import system and silently repoint callers at the other store).
 **Function names, signatures and return shapes do not change**, so routers, services and the
 frontend are untouched. Async goes through `db/engine.async_engine` (asyncpg) and sync through
 `db/engine.sync_engine` (psycopg), both with `text()` and bound parameters.
@@ -257,7 +259,7 @@ frontend are untouched. Async goes through `db/engine.async_engine` (asyncpg) an
 | `trace_scores` | `scores_trace` ∪ `scores_session` | |
 | `evaluator_cost` | `scores_name` | `metadata->>'eval.total_tokens'` with `jsonb ?` instead of `mapContains` |
 | `traces_in_window` | `traces_start` | `env <> 'ci' AND internal_kind = ''` |
-| `score_samples_in_window` | `scores_name` (+ `traces` join for an agent) | join on `traces.agent_id`, not span `agent_id`: see §5 |
+| `score_samples_in_window` | `scores_name` (+ `events_agent` for an agent) | same span-level agent match as before |
 | `trace_failure_samples_in_window` | `traces` + fail join | `root_agent` is `traces.agent_id` |
 | `evaluator_catalog`, `evaluator_score_queue` | `scores` + `EXISTS traces` (`_REVIEWABLE`) | `ORDER BY md5(id)` replaces `cityHash64(id)` |
 | `sessions_overview` (page / `count_only`) | `traces` grouped by `thread_id` + fail join | page text comes from `traces.root_input/root_output`, so `_trace_texts` is no longer a separate query |
@@ -283,7 +285,7 @@ frontend are untouched. Async goes through `db/engine.async_engine` (asyncpg) an
 | `read_spans`, `read_thread_spans` | `events` PK / `events_conv` | the eval runner, regression, gate and FI keep their `_SPAN_COLS` |
 | `thread_trace_ids` | `traces_thread` | `ORDER BY ts_min` |
 | `candidate_metrics` | `traces` | `latency_ms`, `tokens` |
-| `latest_traces_for_env` | `traces` | `agent_id`, `env`, `internal_kind = ''`, `NOT has_emulated_turn`: see §5 |
+| `latest_traces_for_env` | `events_agent` | span-level, exactly as before |
 | `traces_with_input` | `events_root_input` | `md5(input) = md5($i) AND input = $i` |
 | `traces_for_run` | `events_run_id` | |
 | `failing_trace_reasons`, `scores_by_trace` | `scores_online_fail`, `scores_trace` | |
@@ -320,17 +322,17 @@ Each needs a line in the release notes and a test that pins the new rule.
    `recent_failing_traces` and `member_meta`. It used to be the earliest non-empty input of any
    span. The two agree whenever the root carries the user message. Otherwise the old rule returned
    a GENERATION's full history.
-3. **Agent filters use the trace's agent** (`traces.agent_id`, the `_TRACE_AGENT` rule) in
-   `latest_traces_for_env` and `score_samples_in_window`. They used to use "any span with this
-   agent", which filed a sub-agent's spans under the parent's traces. `version_breakdown` keeps the
-   span-level rule, because a version is stamped on the agent's own span.
-4. **The calibration queue order changes** (`md5(id)` instead of `cityHash64(id)`). It is still a
+3. **The calibration queue order changes** (`md5(id)` instead of `cityHash64(id)`). It is still a
    stable random sample. Existing labels are keyed by score id and are unaffected.
-5. **Retention removes whole traces** once a trace's newest span is past the cutoff. A per-span
+4. **Retention removes whole traces** once a trace's newest span is past the cutoff. A per-span
    TTL used to cut a long-running trace in half.
-6. **Dedup key is `(project_id, trace_id, span_id)`.** CH also keyed on the exact `start_time`, so a
+5. **Dedup key is `(project_id, trace_id, span_id)`.** CH also keyed on the exact `start_time`, so a
    re-delivered span with a shifted clock duplicated. Now it replaces.
-7. **Deletes are immediate.** No tombstone window, and no "masked but still read" rows.
+6. **Deletes are immediate.** No tombstone window, and no "masked but still read" rows.
+7. **Thread metadata takes the latest turn's value** when turns disagree on a key. ClickHouse kept an
+   arbitrary one. The copy's verifier compares metadata keys only, for that reason.
+8. **A trace is dated once, by its first span** (`daily_trace_failures`, ops daily). ClickHouse
+   counted a trace that crosses midnight UTC on both days. The verifier allows ±1%.
 
 ---
 
@@ -384,16 +386,16 @@ back. A short cutover window is lossless, and dual-write would be code deleted t
 | # | PR | Contents | Risk |
 |---|---|---|---|
 | 1 | **Schema** | Alembic `0040_span_store` (§2, §3). Purely additive. | none |
-| 2 | **Writer** | `spans/writer.py`, `rollup.py`, `deletes.py`, `expire_traces` beat task, `to_rows` computed columns. Writes go to Postgres when `SPAN_STORE=postgres` (default `clickhouse`). Wire into `docker-compose.yml`'s `x-app-env`. | low (flag off) |
+| 2 | **Writer** | `spans/writer.py`, `rollup.py`, `pg_deletes.py`, `expire_spans` beat task, `to_rows` computed columns. Writes go to Postgres when `SPAN_STORE=postgres` (default `clickhouse`). Wire into `docker-compose.yml`'s `x-app-env`. | low (flag off) |
 | 3 | **Readers** | `spans/reads.py`, `spans/trace_reader.py` with identical signatures. `tracely.infrastructure.spans` exposes `async_reader` / `TraceReader` / `ScoreWriter` / `deletes` chosen by `SPAN_STORE` (about 10 lines). Callers switch imports to it (mechanical). **Parity tests** load one fixture set into both stores and compare outputs. | low (flag off) |
-| 4 | **Copy + verify** | `scripts/copy_clickhouse_to_postgres.py`: pages CH `FINAL WHERE is_deleted = 0` by `(project_id, start_time)` in 5k-row batches through `writer.upsert_events`, then scores. Idempotent, safe to re-run. `--verify` compares per-project span/trace/score counts and runs every read in §4 against both stores for N sample threads. | none |
+| 4 | **Copy + verify** | `python -m tracely.infrastructure.spans.copy`: reads CH `FINAL WHERE is_deleted = 0` in batches of 500 whole traces through `writer.write_events`, then scores. Idempotent, safe to re-run. `--verify` compares per-project span/trace/score counts and runs every read in §4 against both stores for N sample threads. | none |
 | — | **Cutover (ops)** | Stop the worker. Set `SPAN_STORE=postgres` on api + worker. Run the copy for all projects (66.5k spans, about a minute). Run `--verify`. Start the worker; it drains the queued ingest into Postgres. Watch `/health/queue` and the traces tab. **Rollback:** set `SPAN_STORE=clickhouse` (CH is untouched; traces ingested after cutover replay from S3). | low |
 | 5 | **Remove ClickHouse** | after about a week on Postgres: delete `infrastructure/clickhouse/`, the CH DDL, the flag, `maintenance.py`, CH tests, `clickhouse-connect` (moves to a `clickhouse` extra for the copy script only), CH services in every deploy target, docs (§9). | low |
 | 6 | (later) | delete the copy script and the extra after two releases | none |
 
 **Self-hosters** (compose, Coolify, EKS) follow the same steps. The release notes for PR 4 give
 the commands. PR 5's notes say: if you skipped the copy, your data is still in ClickHouse; run
-`uv run --extra clickhouse python scripts/copy_clickhouse_to_postgres.py` with the old `CLICKHOUSE_*`
+`python -m tracely.infrastructure.spans.copy` from the last release that still has it, with the old `CLICKHOUSE_*`
 variables before removing the volume.
 
 **Before any of this:** the prod worker has been stuck since 2026-11-08 04:02 UTC (41,712 queued).
@@ -547,3 +549,35 @@ is about one focused week.
 - **Dual-write.** S3-first ingest already makes a cutover window lossless (§8).
 - **Keeping ClickHouse for analytics only.** That means two span stores to keep consistent, and
   no query at this scale needs it.
+
+---
+
+## 14. What was built (PRs 1–4) and how it was checked
+
+| Piece | Where |
+|---|---|
+| Schema | `backend/migrations/versions/0040_span_store.py` |
+| Store switch | `SPAN_STORE` (`config.py`, compose `x-app-env`), `tracely.infrastructure.spans` |
+| Postgres store | `spans/` `writer.py`, `rollup.py`, `reads.py`, `trace_reader.py`, `score_writer.py`, `pg_deletes.py` |
+| Copy + verify | `python -m tracely.infrastructure.spans.copy [--project P] [--verify-only]` |
+| Retention | beat `tracely.expire_spans` (04:57, `SPAN_RETENTION_DAYS`, default 90) |
+| Tests | `backend/tests/test_span_store_pg.py` (CI Postgres service, skipped locally without `TRACELY_TEST_PG_URL`) |
+
+Every caller (routers, services, ingestion, selfcheck, health, purge, retention) imports the store
+from `tracely.infrastructure.spans`. The ingest-time "Agent workflow" fill and the selfcheck read
+moved into the readers (`TraceReader.trace_generations`, `async_reader.store_health`). With
+`SPAN_STORE=postgres`, the ClickHouse-only chores (`cap_system_logs`, `compact_tables`, the CH
+health ping, the async-client close) are skipped.
+
+**Checked on 2026-11-15** with local ClickHouse 24.8 and Postgres 17. The fixture had 400
+conversations and 3,766 spans across 2 projects, including rootless traces, internal runs,
+tombstoned spans, retracted scores, conversation scores, error spans, replay run ids and
+emulated turns.
+
+- **Async readers.** The copy's `--verify` reported **0 mismatches** after the two §5 rules (7, 8)
+  were encoded.
+- **Sync `TraceReader`.** Every method compared ClickHouse vs Postgres with **0 mismatches**.
+- **Copy.** Re-running converged to the same counts.
+- **Full suite.** It passes on the default ClickHouse store, and with `TRACELY_TEST_PG_URL` set.
+  Under `SPAN_STORE=postgres`, only the tests that assert ClickHouse-only behaviour differ (the
+  health `clickhouse` key, compaction calls).

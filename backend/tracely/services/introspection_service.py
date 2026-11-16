@@ -30,7 +30,7 @@ from tracely.config import settings
 from tracely.domain import introspection
 from tracely.domain.introspection import Recording
 from tracely.infrastructure.blob import s3 as blobstore
-from tracely.infrastructure.clickhouse import deletes
+from tracely.infrastructure.spans import deletes
 from tracely.services.ingestion_service import IngestionService
 
 log = structlog.get_logger(__name__)

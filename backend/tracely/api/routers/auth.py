@@ -37,7 +37,7 @@ from tracely.auth.principal import Principal, select_membership
 from tracely.config import settings
 from tracely.domain.billing import KIND_COMPANY
 from tracely.infrastructure import mailer
-from tracely.infrastructure.clickhouse import deletes
+from tracely.infrastructure.spans import deletes
 from tracely.infrastructure.db import repositories
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.session import get_session

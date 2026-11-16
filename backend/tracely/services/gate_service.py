@@ -45,8 +45,8 @@ from tracely.domain.simulation import (
 from tracely.domain.trajectory import build_trajectory, tool_sequence
 from tracely.domain.traces.spans import input_digest
 from tracely.infrastructure.blob import s3 as blobstore
-from tracely.infrastructure.clickhouse.score_writer import ScoreWriter
-from tracely.infrastructure.clickhouse.trace_reader import TraceReader
+from tracely.infrastructure.spans import ScoreWriter
+from tracely.infrastructure.spans import TraceReader
 from tracely.infrastructure.db import repositories
 from tracely.infrastructure.db.models import (
     Agent,

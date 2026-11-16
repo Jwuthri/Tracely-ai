@@ -40,8 +40,8 @@ from tracely.domain.evaluation.results import chain_payload
 from tracely.domain.evaluation.targeting import spec_applies
 from tracely.domain.evaluation.template_resolver import references_conversation_scope
 from tracely.domain.traces.spans import root_span
-from tracely.infrastructure.clickhouse.score_writer import ScoreWriter
-from tracely.infrastructure.clickhouse.trace_reader import TraceReader
+from tracely.infrastructure.spans import ScoreWriter
+from tracely.infrastructure.spans import TraceReader
 from tracely.infrastructure.db import repositories
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.llm import provider

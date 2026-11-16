@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from tracely.infrastructure import spans
 from tracely.infrastructure.clickhouse.client import get_async_client
 from tracely.infrastructure.db.engine import AsyncSessionLocal
 
@@ -48,12 +49,13 @@ async def queue_health() -> JSONResponse:
 async def health() -> JSONResponse:
     deps: dict[str, str] = {}
 
-    try:
-        client = await get_async_client()
-        deps["clickhouse"] = "ok" if await client.ping() else "error"
-    except Exception as exc:  # unreachable / auth / pool exhausted
-        log.warning("health_clickhouse_failed", error=str(exc))
-        deps["clickhouse"] = "error"
+    if not spans.POSTGRES:  # on the Postgres store, the Postgres probe below covers spans too
+        try:
+            client = await get_async_client()
+            deps["clickhouse"] = "ok" if await client.ping() else "error"
+        except Exception as exc:  # unreachable / auth / pool exhausted
+            log.warning("health_clickhouse_failed", error=str(exc))
+            deps["clickhouse"] = "error"
 
     try:
         async with AsyncSessionLocal() as s:

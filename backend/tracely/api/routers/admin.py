@@ -19,7 +19,7 @@ from tracely.api.auth import get_project_id, require_role, require_user
 from tracely.auth import Principal
 from tracely.config import settings
 from tracely.domain.evaluation.rolling_summary import budget_problem
-from tracely.infrastructure.clickhouse import async_reader, deletes
+from tracely.infrastructure.spans import async_reader, deletes
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.llm import checkpointer, provider

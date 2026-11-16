@@ -34,7 +34,7 @@ from tracely.auth.tokens import (
     verify_share,
 )
 from tracely.domain.evaluation.verdict import rollup_verdict
-from tracely.infrastructure.clickhouse import async_reader
+from tracely.infrastructure.spans import async_reader
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.models import Agent, GateRun
