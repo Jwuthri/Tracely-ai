@@ -167,8 +167,8 @@ class Settings(BaseSettings):
     posthog_host: str = "https://us.i.posthog.com"
 
     # The in-app assistant (the dashboard's chat widget). Unlike every other LLM call, this one
-    # runs on OUR OpenRouter key — it answers questions about Tracely, so it must work in a
-    # workspace that has configured no key of its own (`provider.use_server_key`). This is the
+    # falls back to OUR OpenRouter key when the workspace configured none of its own — it answers
+    # questions about Tracely, so it must still work there (`provider.use_assistant_key`). This is the
     # server default; a workspace can pick its own (`projects.assistant_model`, Settings → API
     # keys). Sonnet: the assistant is an agent driving ~30 tools, where tool-use reliability
     # matters more than the per-token price — `assistant_budget_usd` caps what a chat can spend.

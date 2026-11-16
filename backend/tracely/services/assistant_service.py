@@ -4,11 +4,10 @@ An agent, not a FAQ: it drives the product through the same HTTP endpoints the U
 (`assistant_tools`), so it can read a workspace's traces to explain a failure and change that
 workspace — a new evaluator column, a scenario, a regression case — on the user's say-so.
 
-Two keys are in play and they are not the same key. The MODEL runs on TRACELY'S OpenRouter key
-(`provider.use_server_key`, CLAUDE.md's one sanctioned exception) because the assistant explains
-our product and must work in a workspace that configured no key of its own. Only a deployment
-with no key of ours (a self-host) runs it on the workspace's key instead
-(`provider.use_assistant_key`). The TOOLS run on the
+Two keys are in play and they are not the same key. The MODEL runs on the workspace's own
+OpenRouter key when it configured one, and otherwise on TRACELY'S (`provider.use_assistant_key`
+-> `use_server_key`, CLAUDE.md's one sanctioned exception), so the widget still works in a
+workspace that brought no key. The TOOLS run on the
 caller's own credentials, forwarded from the request — so what the agent can see and change is
 exactly what the person chatting can see and change. We pay for the tokens; we do not widen
 anybody's access.

@@ -49,8 +49,8 @@ export function AssistantModelPanel() {
       <div className="hairline px-4 py-3 text-[13px] font-semibold text-fg">Assistant model</div>
       <div className="space-y-4 p-5">
         <p className="text-[13.5px] leading-relaxed text-fg-muted">
-          The model the in-app assistant answers on. It runs on this deployment's own key when it
-          has one, otherwise on the workspace key above.
+          The model the in-app assistant answers on. It runs on the workspace key above when one is
+          set, otherwise on this deployment's own key.
         </p>
         {!cfg && !msg && <p className="text-[13px] text-fg-faint">Loading…</p>}
         {cfg && (
