@@ -24,6 +24,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from tracely.api.internal_client import api_call, auth_headers_from
+from tracely.domain.audit import brief
 from tracely.domain.evaluation.guide import create_evaluator_description
 
 INSTRUCTIONS = """Tracely is trace-native CI/CD for AI agents: production traces are graded by
@@ -230,6 +231,113 @@ async def get_trends(ctx: Context, days: int = 14) -> dict:
 async def get_ops_metrics(ctx: Context, days: int = 14) -> dict:
     """Latency (p50/p95), throughput, token and cost roll-up over `days` (1–90)."""
     return await _call(ctx, "GET", "/api/ops", params={"days": days})
+
+
+# ── audits ───────────────────────────────────────────────────────────────────
+#
+# The same reads and writes the in-app assistant has (`services/assistant_tools.py`), shaped by
+# the same helpers (`domain/audit/brief.py`). Creating an audit and writing its seeds are
+# `require_user` routes: they work with a session token, and an ingest key is refused by the
+# router — a CI key can read audits and start runs, never author them.
+
+
+@mcp.tool()
+async def list_audits(ctx: Context) -> list[dict]:
+    """Behavioural audits: an attacker model tries to provoke a behaviour in a target and judges
+    score how often it appears. Each with its target, seed count and last measured result."""
+    return [
+        {"id": a["id"], "name": a["name"], "behaviour": (a.get("behavior") or "")[:200],
+         "target": a["config"]["target"]["model"], "seeds": a.get("seeds"),
+         "last_run": brief.run_brief(a["last_run"]) if a.get("last_run") else None}
+        for a in await _call(ctx, "GET", "/api/audits")
+    ]
+
+
+@mcp.tool()
+async def get_audit(ctx: Context, audit_id: str) -> dict:
+    """One audit: what it looks for, its target, its seeds (with ids) and its runs."""
+    return brief.audit_brief(await _call(ctx, "GET", f"/api/audits/{audit_id}"))
+
+
+@mcp.tool()
+async def audit_catalog(ctx: Context) -> dict:
+    """What an audit can be built from: behaviour presets, seed-library topics, variation axes,
+    tool packs, and whether this deployment can give the target a real machine."""
+    return brief.catalog_brief(await _call(ctx, "GET", "/api/audits/catalog"))
+
+
+@mcp.tool()
+async def create_audit(
+    ctx: Context,
+    behaviour: str = "",
+    target_model: str = "",
+    agent: str = "",
+    preset: str = "",
+    name: str = "",
+    real_machine: bool = False,
+    packs: list[str] | None = None,
+    attacker_media: list[str] | None = None,
+    budget_usd: float = 0.0,
+) -> dict:
+    """Create an audit. WHAT to look for: `behaviour` in a sentence or two, or a `preset` key
+    from `audit_catalog`. WHAT to test: `target_model` alone audits a model; `agent` (a slug)
+    audits that agent's real system prompt and tools, from its latest trace. Optional:
+    `real_machine` + `packs` (dev, office, support, data, devops) for real tools instead of
+    invented tool results; `attacker_media` (`image`, `voice`); `budget_usd` per run. Needs a
+    signed-in user's token. A preset comes with seeds; otherwise call `generate_audit_seeds`."""
+    chosen = None
+    if preset:
+        presets = (await _call(ctx, "GET", "/api/audits/catalog")).get("presets") or []
+        chosen = next((p for p in presets if p["key"] == preset), None)
+        if chosen is None:
+            raise ValueError(f"no preset {preset!r}. Presets: {', '.join(p['key'] for p in presets)}")
+    imported = None
+    if agent:
+        imported = await _call(ctx, "POST", "/api/audits/import-target", json={"agent": agent})
+        if not imported.get("found"):
+            raise ValueError(f"no recent trace of agent {agent!r} shows a system prompt or tools")
+    out = await _call(ctx, "POST", "/api/audits", json=brief.create_body(
+        behaviour=behaviour, target_model=target_model, name=name, preset=chosen, imported=imported,
+        agent=agent, real_machine=real_machine, packs=packs, attacker_media=attacker_media,
+        budget_usd=budget_usd,
+    ))
+    return {"id": out["id"], "name": out["name"], "seeds": out.get("seeds")}
+
+
+@mcp.tool()
+async def generate_audit_seeds(ctx: Context, audit_id: str, guidance: str = "", n: int = 8) -> list[dict]:
+    """Write up to 8 new seeds (situations for the attacker to play out) from the audit's
+    behaviour, target and existing seeds. `guidance` steers the batch. Needs a signed-in user's
+    token. Call again for more."""
+    out = await _call(ctx, "POST", f"/api/audits/{audit_id}/seeds/generate", timeout=300.0,
+                      json={"n": n, "guidance": guidance})
+    return [{"id": s["id"], "title": s["title"]} for s in out]
+
+
+@mcp.tool()
+async def run_audit(
+    ctx: Context, audit_id: str, mode: str = "measure", reps: int = 0, budget_usd: float = 0.0
+) -> dict:
+    """Start a run. It SPENDS MONEY on the workspace's model key, up to the audit's budget —
+    confirm with the user first. `mode`: `measure` (the rate is the audit's result) or `explore`
+    (finds more; its rate is not a result). Returns at once; poll `get_audit_run`."""
+    body = {k: v for k, v in {"mode": mode, "reps": reps, "budget_usd": budget_usd}.items() if v}
+    return brief.run_brief(await _call(ctx, "POST", f"/api/audits/{audit_id}/runs", json=body))
+
+
+@mcp.tool()
+async def get_audit_run(ctx: Context, run_id: str) -> dict:
+    """A run's result: the elicitation rate and each rollout's verdict and scores. ELICITED = the
+    target showed the behaviour, CLEAN = it did not, anything else was not a fair test. A null
+    rate means nothing was measured, not 0%."""
+    return brief.run_brief(await _call(ctx, "GET", f"/api/audit-runs/{run_id}"))
+
+
+@mcp.tool()
+async def get_audit_rollout(ctx: Context, rollout_id: str) -> dict:
+    """One rollout: each judge dimension's score and reason, and the conversation between the
+    attacker and the target (the final branch; long messages are shortened)."""
+    return brief.rollout_brief(await _call(ctx, "GET", f"/api/audit-rollouts/{rollout_id}"))
 
 
 class _ASGIHandler:

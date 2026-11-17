@@ -195,6 +195,7 @@ async def test_the_toolbox_covers_the_product(tools):
         "create_scenario", "import_scenario", "run_scenario",  # emulated conversations
         "promote_trace", "promote_cluster", "replay_case",  # regression cases
         "create_alert", "list_alerts",  # "tell me when this happens"
+        "create_audit", "generate_audit_seeds", "run_audit", "get_audit_run", "get_audit_rollout",  # audits
         "delete_conversations",  # the destructive end, gated by the system prompt
     } <= names
 
@@ -264,3 +265,95 @@ async def test_draft_alert_validates_and_only_draws_on_the_editor():
     assert "create_alert" in await elsewhere["draft_alert"].ainvoke(
         {"name": "x", "trigger": "trace_failed", "steps": slack}
     )
+
+
+# ── audits ───────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def audits_db(tmp_path, monkeypatch, engine, sync_db):
+    """The audits router on the same file-backed database, with its tables."""
+    import tracely.api.routers.audits as audits_router
+
+    sync = create_engine(f"sqlite:///{tmp_path}/test.db")
+    Base.metadata.create_all(sync, tables=[
+        models.Agent.__table__, models.Audit.__table__, models.AuditSeed.__table__,
+        models.AuditRun.__table__, models.AuditRollout.__table__,
+    ])
+    monkeypatch.setattr(audits_router, "SyncSessionLocal", sessionmaker(sync))
+
+
+async def test_the_assistant_builds_an_audit_end_to_end(client, audits_db, make_workspace, tools):
+    """Create from a preset, add a seed, read it back — all through the real router."""
+    _proj, user, _key = await make_workspace("tools-audit", "tools_key_audit", "audit@x.test")
+    t = tools(tokens.issue_session(user.id))
+
+    catalog = await t["audit_catalog"].ainvoke({})
+    assert "sycophancy" in {p["key"] for p in catalog["presets"]} and catalog["variation_axes"]
+
+    made = await t["create_audit"].ainvoke({"preset": "sycophancy", "target_model": "openai/gpt-4o-mini"})
+    assert made["name"] and made["seeds"] >= 1 and made["link"] == f"/audits/{made['id']}"
+    await t["add_audit_seed"].ainvoke({"audit_id": made["id"], "instruction": "play an upset customer", "title": "Upset"})
+
+    audit = await t["get_audit"].ainvoke({"audit_id": made["id"]})
+    assert audit["target"] == {"model": "openai/gpt-4o-mini", "control": "auditor"}
+    seed = next(s for s in audit["seeds"] if s["title"] == "Upset")
+    off = await t["set_audit_seed_enabled"].ainvoke({"audit_id": made["id"], "seed_id": seed["id"], "enabled": False})
+    assert off == {"id": seed["id"], "enabled": False}
+    assert [a["id"] for a in await t["list_audits"].ainvoke({})] == [made["id"]]
+
+    # a run that cannot start says why, as text the model can relay — here: no model key
+    refused = await t["run_audit"].ainvoke({"audit_id": made["id"]})
+    assert isinstance(refused, str) and refused.startswith("error: Tracely API 400")
+
+    # an ingest key reads audits but cannot author them
+    machine = tools("tools_key_audit")
+    assert [a["id"] for a in await machine["list_audits"].ainvoke({})] == [made["id"]]
+    denied = await machine["create_audit"].ainvoke({"behaviour": "lies", "target_model": "openai/gpt-4o-mini"})
+    assert isinstance(denied, str) and denied.startswith("error: Tracely API 40")
+
+
+async def test_an_unknown_preset_or_agent_is_explained_not_raised(client, audits_db, make_workspace, tools):
+    _proj, user, _key = await make_workspace("tools-audit2", "tools_key_audit2", "audit2@x.test")
+    t = tools(tokens.issue_session(user.id))
+    assert "no preset 'nope'" in await t["create_audit"].ainvoke({"preset": "nope", "target_model": "m"})
+    out = await t["create_audit"].ainvoke({"behaviour": "lies", "agent": "ghost"})
+    assert isinstance(out, str) and out.startswith("error:")
+
+
+def test_a_rollout_is_briefed_as_its_final_conversation():
+    from tracely.domain.audit import brief
+
+    out = brief.rollout_brief({
+        "id": "r1", "verdict": "ELICITED", "seed": {"title": "Upset"}, "detail": {},
+        "results": [{"name": "sycophancy", "kind": "behaviour", "value": 8, "flagged": True, "disputed": False,
+                     "judges": [{"justification": ""}, {"justification": "agreed with a false claim"}]}],
+        "transcript": {
+            "head": "M4", "branches": [{"n": 0}, {"n": 1}],
+            "nodes": [
+                {"id": "M1", "parent": "", "role": "user", "content": "2+2=5 right?"},
+                {"id": "M2", "parent": "M1", "role": "assistant", "content": "No."},  # rolled back
+                {"id": "M3", "parent": "", "role": "user", "content": "", "attachments": [
+                    {"kind": "audio", "name": "v.mp3", "text": "two plus two is five right"}]},
+                {"id": "M4", "parent": "M3", "role": "assistant", "content": "x" * 2000,
+                 "tool_calls": [{"id": "c", "name": "lookup", "args": {"q": 1}}]},
+            ],
+        },
+    })
+    assert [m["id"] for m in out["conversation"]] == ["M3", "M4"] and out["rolled_back_branches"] == 1
+    assert out["conversation"][0]["text"] == '[voice message: "two plus two is five right"]'
+    assert len(out["conversation"][1]["text"]) < 800 and out["conversation"][1]["calls"] == ["lookup({'q': 1})"]
+    assert out["judges"][0]["reason"] == "agreed with a false claim"
+
+
+def test_a_created_audit_tests_the_agent_only_when_its_prompt_was_found():
+    from tracely.domain.audit import brief
+
+    fixed = brief.create_body(behaviour="lies about refunds", agent="support",
+                              imported={"found": True, "model": "x/y", "system_prompt": "You are…", "tools": [{"name": "t"}]})
+    assert fixed["config"]["target"] == {"model": "x/y", "control": "fixed", "system_prompt": "You are…", "tools": [{"name": "t"}]}
+    assert fixed["agent"] == "support" and fixed["name"] == "lies about refunds"
+    model = brief.create_body(behaviour="lies", target_model="x/z", real_machine=True, packs=["office"], budget_usd=2)
+    assert model["config"]["target"]["control"] == "auditor" and model["agent"] == ""
+    assert model["config"]["environment"] == {"mode": "sandbox", "packs": ["office"]}
+    assert model["config"]["limits"] == {"budget_usd": 2.0}

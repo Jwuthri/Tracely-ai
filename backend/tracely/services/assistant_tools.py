@@ -34,6 +34,7 @@ from typing import Any
 from uuid import uuid4
 
 from tracely.api.internal_client import api_call
+from tracely.domain.audit import brief
 from tracely.domain.evaluation.guide import create_evaluator_description
 
 # One tool result's ceiling. Large enough for a cluster with its members or a trace with its
@@ -132,6 +133,15 @@ def build_tools(headers: dict[str, str], path: str = "") -> list:
 
     async def call(method: str, path: str, **kw: Any) -> Any:
         return await _api(headers, method, path, **kw)
+
+    async def api_call_raw(method: str, path: str, **kw: Any) -> Any:
+        """Like `call`, but unclipped: for a read the tool itself shortens before returning.
+        Clipping first turns the JSON into a string cut in half, with nothing left to shorten —
+        the audit catalog alone (43 rubrics) is over twice the clip."""
+        try:
+            return await api_call(headers, method, path, **kw)
+        except Exception as exc:
+            return f"error: {exc}"[:1000]
 
     # ── reading: traces and conversations ────────────────────────────────────
 
@@ -622,7 +632,175 @@ def build_tools(headers: dict[str, str], path: str = "") -> list:
             json=_params(candidate_trace_id=candidate_trace_id),
         )
 
+    # ── audits: go looking for a behaviour ───────────────────────────────────
+
+    @tool
+    async def audit_catalog() -> Any:
+        """What an audit can be built from: behaviour presets, the seed library's topics, the axes
+        a seed can be varied along, the tool packs, and whether this deployment can give the
+        target a real machine. Read it before `create_audit` when the user has not said exactly
+        what they want."""
+        out = await api_call_raw("GET", "/api/audits/catalog")
+        return out if isinstance(out, str) else _clip(brief.catalog_brief(out))
+
+    @tool
+    async def list_audits() -> Any:
+        """Every audit with its target, seed count and last measured result."""
+        out = await api_call_raw("GET", "/api/audits")
+        if isinstance(out, str):
+            return out
+        return _clip([
+            {"id": a["id"], "name": a["name"], "behaviour": (a.get("behavior") or "")[:200],
+             "target": a["config"]["target"]["model"], "seeds": a.get("seeds"),
+             "last_run": brief.run_brief(a["last_run"]) if a.get("last_run") else None,
+             "link": f"/audits/{a['id']}"}
+            for a in out
+        ])
+
+    @tool
+    async def get_audit(audit_id: str) -> Any:
+        """One audit: what it looks for, its target, its seeds (with ids) and its runs."""
+        out = await api_call_raw("GET", f"/api/audits/{audit_id}")
+        return out if isinstance(out, str) else _clip(brief.audit_brief(out))
+
+    @tool
+    async def create_audit(
+        behaviour: str = "",
+        target_model: str = "",
+        agent: str = "",
+        preset: str = "",
+        name: str = "",
+        real_machine: bool = False,
+        packs: list[str] | None = None,
+        attacker_media: list[str] | None = None,
+        judge_models: list[str] | None = None,
+        budget_usd: float = 0.0,
+    ) -> Any:
+        """Create an audit: an attacker model tries to provoke a behaviour in a target, and judges
+        score how often it appears.
+
+        Two things decide it. WHAT to look for: `behaviour` in a sentence or two, or a `preset`
+        key from `audit_catalog`. WHAT to test: `target_model` alone audits a model (the attacker
+        builds a deployment around it), while `agent` (an agent's slug) audits that agent's real
+        system prompt and tools, taken from its latest trace — `target_model` then defaults to
+        the model it ran on.
+
+        Everything else is optional: `real_machine` gives the target real tools on a real Linux
+        box (`packs`: dev, office, support, data, devops) instead of invented tool results;
+        `attacker_media` (`image`, `voice`) lets the attacker send pictures or voice messages;
+        `budget_usd` caps one run (default 5). A preset comes with starter seeds; otherwise call
+        `generate_audit_seeds` next."""
+        chosen: dict | None = None
+        if preset:
+            catalog = await api_call_raw("GET", "/api/audits/catalog")
+            if isinstance(catalog, str):
+                return catalog
+            chosen = next((p for p in catalog.get("presets") or [] if p["key"] == preset), None)
+            if chosen is None:
+                return f"error: no preset {preset!r}. Presets: {', '.join(p['key'] for p in catalog.get('presets') or [])}"
+        imported: dict | None = None
+        if agent:
+            imported = await call("POST", "/api/audits/import-target", json={"agent": agent})
+            if isinstance(imported, str):
+                return imported
+            if not imported.get("found"):
+                return (f"error: no recent trace of agent {agent!r} shows a system prompt or tools, "
+                        "so there is nothing to audit as that agent. Audit the model instead, or ask the user.")
+        out = await call("POST", "/api/audits", json=brief.create_body(
+            behaviour=behaviour, target_model=target_model, name=name, preset=chosen, imported=imported,
+            agent=agent, real_machine=real_machine, packs=packs, attacker_media=attacker_media,
+            judge_models=judge_models, budget_usd=budget_usd,
+        ))
+        return out if isinstance(out, str) else {
+            "id": out["id"], "name": out["name"], "seeds": out.get("seeds"), "link": f"/audits/{out['id']}",
+        }
+
+    @tool
+    async def generate_audit_seeds(audit_id: str, guidance: str = "", n: int = 8) -> Any:
+        """Write up to 8 new seeds (situations for the attacker to play out) for an audit, from
+        its behaviour, its target and the seeds it already has. `guidance` steers the batch
+        ("angry customers", "one where the user sends a photo"). Call again for more."""
+        out = await call(
+            "POST", f"/api/audits/{audit_id}/seeds/generate", timeout=SLOW_TIMEOUT_S,
+            json={"n": n, "guidance": guidance},
+        )
+        return out if isinstance(out, str) else [{"id": s["id"], "title": s["title"]} for s in out]
+
+    @tool
+    async def add_audit_seed(audit_id: str, instruction: str, title: str = "") -> Any:
+        """Add one seed you or the user wrote: who the attacker plays, what the target has, what
+        happens, and what to try if the first approach fails."""
+        return await call("POST", f"/api/audits/{audit_id}/seeds", json={"title": title, "instruction": instruction})
+
+    @tool
+    async def import_audit_seeds(audit_id: str, topic: str) -> Any:
+        """Copy seeds from the research library into an audit, by topic (see `audit_catalog`'s
+        `library_topics`). They suit auditing a model better than a deployed agent."""
+        out = await call("POST", f"/api/audits/{audit_id}/seeds/import", json={"tag": topic})
+        return out if isinstance(out, str) else {"imported": len(out)}
+
+    @tool
+    async def vary_audit_seed(audit_id: str, seed_id: str, axes: list[str]) -> Any:
+        """Write one variation of a seed per axis (see `audit_catalog`'s `variation_axes`), each
+        changing only that one thing — how to learn what a behaviour depends on."""
+        out = await call(
+            "POST", f"/api/audits/{audit_id}/seeds/{seed_id}/variations", timeout=SLOW_TIMEOUT_S,
+            json={"dimensions": axes},
+        )
+        return out if isinstance(out, str) else [{"id": s["id"], "title": s["title"]} for s in out]
+
+    @tool
+    async def set_audit_seed_enabled(audit_id: str, seed_id: str, enabled: bool) -> Any:
+        """Switch a seed on or off. A run plays every enabled seed."""
+        out = await call("PATCH", f"/api/audits/{audit_id}/seeds/{seed_id}", json={"enabled": enabled})
+        return out if isinstance(out, str) else {"id": out["id"], "enabled": out["enabled"]}
+
+    @tool
+    async def run_audit(
+        audit_id: str, mode: str = "measure", reps: int = 0, budget_usd: float = 0.0,
+        seed_ids: list[str] | None = None,
+    ) -> Any:
+        """Start a run of an audit. THIS SPENDS MONEY on the workspace's own model key: before
+        calling it, tell the user how many rollouts it is (enabled seeds x reps) and the budget
+        cap, and wait for their yes.
+
+        `mode` is `measure` (independent rollouts — the rate is the audit's result) or `explore`
+        (finds more, but its rate is not a result). `budget_usd` can only lower the audit's own
+        cap. Returns at once; the run takes minutes — read it with `get_audit_run`."""
+        out = await call("POST", f"/api/audits/{audit_id}/runs", json=_params(
+            mode=mode, reps=reps or None, budget_usd=budget_usd or None, seed_ids=seed_ids or None,
+        ))
+        return out if isinstance(out, str) else brief.run_brief(out)
+
+    @tool
+    async def get_audit_run(run_id: str) -> Any:
+        """A run's result: the elicitation rate, and each rollout's verdict and scores. ELICITED =
+        the target showed the behaviour; CLEAN = it did not; anything else was not a fair test and
+        is not counted. A rate of null means nothing was measured — never report it as 0%."""
+        out = await api_call_raw("GET", f"/api/audit-runs/{run_id}")
+        return out if isinstance(out, str) else _clip(brief.run_brief(out))
+
+    @tool
+    async def get_audit_rollout(rollout_id: str) -> Any:
+        """One rollout (ids come from `get_audit_run`): why the judges scored it as they did, and
+        the conversation between the attacker and the target. Read this before saying what the
+        target actually did."""
+        out = await api_call_raw("GET", f"/api/audit-rollouts/{rollout_id}")
+        return out if isinstance(out, str) else _clip(brief.rollout_brief(out))
+
+    @tool
+    async def cancel_audit_run(run_id: str) -> Any:
+        """Stop a running audit run. What it has already judged is kept."""
+        out = await call("POST", f"/api/audit-runs/{run_id}/cancel")
+        return out if isinstance(out, str) else brief.run_brief(out)
+
     # ── deletes: ask the user first, every time ──────────────────────────────
+
+    @tool
+    async def delete_audit(audit_id: str) -> Any:
+        """Delete an audit with its seeds and every run, permanently. Ask the user to confirm
+        before calling this."""
+        return await call("DELETE", f"/api/audits/{audit_id}")
 
     @tool
     async def delete_evaluator(evaluator_id: str) -> Any:
@@ -665,5 +843,8 @@ def build_tools(headers: dict[str, str], path: str = "") -> list:
         list_scenarios, create_scenario, import_scenario, run_scenario,
         list_alerts, create_alert, draft_alert,
         promote_trace, promote_cluster, replay_case,
-        delete_evaluator, delete_scenario, delete_case, delete_clusters, delete_conversations,
+        audit_catalog, list_audits, get_audit, create_audit, generate_audit_seeds, add_audit_seed,
+        import_audit_seeds, vary_audit_seed, set_audit_seed_enabled, run_audit, get_audit_run,
+        get_audit_rollout, cancel_audit_run,
+        delete_audit, delete_evaluator, delete_scenario, delete_case, delete_clusters, delete_conversations,
     )]

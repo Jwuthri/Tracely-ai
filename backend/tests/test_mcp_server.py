@@ -98,6 +98,7 @@ async def test_tools_are_listed(client, sync_db, make_workspace):
     async with mcp_session("mcp_key_list") as s:
         names = {t.name for t in (await s.list_tools()).tools}
     assert {"list_traces", "get_trace", "list_evaluators", "create_evaluator"} <= names
+    assert {"list_audits", "create_audit", "generate_audit_seeds", "run_audit", "get_audit_run", "get_audit_rollout"} <= names
     # Read-mostly by design: no delete/admin/ingest surface.
     assert not [n for n in names if "delete" in n]
 
