@@ -26,3 +26,27 @@ def test_every_table_referencing_agents_is_wiped_before_it():
     assert not missing, (
         f"these FK `agents` but are not deleted before it in project_data_delete: {missing}"
     )
+
+
+def test_every_table_referencing_projects_is_deleted_with_it():
+    """The same trap one level up: `project_delete` ends with `DELETE FROM projects`, and any
+    table that FKs to `projects` and was not emptied first turns "delete workspace" into a
+    ForeignKeyViolation. A row may be wiped by either half — the data wipe (derived rows) or the
+    workspace delete (configuration) — so both sources are searched."""
+    import inspect as pyinspect
+
+    from tracely.infrastructure.db import repositories
+
+    src = pyinspect.getsource(repositories.project_data_delete) + pyinspect.getsource(
+        repositories.project_delete
+    )
+    referencing = set()
+    for mapper in models.Base.registry.mappers:
+        table = mapper.local_table
+        if table is None or table.name == "projects":
+            continue
+        if any(fk.column.table.name == "projects" for fk in table.foreign_keys):
+            referencing.add(mapper.class_.__name__)
+
+    missing = sorted(name for name in referencing if f"delete({name})" not in src)
+    assert not missing, f"these FK `projects` but neither wipe deletes them: {missing}"

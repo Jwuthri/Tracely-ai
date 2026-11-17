@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import type { Me } from "@/app/lib/auth/types";
 import { AccountMenu } from "./AccountMenu";
 import { DOCS_URL } from "@/app/lib/site";
-import { IconActivity, IconBell, IconBolt, IconBook, IconCard, IconCheck, IconDatabase, IconGate, IconGrid, IconLayers, IconScale, IconSettings, IconShield, IconTrend, IconUsers } from "./icons";
+import { IconActivity, IconBell, IconBolt, IconBook, IconCard, IconCheck, IconDatabase, IconGate, IconGrid, IconLayers, IconScale, IconSearch, IconSettings, IconShield, IconTrend, IconUsers } from "./icons";
 
 type NavItem = { href: string; label: string; Icon: typeof IconGrid; exact?: boolean; external?: boolean };
 
@@ -28,6 +28,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { href: "/cases", label: "Regression cases", Icon: IconShield },
       { href: "/scenarios", label: "Scenarios", Icon: IconBolt },
+      { href: "/audits", label: "Audits", Icon: IconSearch },
       { href: "/calibration", label: "Judge calibration", Icon: IconScale },
     ],
   },

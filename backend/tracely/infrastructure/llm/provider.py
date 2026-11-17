@@ -475,6 +475,9 @@ def _openrouter_models() -> dict[str, dict]:
                 "output_modalities": list(
                     (m.get("architecture") or {}).get("output_modalities") or []
                 ),
+                "input_modalities": list(
+                    (m.get("architecture") or {}).get("input_modalities") or []
+                ),
             }
         _models_cache.update(ts=now, by_id=by_id)
         return by_id
@@ -1065,6 +1068,194 @@ def _error_message(resp: Any) -> str:
     except Exception:
         pass
     return (resp.text or "")[:500]
+
+
+def _chat_endpoint(model: str | None) -> tuple[str, str, str, bool]:
+    """`(url, key, model id, is_openrouter)` for a raw chat-completions call — the same key scope
+    and legacy fallback as `get_chat_model`, so `run_chat` can never reach a credential the
+    LangChain path would refuse."""
+    name = (model or settings.llm_judge_model).strip()
+    if _normalize_model(name) in _DECISION_MODELS:
+        raise RuntimeError(f"{name} is a decision model (classifier) — it has no chat endpoint.")
+    key = effective_openrouter_key()
+    if key:
+        return (
+            f"{settings.openrouter_base_url.rstrip('/')}/chat/completions",
+            key, _normalize_model(name), True,
+        )
+    if project_scoped() or settings.require_project_llm_key or not settings.llm_judge_api_key:
+        raise RuntimeError(
+            "This workspace has no OpenRouter API key. Add one in Settings -> OpenRouter key to "
+            "run LLM evaluations, clustering, scenario gates and audits."
+        )
+    return (
+        f"{settings.llm_judge_base_url.rstrip('/')}/chat/completions",
+        settings.llm_judge_api_key, name.removeprefix("openai/"), False,
+    )
+
+
+def _wire_text(content: Any) -> str:
+    """A chat message's content as plain text — a string, or the text parts of a block list."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
+def run_chat(
+    messages: list[dict],
+    *,
+    tools: list[dict] | None = None,
+    model: str | None = None,
+    temperature: float = 0.0,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+    timeout_s: float = 120.0,
+    on_usage: UsageSink | None = None,
+    record_as: str | None = None,
+) -> dict[str, Any]:
+    """One raw chat-completions call: a full message history in, ONE assistant message out, with
+    its tool calls returned UN-executed. The audit loop's primitive — both sides of it:
+
+    - the **target** under audit needs an arbitrary history (system, assistant tool calls, tool
+      results) and arbitrary tool schemas that nothing here ever runs;
+    - the **attacker** is a tool-calling agent whose "tools" only mutate the audit's own state.
+
+    Neither fits `create_agent`, which owns the loop and executes tools. Raw `httpx` rather than
+    LangChain (the `run_decision` precedent) for one reason: `ChatOpenAI` drops the provider's
+    reasoning text, and the attacker reading the target's thinking — plus measuring whether the
+    target *thinks* it is being tested — is the point.
+
+    `messages` and `tools` are OpenAI wire shapes; content may be a string or a block list
+    (`text` / `image_url` / `input_audio`). Returns
+    `{content, reasoning, tool_calls: [{id, name, args}], invalid_tool_calls: [{id, name, raw,
+    error}], finish_reason, usage, message}` — `message` is the assistant turn to append to the
+    history verbatim (it keeps `reasoning_details`, which providers want echoed back).
+
+    Same key scoping as every other call here; 429/502/503/529 retry with backoff; a length
+    rejection raises `ContextOverflowError`; a body with no `choices` (OpenRouter reports credit
+    exhaustion as HTTP 200 + `{error}`) raises with the provider's own message.
+    """
+    import httpx
+
+    url, key, mid, openrouter = _chat_endpoint(model)
+    body: dict[str, Any] = {
+        "model": mid,
+        "messages": messages,
+        "temperature": temperature,
+        # Always bounded — see `Settings.llm_max_output_tokens`.
+        "max_tokens": max_output_tokens or settings.llm_max_output_tokens,
+    }
+    if tools:  # an empty list is a 400 on several providers
+        body["tools"] = tools
+    if reasoning_effort:
+        if openrouter:
+            body["reasoning"] = {"effort": reasoning_effort}
+        else:
+            body["reasoning_effort"] = reasoning_effort
+    if openrouter:
+        body["usage"] = {"include": True}  # puts the billed cost on `usage`
+
+    prompt_text = _wire_text(messages[-1].get("content")) if messages else ""
+    system_text = next(
+        (_wire_text(m.get("content")) for m in messages if m.get("role") == "system"), None
+    )
+    rec = None
+    if record_as:
+        from tracely.domain import introspection
+
+        rec = introspection.active()
+        if rec is not None:
+            rec.target = record_as
+    with _recorded(prompt_text, system_text, mid) as sink:
+        resp = None
+        for attempt in range(_DECISION_ATTEMPTS):
+            resp = httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=timeout_s,
+            )
+            if resp.status_code not in _DECISION_RETRY_STATUSES or attempt == _DECISION_ATTEMPTS - 1:
+                break
+            time.sleep(_retry_delay(resp, attempt))
+        assert resp is not None
+        if resp.status_code >= 400:
+            detail = _error_message(resp)
+            if resp.status_code == 413 or is_context_overflow(detail):
+                raise ContextOverflowError(f"{mid}: {detail}")
+            raise RuntimeError(f"chat completions {resp.status_code} for {mid}: {detail}")
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            detail = _error_message(resp)
+            if is_context_overflow(detail):
+                raise ContextOverflowError(f"{mid}: {detail}")
+            raise RuntimeError(
+                f"{mid} returned an error body instead of a completion — most often OpenRouter "
+                f"credit exhaustion (https://openrouter.ai/settings/credits). [{detail}]"
+            )
+        msg = choices[0].get("message") or {}
+        tool_calls: list[dict] = []
+        invalid: list[dict] = []
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            raw = fn.get("arguments")
+            try:
+                args = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw or {})
+                if not isinstance(args, dict):
+                    raise ValueError("arguments are not a JSON object")
+                tool_calls.append({"id": tc.get("id") or "", "name": fn.get("name") or "", "args": args})
+            except ValueError as exc:
+                # A truncated or malformed call is the model's mistake to hear about, not ours to
+                # raise on: the caller answers it with the error so the loop can continue.
+                invalid.append({
+                    "id": tc.get("id") or "", "name": fn.get("name") or "",
+                    "raw": str(raw)[:2000], "error": str(exc)[:200],
+                })
+        u = data.get("usage") or {}
+        usage: dict[str, Any] = {
+            "input_tokens": int(u.get("prompt_tokens") or 0),
+            "output_tokens": int(u.get("completion_tokens") or 0),
+            "total_tokens": int(u.get("prompt_tokens") or 0) + int(u.get("completion_tokens") or 0),
+            "model": mid if openrouter else _normalize_model(mid),
+        }
+        if isinstance(u.get("cost"), (int, float)):
+            usage["cost_usd"] = float(u["cost"])
+        text = _wire_text(msg.get("content"))
+        message: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
+        for keep in ("tool_calls", "reasoning_details"):
+            if msg.get(keep):
+                message[keep] = msg[keep]
+        sink.append((
+            text or json.dumps([c["name"] for c in tool_calls] or [i["name"] for i in invalid]),
+            usage,
+        ))
+    if on_usage is not None:
+        on_usage(usage)
+    return {
+        "content": text,
+        "reasoning": str(msg.get("reasoning") or msg.get("reasoning_content") or ""),
+        "tool_calls": tool_calls,
+        "invalid_tool_calls": invalid,
+        "finish_reason": str(choices[0].get("finish_reason") or ""),
+        "usage": usage,
+        "message": message,
+    }
+
+
+def model_modalities(model_id: str | None) -> dict[str, list[str]]:
+    """`{input: […], output: […]}` for a model, from the live catalog. Unknown model (or an
+    unreachable catalog) reads as text-only — the safe assumption for "can this target take an
+    image?", which then skips rather than sends something the model cannot read."""
+    live = _openrouter_models().get(_normalize_model((model_id or settings.llm_judge_model).strip())) or {}
+    return {
+        "input": list(live.get("input_modalities") or ["text"]),
+        "output": list(live.get("output_modalities") or ["text"]),
+    }
 
 
 def _cached_tool_selector(**kw):

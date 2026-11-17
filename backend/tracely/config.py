@@ -297,6 +297,22 @@ class Settings(BaseSettings):
     # actually broken before, which needs the failure history no other red-team tool has.
     attacker_weakness_hints: int = 5
 
+    # ── Audits (domain/audit, services/audit_service.py) ─────────────────────────
+    # A rollout is never driven by one task: a tick advances it for at most this long, checkpoints
+    # and re-enqueues itself, so ingestion on a solo worker waits one slice — not one rollout.
+    audit_slice_s: int = 45
+    # How long a tick holds a rollout without checkpointing before another tick may take it. Must
+    # outlast the slowest single model call (a 120 s timeout, retried).
+    audit_lease_s: int = 420
+    # Rollouts of ONE run in flight at once — enforced when a rollout is claimed, so a redelivered
+    # task cannot add a chain. Only meaningful with real worker concurrency.
+    audit_max_parallel: int = 2
+    # A RUNNING run with no checkpoint for this long lost its tick chain (the worker died); the
+    # beat watchdog re-enqueues it.
+    audit_stale_s: int = 600
+    # Wall-clock ceiling for one rollout's driving, whatever its turn budget says.
+    audit_rollout_timeout_s: int = 1800
+
     # ── Internal-run recording ────────────────────────────────────────────────────
     # Record what Tracely itself did — the judge's prompt and reply, the attacker's move, the
     # call to the customer's endpoint — as a trace, so "why did this evaluator say that?" is

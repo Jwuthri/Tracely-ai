@@ -876,3 +876,118 @@ class ShareRevocation(Base):
     kind: Mapped[str] = mapped_column(String(24), primary_key=True)
     subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Audit(Base):
+    """A behavioural audit: what to look for, what to look at, and how to judge it.
+
+    `behavior` is the definition in words (Bloom's "behavior"); `config` is the validated
+    document from `domain/audit/config.py` — target, attacker, dimensions, judge panel, limits.
+
+    `agent_slug` is the agent this audit's target was imported from, by SLUG and with no foreign
+    key — the same way `Evaluator.target_agent` points at one. An audit is configuration written
+    by hand; it must survive "delete all project data", which drops every agent row.
+    """
+
+    __tablename__ = "audits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    agent_slug: Mapped[str] = mapped_column(String(128), default="")
+    behavior: Mapped[str] = mapped_column(Text, default="")
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(128), default="ui")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditSeed(Base):
+    """One instruction to the attacker (Petri's "seed instruction", Bloom's "scenario").
+
+    `origin` says where it came from — `manual`, `preset`, `generated`, `library`, `variation` —
+    and `parent_seed_id` names the seed a variation was derived from.
+    """
+
+    __tablename__ = "audit_seeds"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    audit_id: Mapped[str] = mapped_column(ForeignKey("audits.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    origin: Mapped[str] = mapped_column(String(16), default="manual")
+    parent_seed_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditRun(Base):
+    """One execution of an audit over its seeds.
+
+    `config` is a SNAPSHOT (the audit's config plus its behaviour text) taken when the run
+    started: two runs are comparable only if each names exactly what it ran under, and the audit
+    itself keeps being edited. `mode` is `measure` (independent rollouts — the elicitation rate
+    means something) or `explore` (rollouts learn from each other — it does not).
+
+    `heartbeat_at` is epoch seconds, written at every checkpoint; the watchdog re-enqueues a
+    RUNNING run whose heartbeat has gone stale (a tick chain that died with its worker).
+    """
+
+    __tablename__ = "audit_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    audit_id: Mapped[str] = mapped_column(ForeignKey("audits.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="RUNNING")  # RUNNING|DONE|CANCELLED
+    mode: Mapped[str] = mapped_column(String(16), default="measure")
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    budget_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    spend_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    heartbeat_at: Mapped[float] = mapped_column(Float, default=0.0)
+    created_by: Mapped[str] = mapped_column(String(128), default="ui")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuditRollout(Base):
+    """One attacker ⇄ target conversation: a seed, one repetition.
+
+    `phase` is where it is in its life (PENDING → DRIVING → JUDGING → DONE); `verdict` is how it
+    ended (see `domain/audit/judge.rollout_verdict`). `state` is the checkpoint — the whole
+    `AuditState`, every branch — written after every model call so any worker can resume it, and
+    moved to the blob store (`state_key`) when the rollout finishes: it is hundreds of KB and
+    nothing lists it.
+
+    The lease (`lease_token`, `lease_expires_at` in epoch seconds) is what stops two ticks driving
+    the same rollout: a claim is a compare-and-swap on it, and a checkpoint only lands while the
+    token still matches. `attempts` counts leases that EXPIRED — a worker that died mid-slice.
+    """
+
+    __tablename__ = "audit_rollouts"
+    __table_args__ = (Index("ix_audit_rollout_run_phase", "run_id", "phase"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("audit_runs.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    seed_id: Mapped[str] = mapped_column(String(36), default="")
+    seed: Mapped[dict] = mapped_column(JSON, default=dict)  # {title, instruction} as run
+    rep: Mapped[int] = mapped_column(Integer, default=0)
+    position: Mapped[int] = mapped_column(Integer, default=0)  # order within the run
+    stage: Mapped[int] = mapped_column(Integer, default=0)  # 0 = first pass; >0 = a deepen pass
+    phase: Mapped[str] = mapped_column(String(16), default="PENDING")
+    verdict: Mapped[str] = mapped_column(String(16), default="")
+    state: Mapped[dict | None] = mapped_column(JSON, nullable=True, deferred=True)
+    state_key: Mapped[str] = mapped_column(String(512), default="")
+    scores: Mapped[dict] = mapped_column(JSON, default=dict)  # {cells: [...], results: [...]}
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    spend_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str] = mapped_column(String(36), default="")
+    lease_expires_at: Mapped[float] = mapped_column(Float, default=0.0)
+    sandbox: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

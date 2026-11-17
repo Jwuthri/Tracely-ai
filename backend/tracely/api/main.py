@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from tracely.api.routers import (
     admin,
     analytics,
+    audits,
     assistant,
     billing,
     cases,
@@ -154,6 +155,7 @@ app.include_router(search.router)
 app.include_router(cases.router)
 app.include_router(gate.router)
 app.include_router(scenarios.router)
+app.include_router(audits.router)
 app.include_router(clusters.router)
 app.include_router(analytics.router)
 app.include_router(assistant.router)

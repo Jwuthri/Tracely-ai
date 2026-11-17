@@ -665,6 +665,12 @@ class EvaluationService:
         spans = self.trace_reader.read_thread_spans(project_id, thread_id)
         if not spans:
             return 0
+        # The same refusal `evaluate_trace` makes, for the same reason: a thread of Tracely's own
+        # work (a recording, an audit transcript) is never graded by the project's evaluators. It
+        # could not be reached before audits — no internal thread had a conversation worth
+        # pointing a CONVERSATION column at — so the guard only existed on the trace path.
+        if any(s.get("internal_kind") for s in spans):
+            return 0
         if apply_targeting:
             specs = self._apply_conversation_targeting(project_id, specs, spans, thread_id)
         if not specs:

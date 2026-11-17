@@ -1,4 +1,5 @@
 import { authHeaders } from "./auth";
+import type { Audit, AuditCatalog, AuditDetail, AuditRunDetail } from "./audits";
 
 const API = process.env.TRACELY_API ?? "http://localhost:8000";
 
@@ -721,4 +722,22 @@ export async function getBillingUsage(): Promise<BillingUsage | null> {
   } catch {
     return null;
   }
+}
+
+// ── Audits ────────────────────────────────────────────────────────────────────
+
+export async function getAudits(): Promise<Audit[]> {
+  return getJson<Audit[]>(`/api/audits`);
+}
+
+export async function getAuditCatalog(): Promise<AuditCatalog> {
+  return getJson<AuditCatalog>(`/api/audits/catalog`);
+}
+
+export async function getAudit(id: string): Promise<AuditDetail | null> {
+  return getJsonOrNull<AuditDetail>(`/api/audits/${encodeURIComponent(id)}`);
+}
+
+export async function getAuditRun(id: string): Promise<AuditRunDetail | null> {
+  return getJsonOrNull<AuditRunDetail>(`/api/audit-runs/${encodeURIComponent(id)}`);
 }

@@ -46,6 +46,12 @@ celery_app.conf.update(
             "task": "tracely.selfcheck",
             "schedule": crontab(minute="*/5"),
         },
+        # An audit advances as a chain of short ticks; a worker restart breaks the chain. This
+        # picks up any run that has stopped checkpointing.
+        "tracely.audit_watchdog-every-5-min": {
+            "task": "tracely.audit_watchdog",
+            "schedule": crontab(minute="*/5"),
+        },
         # Judge-conversation checkpoints grow quadratically and are never re-read. Nightly is
         # plenty — this reclaims space, it does not keep anything correct.
         "tracely.prune_chats-nightly": {

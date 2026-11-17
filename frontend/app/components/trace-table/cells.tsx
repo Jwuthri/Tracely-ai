@@ -65,6 +65,7 @@ function UsageCell({ usage }: { usage: Record<string, number> }) {
 const INTERNAL_TAG: Record<string, string> = {
   eval: "border-info/30 bg-info/10 text-info",
   sim: "border-signal/30 bg-signal/10 text-signal",
+  audit: "border-warn/30 bg-warn/10 text-warn",
   assistant: "border-warn/30 bg-warn/10 text-warn",
 };
 

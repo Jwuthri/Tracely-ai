@@ -69,6 +69,12 @@ def assistant_blob_key(project_id: str, attachment_id: str) -> str:
     return f"{settings.s3_event_prefix}{project_id}/assistant/{attachment_id}"
 
 
+def audit_blob_key(project_id: str, name: str) -> str:
+    """Where an audit's own artifacts live (a finished rollout's checkpoint). Under the project's
+    prefix on purpose, so deleting the workspace deletes them (`delete_project_blobs`)."""
+    return f"{settings.s3_event_prefix}{project_id}/audits/{name}"
+
+
 def get_blob_typed(key: str) -> tuple[bytes, str]:
     """Bytes plus the content type they were stored with — what serving a file back needs."""
     obj = _s3().get_object(Bucket=settings.s3_bucket, Key=key)

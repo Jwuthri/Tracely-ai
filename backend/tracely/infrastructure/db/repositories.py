@@ -24,6 +24,10 @@ from tracely.infrastructure.db.models import (
     AssistantChat,
     AgentEndpoint,
     AgentVersion,
+    Audit,
+    AuditRollout,
+    AuditRun,
+    AuditSeed,
     CaseReplay,
     ClusterMember,
     ConversationAgent,
@@ -46,6 +50,7 @@ from tracely.infrastructure.db.models import (
     Organization,
     OrgMembership,
     Project,
+    ProjectMilestone,
     RollingSummary,
     Scenario,
     ScoreAnnotation,
@@ -179,7 +184,17 @@ def project_delete(
     # reachable through an agent, so any orphan would block the project delete on its FK.
     wipe("agent_endpoints", delete(AgentEndpoint).where(AgentEndpoint.project_id == project_id))
     wipe("evaluators", delete(Evaluator).where(Evaluator.project_id == project_id))
+    # Audits and their seeds are configuration, like evaluators: kept by a data wipe (their runs
+    # are not — see `project_data_delete`), gone with the workspace. Seeds first: they FK audits.
+    wipe("audit_seeds", delete(AuditSeed).where(AuditSeed.project_id == project_id))
+    wipe("audits", delete(Audit).where(Audit.project_id == project_id))
+    # Explicit, though the monitor FK cascades: both rows also FK `projects`, and relying on a
+    # cascade through a different table is how the next such table gets forgotten.
+    wipe("monitor_executions", delete(MonitorExecution).where(MonitorExecution.project_id == project_id))
     wipe("monitors", delete(Monitor).where(Monitor.project_id == project_id))
+    # Activation milestones FK `projects` with no cascade: left behind, they made the final
+    # DELETE below a ForeignKeyViolation for every workspace that had ever received a trace.
+    wipe("project_milestones", delete(ProjectMilestone).where(ProjectMilestone.project_id == project_id))
     wipe("ingest_keys", delete(IngestKey).where(IngestKey.project_id == project_id))
     wipe("memberships", delete(Membership).where(Membership.project_id == project_id))
     wipe("invitations", delete(Invitation).where(Invitation.project_id == project_id))
@@ -787,6 +802,207 @@ def cluster_medoid(s: Session, cluster_id: str) -> ClusterMember | None:
 
 
 # ── gates ─────────────────────────────────────────────────────────────────────
+
+
+# ── audits ────────────────────────────────────────────────────────────────────
+
+
+def audits_list(s: Session, project_id: str) -> list[Audit]:
+    return list(
+        s.execute(
+            select(Audit).where(Audit.project_id == project_id).order_by(Audit.created_at.desc())
+        ).scalars()
+    )
+
+
+def audit_get(s: Session, project_id: str, audit_id: str) -> Audit | None:
+    a = s.get(Audit, audit_id)
+    return a if a is not None and a.project_id == project_id else None
+
+
+def audit_delete(s: Session, project_id: str, audit_id: str) -> bool:
+    """Delete an audit with its seeds, runs and rollouts (children first — plain FKs)."""
+    a = audit_get(s, project_id, audit_id)
+    if a is None:
+        return False
+    run_ids = list(s.execute(select(AuditRun.id).where(AuditRun.audit_id == audit_id)).scalars())
+    if run_ids:
+        s.execute(delete(AuditRollout).where(AuditRollout.run_id.in_(run_ids)))
+        s.execute(delete(AuditRun).where(AuditRun.id.in_(run_ids)))
+    s.execute(delete(AuditSeed).where(AuditSeed.audit_id == audit_id))
+    s.delete(a)
+    s.commit()
+    return True
+
+
+def audit_seeds_list(s: Session, audit_id: str, enabled_only: bool = False) -> list[AuditSeed]:
+    q = select(AuditSeed).where(AuditSeed.audit_id == audit_id)
+    if enabled_only:
+        q = q.where(AuditSeed.enabled.is_(True))
+    return list(s.execute(q.order_by(AuditSeed.created_at, AuditSeed.id)).scalars())
+
+
+def audit_seed_counts(s: Session, project_id: str) -> dict[str, int]:
+    """`{audit_id: enabled seeds}` — the list page's one extra query."""
+    rows = s.execute(
+        select(AuditSeed.audit_id, func.count())
+        .where(AuditSeed.project_id == project_id, AuditSeed.enabled.is_(True))
+        .group_by(AuditSeed.audit_id)
+    ).all()
+    return {aid: int(n) for aid, n in rows}
+
+
+def audit_runs_list(s: Session, audit_id: str, limit: int = 50) -> list[AuditRun]:
+    return list(
+        s.execute(
+            select(AuditRun).where(AuditRun.audit_id == audit_id)
+            .order_by(AuditRun.created_at.desc()).limit(limit)
+        ).scalars()
+    )
+
+
+def audit_latest_runs(s: Session, project_id: str) -> dict[str, AuditRun]:
+    """`{audit_id: its most recent run}`."""
+    out: dict[str, AuditRun] = {}
+    for run in s.execute(
+        select(AuditRun).where(AuditRun.project_id == project_id).order_by(AuditRun.created_at.desc())
+    ).scalars():
+        out.setdefault(run.audit_id, run)
+    return out
+
+
+def audit_run_get(s: Session, project_id: str, run_id: str) -> AuditRun | None:
+    r = s.get(AuditRun, run_id)
+    return r if r is not None and r.project_id == project_id else None
+
+
+def audit_rollouts_list(s: Session, run_id: str) -> list[AuditRollout]:
+    """A run's rollouts in order. `state` (the checkpoint) is a deferred column and is NOT
+    loaded here — it is hundreds of KB a row and no list needs it."""
+    return list(
+        s.execute(
+            select(AuditRollout).where(AuditRollout.run_id == run_id)
+            .order_by(AuditRollout.position, AuditRollout.id)
+        ).scalars()
+    )
+
+
+def audit_rollout_get(s: Session, project_id: str, rollout_id: str) -> AuditRollout | None:
+    r = s.get(AuditRollout, rollout_id)
+    return r if r is not None and r.project_id == project_id else None
+
+
+def audit_rollout_claim(
+    s: Session, run_id: str, *, lease_s: float, now: float, max_parallel: int
+) -> AuditRollout | None:
+    """Lease the next unfinished rollout of a run to the caller, or None when there is nothing to
+    take (all done, all leased, or the run is already at `max_parallel`).
+
+    A claim is a compare-and-swap: the UPDATE only lands if the row's lease is still the expired
+    (or released) one we read, so two ticks racing for the same rollout cannot both win — no
+    `SKIP LOCKED`, which SQLite (the test harness) does not have. The parallel cap is checked
+    HERE rather than by counting tasks, so a tick redelivered by the broker cannot add a
+    permanent extra chain.
+
+    `attempts` counts leases that EXPIRED while still held — a worker that died mid-slice. A
+    lease released normally has an empty token and does not count.
+    """
+    live = s.execute(
+        select(func.count()).select_from(AuditRollout).where(
+            AuditRollout.run_id == run_id, AuditRollout.phase != "DONE",
+            AuditRollout.lease_token != "", AuditRollout.lease_expires_at > now,
+        )
+    ).scalar_one()
+    if int(live) >= max_parallel:
+        return None
+    candidates = s.execute(
+        select(AuditRollout.id, AuditRollout.lease_token).where(
+            AuditRollout.run_id == run_id, AuditRollout.phase != "DONE",
+            AuditRollout.lease_expires_at <= now,
+        ).order_by(AuditRollout.position, AuditRollout.id)
+    ).all()
+    for rollout_id, old_token in candidates:
+        token = str(uuid4())
+        res = s.execute(
+            update(AuditRollout)
+            .where(
+                AuditRollout.id == rollout_id, AuditRollout.phase != "DONE",
+                AuditRollout.lease_expires_at <= now, AuditRollout.lease_token == old_token,
+            )
+            .values(
+                lease_token=token, lease_expires_at=now + lease_s,
+                attempts=AuditRollout.attempts + (1 if old_token else 0),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        s.commit()
+        if res.rowcount == 1:
+            s.expire_all()
+            return s.get(AuditRollout, rollout_id)
+    return None
+
+
+def audit_rollout_checkpoint(
+    s: Session, rollout_id: str, lease_token: str, *, lease_s: float, now: float,
+    release: bool = False, **fields,
+) -> bool:
+    """Write a rollout's progress — only while the caller still holds its lease. False means the
+    lease was lost (it expired and another tick took the rollout): the caller must stop and write
+    nothing more, because its view of the rollout is now a fork of the real one.
+
+    Each checkpoint renews the lease; `release=True` hands the rollout back at the end of a slice
+    so the next tick can take it immediately instead of waiting for the lease to run out."""
+    lease = (
+        {"lease_token": "", "lease_expires_at": 0.0} if release
+        else {"lease_expires_at": now + lease_s}
+    )
+    res = s.execute(
+        update(AuditRollout)
+        .where(AuditRollout.id == rollout_id, AuditRollout.lease_token == lease_token)
+        .values(**fields, **lease)
+        .execution_options(synchronize_session=False)
+    )
+    s.commit()
+    return res.rowcount == 1
+
+
+def audit_run_touch(s: Session, run_id: str, *, now: float, spend_delta: float = 0.0) -> None:
+    """Heartbeat a run and add to its spend atomically (two ticks may be spending at once)."""
+    s.execute(
+        update(AuditRun).where(AuditRun.id == run_id)
+        .values(spend_usd=AuditRun.spend_usd + spend_delta, heartbeat_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    s.commit()
+
+
+def audit_runs_stale(s: Session, *, now: float, stale_s: float) -> list[str]:
+    """RUNNING runs nothing has touched for `stale_s` — their tick chain died with a worker."""
+    return list(
+        s.execute(
+            select(AuditRun.id).where(
+                AuditRun.status == "RUNNING", AuditRun.heartbeat_at < now - stale_s
+            )
+        ).scalars()
+    )
+
+
+def open_failure_clusters(
+    s: Session, project_id: str, agent_id: str, limit: int
+) -> list[tuple[str, str, str]]:
+    """`[(label, taxonomy, signature)]` for an agent's biggest OPEN failure clusters — where it
+    has actually broken in production. Leverage for an attacker (scenarios and audits both)."""
+    rows = s.execute(
+        select(FailureCluster.label, FailureCluster.taxonomy, FailureCluster.signature)
+        .where(
+            FailureCluster.project_id == project_id,
+            FailureCluster.agent_id == agent_id,
+            FailureCluster.status == "OPEN",
+        )
+        .order_by(FailureCluster.count.desc())
+        .limit(limit)
+    ).all()
+    return [(r[0] or "", r[1] or "", r[2] or "") for r in rows]
 
 
 def gates_list_with_agent(
@@ -1518,6 +1734,10 @@ def project_data_delete(s: Session, project_id: str) -> dict[str, int]:
     # The assistant's conversations quote this workspace's traces and can carry uploaded files;
     # "delete all project data" that leaves them behind is not a delete.
     wipe("assistant_chats", delete(AssistantChat).where(AssistantChat.project_id == project_id))
+    # Audit RUNS are derived (transcripts, verdicts, spend) and go; the audits and seeds that
+    # produced them are configuration and stay. Rollouts first: they FK the run.
+    wipe("audit_rollouts", delete(AuditRollout).where(AuditRollout.project_id == project_id))
+    wipe("audit_runs", delete(AuditRun).where(AuditRun.project_id == project_id))
     # Everything that FKs to `agents` must go before it. Miss one and the whole wipe raises a
     # ForeignKeyViolation and rolls back — the button reports "internal server error" and NOTHING
     # is deleted, which reads as "the delete silently did nothing".

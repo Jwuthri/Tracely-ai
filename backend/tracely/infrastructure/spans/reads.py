@@ -490,12 +490,15 @@ async def session_turns(
     project_id: str, thread_id: str, advisory: Sequence[str] = ()
 ) -> list[dict]:
     """A thread's turns oldest-first. An internal run's "message" is its root span's title plus
-    input (what it did), not the judge's raw prompt — same rule as the ClickHouse twin."""
+    input (what it did), not the judge's raw prompt — same rule as the ClickHouse twin. An AUDIT
+    thread is the exception: it is a real conversation, so its turns read as messages."""
     return await aquery(
         "SELECT trace_id, "
-        "CASE WHEN internal_kind <> '' THEN root_name || chr(10) || chr(10) || coalesce(root_input, '') "
+        "CASE WHEN internal_kind NOT IN ('', 'audit') "
+        "     THEN root_name || chr(10) || chr(10) || coalesce(root_input, '') "
         "     ELSE root_input END AS input, "
-        "CASE WHEN internal_kind <> '' THEN coalesce(root_output, '') ELSE root_output END AS output, "
+        "CASE WHEN internal_kind NOT IN ('', 'audit') THEN coalesce(root_output, '') "
+        "     ELSE root_output END AS output, "
         "tokens, input_tokens, output_tokens, model_id AS model, cost, latency_ms, ts_min AS ts, "
         f"CASE WHEN trace_id IN ({_FAILING}) THEN 1 ELSE 0 END AS failing "
         "FROM traces WHERE project_id = :p AND thread_id = :th ORDER BY ts_min ASC",

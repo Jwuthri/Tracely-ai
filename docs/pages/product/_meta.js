@@ -6,6 +6,7 @@ export default {
   clusters: "Failure clusters",
   cases: "Regression cases",
   scenarios: "Scenarios",
+  audits: "Audits",
   calibration: "Judge calibration",
   gates: "CI gates",
   alerts: "Alerts",

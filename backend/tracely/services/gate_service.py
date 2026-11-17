@@ -51,7 +51,6 @@ from tracely.infrastructure.db import repositories
 from tracely.infrastructure.db.models import (
     Agent,
     AgentEndpoint,
-    FailureCluster,
     EvaluationCase,
     GateCase,
     GateRun,
@@ -783,20 +782,11 @@ class GateService:
         if limit <= 0:
             return []
         try:
-            rows = self.session.execute(
-                select(FailureCluster.label, FailureCluster.taxonomy, FailureCluster.signature)
-                .where(
-                    FailureCluster.project_id == project_id,
-                    FailureCluster.agent_id == agent_id,
-                    FailureCluster.status == "OPEN",
-                )
-                .order_by(FailureCluster.count.desc())
-                .limit(limit)
-            ).all()
+            rows = repositories.open_failure_clusters(self.session, project_id, agent_id, limit)
         except Exception as exc:
             log.warning("attacker_weakness_lookup_failed", agent_id=agent_id, error=str(exc))
             return []
-        return weakness_lines([(r[0] or "", r[1] or "", r[2] or "") for r in rows])
+        return weakness_lines(rows)
 
     def _grade_attack(self, project_id: str, outcome: ScenarioOutcome, goal: str) -> None:
         """Judge whether an adversarial conversation achieved its goal, and write the result as a

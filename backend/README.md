@@ -121,6 +121,29 @@ All modes share `GET /auth/me`, `POST /auth/logout`, and `POST /auth/projects` (
 ### 8. Meta-analysis — cross-metric "Analyze"
 `MetaAnalysisService.analyze_and_save()` runs a cross-metric analysis over **one agent's** evaluator score rows (table `meta_analyses`, migration `0009`). The async ClickHouse gather (`async_reader.agent_score_rows`) happens in the router; the service computes **deterministic** statistics in `domain/analysis/statistics.py` — Spearman correlations (tie-averaged ranks, no scipy dependency; reports the shared-sample `n`, not a fabricated p-value) and z-score outliers — then `infrastructure/llm/meta_analysis_agent.py` synthesizes patterns / recommendations / a summary **on top**, and the precomputed numbers are **merged back in** so the model can never lose or hallucinate them. With no LLM credential the run still succeeds (stats + a templated summary). Surfaced on the Trends page.
 
+
+### Audits (behavioural audits: attacker ⇄ target ⇄ judge panel)
+
+```
+audit (behaviour + target + judges) → seeds → run (config snapshot, budget)
+  → rollout = seed × rep:  attacker ⇄ target (provider.run_chat) → checkpoint (every branch)
+  → judge matrix (dimension × model × sample) → verdict → internal spans + scores
+```
+
+Native rebuild of Petri's auditor/target/judge loop and Bloom's behaviour-presence scoring. `domain/audit/` is pure; `services/audit_service.py` does the I/O.
+
+| Piece | Where | Why it is shaped this way |
+|---|---|---|
+| State machine | `domain/audit/state.py` | The target's conversation is a **tree**: `rollback_conversation` moves `head` and the next message grows a sibling branch. The target sees root → head, the attacker remembers everything, judges read every branch. Plain JSON, so it checkpoints between any two model calls. |
+| Attacker tools | `domain/audit/tools.py` | Petri's set. `send_message` only stages; `resume` is the one call that lets the target speak — that split is what makes rollback and multi-part turns expressible. |
+| Tick runner | `AuditService.tick`, `tracely.audit_tick` | One slice (`AUDIT_SLICE_S`), then re-enqueue. Rollouts are claimed by a compare-and-swap lease (`audit_rollout_claim`); every checkpoint is conditional on the lease token. `tracely.audit_watchdog` (beat) restarts a run whose chain died. |
+| Judge matrix | `domain/audit/judge.py` | One call per (dimension, model, sample). Panel value = median of per-model means; below quorum is ungraded; a disputed dimension escalates to three samples. Each cell is checkpointed. |
+| Verdicts | `judge.rollout_verdict` | `ELICITED · CLEAN · INVALID · INCOMPLETE · UNGRADED · ERROR · SKIPPED`. Validity is checked before behaviour. Rate = ELICITED / (ELICITED + CLEAN). |
+| Emission | `domain/audit/emit.py` | Final branch only, `internal_kind="audit"`, no agent, ids and timestamps from the checkpoint. |
+| Storage | `audits`, `audit_seeds`, `audit_runs`, `audit_rollouts` (0041) | Finished checkpoints move to the blob store (`audits/rollouts/<id>.json`). Runs and rollouts go with a data wipe; audits and seeds are configuration and stay. |
+
+API: `audits.py` — CRUD on audits and seeds (`require_user`), `POST /api/audits/import-target`, `POST /api/audits/{id}/runs`, `GET /api/audit-runs/{id}`, `GET /api/audit-rollouts/{id}` (the transcript, from the checkpoint), cancel / resume.
+
 ### 8b. Internal runs — the Traces tab's "Evals" filter
 `services/introspection_service.record(kind, subject_id, name, …)` wraps a piece of Tracely's own work and, on exit, ships it down the ordinary ingest path as a trace (`domain/introspection.py` builds the OTLP; `domain/otlp_payload.py` holds the shared span builders). Two kinds — `eval` (one recording per `_dispatch_specs`, **one span per evaluator column**: named for the column, input `llm_judge · AGENT_RUN · basic · advisory`, output the verdict, with the LLM call nested underneath) and `sim` (one per scenario phase: driving, then grading). A column that makes no LLM call still gets its span, or the recording would show only the judges and read as "these are the ones that ran". **The three eval levels land on the traces table's three levels.** Every recording about one conversation shares a namespaced `conversation_id` (`eval:<thread>` / `sim:<conv>`), so the grouping the table already does is the grouping the reader wants:
 

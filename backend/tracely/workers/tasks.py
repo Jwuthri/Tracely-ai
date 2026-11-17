@@ -535,3 +535,49 @@ def grade_scenario_turns_task(
     except Exception as exc:
         log.warning("scenario_grade_failed", conversation_id=conversation_id, error=str(exc))
         return {"scores": 0, "error": str(exc)}
+
+
+@celery_app.task(name="tracely.audit_tick", bind=True, max_retries=0)
+def audit_tick_task(self, run_id: str) -> dict:
+    """Advance one audit run by ONE slice, then re-enqueue itself while work remains.
+
+    Never a whole rollout: thirty attacker generations and as many target replies are ten minutes
+    of model calls, and the solo pool (every deployment's default) has one slot and enforces no
+    time limit — a task that held it for a rollout would stop all ingestion behind it. A slice is
+    `AUDIT_SLICE_S`; the re-enqueue carries no countdown, so whatever ingest queued in the meantime
+    runs first.
+
+    `max_retries=0`, and none are needed: every model call is checkpointed, so a redelivered or
+    restarted tick resumes where the last one stopped (see `AuditService.tick`). A chain that dies
+    with its worker is restarted by `tracely.audit_watchdog`.
+    """
+    from tracely.infrastructure.db.engine import SyncSessionLocal
+    from tracely.services.audit_service import AuditService
+
+    with SyncSessionLocal() as s:
+        result = AuditService(s).tick(run_id)
+    if result.get("more"):
+        audit_tick_task.apply_async((run_id,))
+    return {"run_id": run_id, **result}
+
+
+@celery_app.task(name="tracely.audit_watchdog", bind=True, max_retries=0)
+def audit_watchdog_task(self) -> dict:
+    """Restart audit runs whose tick chain died (beat, every 5 minutes).
+
+    A tick only re-enqueues itself when it returns; a worker killed mid-slice (every deploy) takes
+    the chain with it, and the broker would not redeliver for hours. A RUNNING run that has not
+    checkpointed for `AUDIT_STALE_S` gets one fresh tick — harmless if a chain is in fact alive,
+    because the parallel cap is enforced where a rollout is claimed, not here.
+    """
+    import time
+
+    from tracely.infrastructure.db.engine import SyncSessionLocal
+
+    with SyncSessionLocal() as s:
+        stale = repositories.audit_runs_stale(s, now=time.time(), stale_s=settings.audit_stale_s)
+    for run_id in stale:
+        audit_tick_task.apply_async((run_id,))
+    if stale:
+        log.info("audit_runs_restarted", runs=stale)
+    return {"restarted": stale}

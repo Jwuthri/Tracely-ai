@@ -35,6 +35,10 @@ from tracely.domain import otlp_payload as otlp
 EVAL = "eval"
 SIM = "sim"
 ASSISTANT = "assistant"
+# An audit rollout's transcript (domain/audit/emit.py). Unlike the three above it is not a
+# recording of work ABOUT a real trace — it is a whole conversation Tracely simulated — but it is
+# internal for the same reason: nothing in it is the customer's agent answering a real request.
+AUDIT = "audit"
 
 # The recording in progress on this task, if any. Lives here rather than in the service so
 # `infrastructure/llm/provider.py` can append to it without importing upwards through the layers.

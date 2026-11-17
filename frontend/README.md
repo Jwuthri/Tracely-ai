@@ -74,6 +74,9 @@ All are **Server Components** unless noted; each lists the `lib/api.ts` calls it
 | `/cases` | `getCases` | Regression cases — title, status, fail→pass contract, last verdict, source trace. |
 | `/traces` | `getSessions` | Conversation list. `TracesExplorer`'s **Evals** filter chip re-queries with `evals=1` and shows ONLY Tracely's own runs (the judge's prompt and reply, the attacker's move, the POST to your endpoint), tagged `EVAL`/`SIM`; they open like any trace. It is the one filter that hits the server — the rest refine the loaded rows. |
 | `/scenarios` | `getAgents`, `getScenarios` | Multi-turn conversations driven against the agent's HTTP endpoint — `ScenariosManager` (agent picker ranked by scenario count, `EndpointPanel`, list, inline create/edit via `ScenarioForm` + `TurnEditor`). |
+| `/audits` | `getAudits`, `getAuditCatalog`, `getAgents` | Behavioural audits — `AuditsManager` (list with each audit's last elicitation rate, and the create form: preset, behaviour, target mode with import-from-agent, judge panel, dimensions, budget). |
+| `/audits/[auditId]` | `getAudit` | One audit — `AuditDetail`: run button, seeds (add / enable / delete), past runs, and the dimensions a run judges. |
+| `/audits/[auditId]/runs/[runId]` | `getAuditRun` | One run: the elicitation rate and verdict counts (server-rendered, polled by `GateAutoRefresh` while running) and `AuditRunView` — a rollout × dimension table; opening a row fetches that rollout's transcript through `/api/audit-rollouts/[id]`. |
 | `/cases/[caseId]` | `getCase` | Case detail — assertions, reference trajectory, `ReplayControls` + replay history. |
 | `/gates` | `getGates`, `getAgents`, `getCases` | Gate runs — result, agent/env/ref, passed/failed/skipped, plus `RunGateButton` (agent picker, ranked by promoted-case count — no hardcoded slug). |
 | `/gates/[gateId]` | `getGate` | Gate detail — status banner, soft warnings, per-case verdicts. |
@@ -140,6 +143,7 @@ All are **Server Components** unless noted; each lists the `lib/api.ts` calls it
 | `Bars.tsx` | Hand-rolled stacked bar charts for `/trends`. |
 | `CopyId.tsx` · `TimeAgo.tsx` · `CodeBlock.tsx` · `RowLink.tsx` | Copy-to-clipboard id chip · relative time (SSR-safe) · syntax-highlighted code w/ copy · clickable row wrapper. |
 | `ScenariosManager.tsx` | The `/scenarios` page body: agent picker, endpoint panel, conversation list (row click opens the inline editor), and one `ScenarioForm` used for BOTH create and edit — a second form is how the two drift. |
+| `AuditsManager.tsx` · `AuditDetail.tsx` · `AuditRunView.tsx` | The three audit screens. `AuditRunView` renders a rollout from its checkpoint, not from spans: every branch the attacker rewound (dimmed), the attacker's own moves, and each judge's score with the messages it quoted. Pure rules (verdict tones, `formatRate` never showing nothing-graded as 0%) live in `lib/audits.ts`. |
 | `TurnEditor.tsx` | Multi-turn conversation editor: one row per turn (a turn is a message, not a line), add/remove/reorder, plus each turn's optional `expect` + `tools` expectations behind a toggle. `idPrefix` namespaces field ids so a create form and an editor can be open at once. |
 | `EndpointPanel.tsx` | Where Tracely calls the agent. The token is write-only — encrypted server-side, and the GET only reports `has_token`, so it is never rendered back into the browser. |
 | `Toggle.tsx` | Themed on/off switch (`peer sr-only` + styled track, same idiom as `SelectBox`). Replaces `accent-signal` checkboxes, which render as the OS control and read as foreign. |

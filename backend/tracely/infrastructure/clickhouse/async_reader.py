@@ -745,8 +745,10 @@ async def session_turns(
                -- span already says `eval · msg · 5 column(s)` and carries the verdict summary.
                -- Same reason the list title is derived this way (see `sessions_overview`).
                -- The inner aliases are t_* so these names don't resolve back into the aggregates.
-               if(internal != '', root_in, t_input)   AS input,
-               if(internal != '', root_out, t_output) AS output,
+               -- An AUDIT thread is the exception: it is a real conversation (attacker ⇄ target),
+               -- so its turns read as messages like any other thread's.
+               if(internal NOT IN ('', 'audit'), root_in, t_input)   AS input,
+               if(internal NOT IN ('', 'audit'), root_out, t_output) AS output,
                tokens, input_tokens, output_tokens, model, cost, latency_ms, ts, failing
         FROM (
           SELECT trace_id,

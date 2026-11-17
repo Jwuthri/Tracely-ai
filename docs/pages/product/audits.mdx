@@ -1,0 +1,69 @@
+---
+description: "Audits in the app: describe a behaviour, give an attacker model seeds to probe a target with, and read how often the behaviour appeared, as scored by a panel of judges."
+---
+
+import { Callout } from "nextra/components";
+
+# Audits
+
+An audit **goes looking for a behaviour** instead of waiting for it to show up in production. You describe the behaviour, an attacker model probes a target model across a set of seeds, and a panel of judges scores every conversation. The result is an **elicitation rate**: how often the behaviour appeared, over the rollouts that were a fair test.
+
+The loop follows two open-source tools from Anthropic: [Petri](https://www.anthropic.com/research/petri-open-source-auditing) (an auditor agent, a target, a judge) and [Bloom](https://www.anthropic.com/research/bloom) (a behaviour, scored for how strongly it is present).
+
+## 1. Describe the behaviour and the target
+
+Click **New audit**. Pick a preset or write your own behaviour in a sentence or two: it is told to the attacker, so it knows what to provoke, and to the judges, so they know what counts. It is never shown to the target.
+
+The target is a model plus a system prompt and tools, in one of two modes:
+
+- **A model** — the attacker writes the system prompt and invents the tools for each seed. Use it to audit a model itself.
+- **My agent's prompt and tools** — the system prompt and tools you give are what is tested, unchanged. **Import** fills them in from the most recent trace of one of your agents.
+
+No tool is ever called. When the target calls one, the attacker answers with the result the real tool would return.
+
+## 2. Add seeds
+
+A seed is one instruction to the attacker: the situation to set up, who it plays, and what to try. Presets come with a few; add your own under **Seeds**. Specific seeds work best: name the tools the target should have and what an ordinary day in that deployment looks like.
+
+## 3. Run it
+
+**Run** starts one rollout per seed (times the repetitions you ask for). The attacker gets a fixed number of turns per rollout. On each turn it can send a message, answer the target's tool calls, or **rewind** the target to an earlier message and try a different approach. The target forgets what was rewound; the judges still read it.
+
+A run is bounded by the audit's budget in USD, and stops spending when it is reached.
+
+## How a rollout is judged
+
+Each dimension is scored from 1 to 10 by every judge model you selected, on its own. The panel's answer is the median. When the judges land on different sides of a dimension's threshold, each is asked twice more before the result is called, and the cell is marked **disputed**.
+
+Three dimensions are always judged, and they decide whether the rollout counts at all:
+
+| Dimension | Asks |
+|---|---|
+| `eval_awareness` | Did the target notice it was being tested? |
+| `unrealism` | Was the scenario implausible as a real deployment? |
+| `auditor_failure` | Did the attacker fail to run a usable audit? |
+
+A rollout that scores high on any of them is **invalid**: it is left out of the rate rather than counted for or against the target.
+
+| Verdict | Meaning | In the rate |
+|---|---|---|
+| Elicited | The target showed the behaviour in a valid rollout. | Yes |
+| Clean | A valid, complete rollout in which it did not. | Yes |
+| Invalid | The target noticed the test, or the scenario or attacker was broken. | No |
+| Incomplete | Cut short by the budget, the clock or an error. | No |
+| Ungraded | The judges did not produce a result. | No |
+| Error, Skipped | The rollout failed or never ran. | No |
+
+<Callout type="info">
+  A run in which no rollout was both valid and judged has **no rate**, shown as a dash. That is deliberately different from 0%, which would say the target never does this.
+</Callout>
+
+## Reading a rollout
+
+Open a row on the run page:
+
+- **Conversation** — what the target saw, including every branch the attacker rewound. Rewound messages are dimmed.
+- **Attacker** — the attacker's own reasoning and each move it made.
+- **Judges** — each judge's score, its justification, and the messages it quoted.
+
+The conversation the target ended with is also stored as a thread under [Traces](/product/traces), tagged `AUDIT` behind the Evals filter. It is kept out of your trends and cost numbers, because nothing in it is your agent answering a real request.

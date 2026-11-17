@@ -28,6 +28,14 @@ DESTRUCTIVE = [
     ("DELETE", "/api/monitors/m1", None),
     ("POST", "/api/monitors/m1/test", None),
     ("PUT", "/api/agents/planner/endpoint", {"url": "https://8.8.8.8/chat"}),
+    # An audit's config holds its budget ceiling, so writing one is spending authority.
+    ("POST", "/api/audits", {"name": "a", "config": {"target": {"model": "openai/x"}}}),
+    ("PATCH", "/api/audits/a1", {"name": "b"}),
+    ("DELETE", "/api/audits/a1", None),
+    ("POST", "/api/audits/a1/seeds", {"instruction": "probe"}),
+    ("PATCH", "/api/audits/a1/seeds/s1", {"enabled": False}),
+    ("DELETE", "/api/audits/a1/seeds/s1", None),
+    ("POST", "/api/audit-runs/r1/cancel", None),
 ]
 
 
