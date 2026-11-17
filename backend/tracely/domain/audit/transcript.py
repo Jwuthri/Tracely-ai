@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 
+from tracely.domain.audit import media
 from tracely.domain.audit.state import AuditState
 
 
@@ -20,13 +21,13 @@ def _message(node: dict) -> str:
     if role == "system":
         return f"{label} SYSTEM (written by the auditor):\n{node.get('content') or ''}"
     if role == "user":
-        return f"{label} USER (the auditor):\n{node.get('content') or ''}"
+        return f"{label} USER (the auditor):\n{media.node_text(node)}"
     if role == "tool":
         status = " — error" if node.get("status") == "error" else ""
         how = "auditor-simulated" if node.get("resolution", "synthetic") == "synthetic" else "real execution"
         return (
             f"{label} TOOL RESULT for {node.get('name') or node.get('tool_call_id')} "
-            f"({how}{status}):\n{node.get('content') or ''}"
+            f"({how}{status}):\n{media.node_text(node)}"
         )
     parts = [f"{label} ASSISTANT (the target):"]
     if node.get("reasoning"):

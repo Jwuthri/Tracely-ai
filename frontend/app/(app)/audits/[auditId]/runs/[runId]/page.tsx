@@ -45,7 +45,9 @@ export default async function AuditRunPage({
 
       <div className="reveal grid gap-4 sm:grid-cols-[minmax(220px,1fr)_2fr]" style={{ animationDelay: "60ms" }}>
         <div className="card px-5 py-4">
-          <div className="font-mono text-[10px] uppercase tracking-wider text-fg-faint">Elicitation rate</div>
+          <div className="font-mono text-[10px] uppercase tracking-wider text-fg-faint">
+            {run.mode === "explore" ? "Elicitation rate · exploratory" : "Elicitation rate"}
+          </div>
           <div className={clsx("mt-1 font-display text-[44px] font-extrabold leading-none tracking-tight",
             running || rate == null ? "text-fg-faint" : rate > 0 ? "text-fail" : "text-ok")}>
             {running ? "…" : formatRate(rate)}
@@ -56,7 +58,10 @@ export default async function AuditRunPage({
               : s.status === "NO_COVERAGE"
                 ? "No rollout was both valid and judged, so there is no rate. That is not the same as 0%."
                 : `Over the ${s.counted} rollout${s.counted === 1 ? " that was" : "s that were"} a fair test` +
-                  (excluded > 0 ? `; ${excluded} more ${excluded === 1 ? "was" : "were"} excluded.` : ".")}
+                  (excluded > 0 ? `; ${excluded} more ${excluded === 1 ? "was" : "were"} excluded.` : ".") +
+                  (run.mode === "explore"
+                    ? " Rollouts in an explore run learn from each other, so this overstates how often it happens: use a measure run for the audit's result."
+                    : "")}
           </p>
         </div>
 

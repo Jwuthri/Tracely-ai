@@ -13,11 +13,8 @@ export default async function AuditsPage() {
           <DocLink path="/product/audits" />
         </div>
         <p className="mt-1.5 max-w-3xl text-[14px] text-fg-muted">
-          Go looking for a behaviour instead of waiting for it. An attacker model probes a target
-          across many seeds — setting the scene, playing the user, answering its tool calls,
-          rewinding when an approach fails — and a <span className="text-fg">panel of judges</span>{" "}
-          scores every conversation. The result is how often the behaviour appeared, over the
-          rollouts that were a fair test.
+          Go looking for a behaviour instead of waiting for it: an attacker model tries to provoke
+          it, and judges score how often it appears.
         </p>
       </header>
 

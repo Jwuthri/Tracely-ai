@@ -312,6 +312,28 @@ class Settings(BaseSettings):
     audit_stale_s: int = 600
     # Wall-clock ceiling for one rollout's driving, whatever its turn budget says.
     audit_rollout_timeout_s: int = 1800
+    # Media the attacker makes (domain/audit/media.py), on the workspace's OpenRouter key.
+    # `generate_image` asks this model for an image; `send_voice_message` speaks through that one.
+    audit_image_model: str = "google/gemini-2.5-flash-image"
+    # Voices are per provider (there is no common list): change both together.
+    audit_tts_model: str = "hexgrad/kokoro-82m"
+    audit_tts_voice: str = "af_heart"
+    # Real environments for audits (infrastructure/sandbox). "" = none: audits can only invent
+    # tool results. "docker" = sibling containers on this host's daemon — needs the Docker socket
+    # mounted into the worker, which makes the worker root on the host, so it is for local and
+    # single-tenant self-hosted use only (refused below on a public-signup production deployment).
+    sandbox_backend: Literal["", "docker"] = ""
+    sandbox_image: str = "tracely-sandbox:latest"
+    # A sandbox's hard lifetime: its main process exits and it removes itself, with or without us.
+    sandbox_lifetime_s: int = 3600
+    # Labels every sandbox this deployment creates, so two stacks on one host never reap each
+    # other's.
+    sandbox_owner: str = "tracely"
+    # Allowlisted web access for sandboxes (sandbox/egress_proxy.py). The name of the INTERNAL
+    # Docker network shared by sandboxes and the proxy; blank = sandboxes never have a network.
+    sandbox_egress_network: str = ""
+    # How a sandbox addresses the proxy on that network.
+    sandbox_proxy_url: str = "http://proxy.internal:3128"
 
     # ── Internal-run recording ────────────────────────────────────────────────────
     # Record what Tracely itself did — the judge's prompt and reply, the attacker's move, the
@@ -412,6 +434,14 @@ class Settings(BaseSettings):
         # upgrade themselves. Refuse to boot rather than run open.
         if self.stripe_secret_key and not self.stripe_webhook_secret:
             raise ValueError("STRIPE_SECRET_KEY is set but STRIPE_WEBHOOK_SECRET is empty")
+        # The Docker sandbox backend needs the host's Docker socket in the worker, and runs code
+        # written by whichever model a workspace chose to audit. On a deployment anyone can sign
+        # up to, that is strangers' model output one container escape from root on our host.
+        if self.is_prod and self.allow_public_signup and self.sandbox_backend == "docker":
+            raise ValueError(
+                "SANDBOX_BACKEND=docker is for single-tenant deployments; it cannot be combined "
+                "with ALLOW_PUBLIC_SIGNUP in prod. Use a hosted sandbox backend there."
+            )
         return self
 
     @property

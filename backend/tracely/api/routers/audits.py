@@ -11,16 +11,20 @@ need it — but a run can never be given more than the audit's configured budget
 
 from __future__ import annotations
 
+import base64
+import re
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from starlette.concurrency import run_in_threadpool
 
 from tracely.api.auth import get_project_id, require_user
 from tracely.config import settings
 from tracely.domain.audit import dimensions as audit_catalog
+from tracely.domain.audit import media
 from tracely.domain.audit.config import normalize, resolved_dimensions
+from tracely.infrastructure.blob import s3 as blobstore
 from tracely.infrastructure.db import repositories as repo
 from tracely.infrastructure.db.engine import SyncSessionLocal
 from tracely.infrastructure.db.models import Audit, AuditRollout, AuditRun, AuditSeed
@@ -29,6 +33,7 @@ from tracely.services.audit_service import AuditError, AuditService
 router = APIRouter(prefix="/api")
 
 _MAX_SEEDS = 500
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def _iso(dt) -> str | None:
@@ -48,6 +53,7 @@ def _seed_dict(seed: AuditSeed) -> dict[str, Any]:
     return {
         "id": seed.id, "title": seed.title, "instruction": seed.instruction,
         "tags": seed.tags or [], "origin": seed.origin, "parent_seed_id": seed.parent_seed_id,
+        "attachments": seed.attachments or [],
         "enabled": seed.enabled, "created_at": _iso(seed.created_at),
     }
 
@@ -66,6 +72,7 @@ def _audit_dict(audit: Audit) -> dict[str, Any]:
 def _rollout_dict(r: AuditRollout) -> dict[str, Any]:
     return {
         "id": r.id, "seed_id": r.seed_id, "title": (r.seed or {}).get("title") or "",
+        "stage": int(r.stage or 0),
         "rep": r.rep, "position": r.position, "phase": r.phase, "verdict": r.verdict,
         "results": (r.scores or {}).get("results") or [],
         "detail": r.detail or {}, "spend_usd": round(float(r.spend_usd or 0), 4),
@@ -94,8 +101,15 @@ def _seed_fields(body: dict) -> tuple[str, str]:
 
 @router.get("/audits/catalog")
 async def audits_catalog(project_id: str = Depends(get_project_id)):
-    """Built-in dimensions and behaviour presets for the create form."""
-    return audit_catalog.catalog()
+    """Built-in dimensions and behaviour presets for the create form, and whether this deployment
+    can give a target a real machine (the form only offers what can actually run)."""
+    return {
+        **audit_catalog.catalog(),
+        "sandbox": {
+            "available": bool(settings.sandbox_backend),
+            "network": bool(settings.sandbox_backend and settings.sandbox_egress_network),
+        },
+    }
 
 
 @router.post("/audits/import-target")
@@ -252,6 +266,123 @@ async def add_seed(
     if out is None:
         raise HTTPException(status_code=404, detail="audit not found")
     return out
+
+
+def _seed_call(fn):
+    """Run a seed-producing service call and shape its failures."""
+    try:
+        return [_seed_dict(x) for x in fn()]
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except AuditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:  # a model that would not produce the schema, a provider error
+        raise HTTPException(status_code=502, detail=f"seed generation failed: {str(exc)[:300]}") from None
+
+
+@router.post("/audits/{audit_id}/seeds/generate", dependencies=[Depends(require_user)])
+async def generate_seeds(
+    audit_id: str, project_id: str = Depends(get_project_id), body: dict = Body(default={})
+):
+    """Write a batch of new seeds from the audit's behaviour (up to 8 per call). Call again for
+    more: each call is told what already exists."""
+    def work():
+        with SyncSessionLocal() as s:
+            return _seed_call(lambda: AuditService(s).generate_seeds(
+                project_id, audit_id, n=int(body.get("n") or 8), guidance=str(body.get("guidance") or "")))
+
+    return await run_in_threadpool(work)
+
+
+@router.post("/audits/{audit_id}/seeds/import", dependencies=[Depends(require_user)])
+async def import_seeds(
+    audit_id: str, project_id: str = Depends(get_project_id), body: dict = Body(...)
+):
+    """Copy seeds from the Petri library, by `tag` or by `ids`."""
+    tag, ids = str(body.get("tag") or ""), body.get("ids")
+    if not tag and not ids:
+        raise HTTPException(status_code=400, detail="tag or ids required")
+
+    def work():
+        with SyncSessionLocal() as s:
+            return _seed_call(lambda: AuditService(s).import_library_seeds(
+                project_id, audit_id, tag=tag, ids=[str(i) for i in ids] if ids else None))
+
+    return await run_in_threadpool(work)
+
+
+@router.post("/audits/{audit_id}/seeds/{seed_id}/attachments", dependencies=[Depends(require_user)])
+async def attach_to_seed(
+    audit_id: str, seed_id: str, project_id: str = Depends(get_project_id), body: dict = Body(...)
+):
+    """Attach an image or audio file to a seed: `{name, data (base64), text?}`. The attacker can
+    send it to the target; `text` says what it shows or says, for judges that cannot see or hear."""
+    try:
+        data = base64.b64decode(str(body.get("data") or ""), validate=True)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="data must be base64") from None
+
+    def work():
+        with SyncSessionLocal() as s:
+            try:
+                return _seed_dict(AuditService(s).attach_to_seed(
+                    project_id, audit_id, seed_id, data, str(body.get("name") or "file"), str(body.get("text") or "")))
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from None
+            except AuditError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    return await run_in_threadpool(work)
+
+
+@router.delete("/audits/{audit_id}/seeds/{seed_id}/attachments/{asset}", dependencies=[Depends(require_user)])
+async def detach_from_seed(audit_id: str, seed_id: str, asset: str, project_id: str = Depends(get_project_id)):
+    def work():
+        with SyncSessionLocal() as s:
+            seed = s.get(AuditSeed, seed_id)
+            if seed is None or seed.audit_id != audit_id or seed.project_id != project_id:
+                raise HTTPException(status_code=404, detail="seed not found")
+            seed.attachments = [a for a in seed.attachments or [] if a.get("asset") != asset]
+            s.commit()
+            return _seed_dict(seed)
+
+    return await run_in_threadpool(work)
+
+
+@router.get("/audit-assets/{asset}")
+async def audit_asset(asset: str, project_id: str = Depends(get_project_id)):
+    """An audit's image or audio file, by content hash. The key is under the caller's project
+    prefix, so a hash from another workspace simply is not there."""
+    if not _SHA256.fullmatch(asset):
+        raise HTTPException(status_code=404, detail="not found")
+
+    def work():
+        try:
+            return blobstore.get_blob_typed(blobstore.audit_blob_key(project_id, f"assets/{asset}"))
+        except Exception:
+            raise HTTPException(status_code=404, detail="not found") from None
+
+    data, mime = await run_in_threadpool(work)
+    # Sniffed again on the way out: the stored type came from the same sniff, and a file that is
+    # not media is never served as something a browser would run.
+    if not media.sniff(data):
+        raise HTTPException(status_code=404, detail="not found")
+    return Response(content=data, media_type=mime, headers={
+        "Cache-Control": "private, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff",
+    })
+
+
+@router.post("/audits/{audit_id}/seeds/{seed_id}/variations", dependencies=[Depends(require_user)])
+async def seed_variations(
+    audit_id: str, seed_id: str, project_id: str = Depends(get_project_id), body: dict = Body(...)
+):
+    """Write one variation of a seed per axis in `dimensions`."""
+    def work():
+        with SyncSessionLocal() as s:
+            return _seed_call(lambda: AuditService(s).generate_variations(
+                project_id, audit_id, seed_id, [str(d) for d in body.get("dimensions") or []]))
+
+    return await run_in_threadpool(work)
 
 
 @router.patch("/audits/{audit_id}/seeds/{seed_id}", dependencies=[Depends(require_user)])

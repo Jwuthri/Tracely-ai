@@ -46,6 +46,10 @@ dependencies = [
   # import it ourselves now.
   "cryptography>=50.0.0",
   "httpx>=0.27",
+  # Audit sandboxes as sibling containers (infrastructure/sandbox/docker.py). Lazy-imported: only
+  # a deployment that sets SANDBOX_BACKEND=docker ever loads it. Used for the archive API
+  # (put/get a tar) rather than hand-rolling the hijacked exec stream.
+  "docker>=7.1",
   # MCP server mounted at /mcp (api/mcp_server.py) — lets an agent drive the workspace with
   # the same ingest key the SDK uses. Small, pure-Python, and already in the lock file.
   "mcp>=1.27",

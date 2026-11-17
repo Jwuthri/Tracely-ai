@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useId, useState } from "react";
 import type { AgentRow } from "@/app/lib/api";
 import {
+  PACKS,
   formatRate,
   type Audit,
   type AuditCatalog,
@@ -13,6 +14,7 @@ import {
   type TargetTool,
 } from "@/app/lib/audits";
 import { listJudgeModels, type JudgeModelOption } from "@/app/lib/evaluators";
+import { Toggle } from "./Toggle";
 import { Badge } from "./ui";
 import { IconChevron } from "./icons";
 
@@ -44,7 +46,7 @@ export function AuditsManager({
           </button>
         </div>
 
-        {composing && <NewAuditForm catalog={catalog} agents={agents} onCancel={() => setComposing(false)} />}
+        {composing && <NewAuditForm catalog={catalog} agents={agents} />}
 
         {initial.length === 0 && !composing ? (
           <div className="px-4 py-14 text-center text-[13px] text-fg-faint">No audits yet.</div>
@@ -70,6 +72,7 @@ function AuditRow({ audit }: { audit: Audit }) {
           <Badge variant={audit.config.target.control === "fixed" ? "info" : "neutral"}>
             {audit.config.target.control === "fixed" ? "fixed prompt" : "attacker-built"}
           </Badge>
+          {audit.config.environment?.mode === "sandbox" && <Badge variant="signal">real machine</Badge>}
         </div>
         <div className="mt-1 truncate font-mono text-[11.5px] text-fg-faint">
           {audit.config.target.model}
@@ -124,11 +127,9 @@ function parseTools(text: string): TargetTool[] {
 function NewAuditForm({
   catalog,
   agents,
-  onCancel,
 }: {
   catalog: AuditCatalog;
   agents: AgentRow[];
-  onCancel: () => void;
 }) {
   const uid = useId();
   const router = useRouter();
@@ -144,6 +145,13 @@ function NewAuditForm({
   const [toolsText, setToolsText] = useState("");
   const [attacker, setAttacker] = useState("");
   const [judges, setJudges] = useState<string[]>([]);
+  const canSandbox = Boolean(catalog.sandbox?.available);
+  const [sandbox, setSandbox] = useState(false);
+  const [packs, setPacks] = useState<string[]>(["dev"]);
+  const [network, setNetwork] = useState(false);
+  const [media, setMedia] = useState<string[]>([]);
+  const [bestOf, setBestOf] = useState(1);
+  const [realism, setRealism] = useState(true);
   const [maxTurns, setMaxTurns] = useState(15);
   const [budget, setBudget] = useState(5);
   const [importNote, setImportNote] = useState<string | null>(null);
@@ -165,34 +173,31 @@ function NewAuditForm({
 
   function choosePreset(p: AuditPreset | null) {
     setPreset(p);
-    if (p) {
-      setName((cur) => cur || p.name);
-      setBehavior(p.behaviour);
-      setDims(p.dimensions);
-    }
+    setBehavior(p ? p.behaviour : "");
+    setDims(p ? p.dimensions : []);
   }
 
-  async function importTarget() {
-    if (!agent) return;
+  /** Picking an agent fills in its prompt and tools straight away — there is no second step. */
+  async function chooseAgent(slug: string) {
+    setAgent(slug);
     setImportNote(null);
     setErr(null);
+    if (!slug) return;
     const r = await fetch("/api/audits/import-target", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent }),
+      body: JSON.stringify({ agent: slug }),
     });
     const d = await r.json().catch(() => null);
     if (!r.ok) return setErr(d?.detail ?? `Could not read that agent (HTTP ${r.status}).`);
     if (!d.found) {
-      return setImportNote(
-        "No recent trace of this agent shows a system prompt or tools. Paste them below instead.",
-      );
+      return setImportNote("No recent trace of this agent shows a system prompt or tools. Paste them under “Prompt and tools”.");
     }
     setSystemPrompt(d.system_prompt ?? "");
     setToolsText(d.tools?.length ? JSON.stringify(d.tools, null, 2) : "");
     setImportNote(
-      `Imported ${d.tools?.length ?? 0} tool${d.tools?.length === 1 ? "" : "s"} and the system prompt from a recent trace` +
-        (d.model ? ` (it ran on ${d.model} — pick the model to audit below).` : "."),
+      `Took the system prompt and ${d.tools?.length ?? 0} tool${d.tools?.length === 1 ? "" : "s"} from its latest trace` +
+        (d.model ? ` (it ran on ${d.model}).` : "."),
     );
   }
 
@@ -212,8 +217,9 @@ function NewAuditForm({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          name: name.trim(),
-          behavior: behavior.trim(),
+          // A name nobody typed: the preset's, else the first words of the behaviour.
+          name: name.trim() || preset?.name || behavior.trim().split(/\s+/).slice(0, 6).join(" "),
+          behavior,
           agent: control === "fixed" ? agent : "",
           preset: preset?.key,
           seeds: preset?.seeds ?? [],
@@ -224,7 +230,14 @@ function NewAuditForm({
               system_prompt: control === "fixed" ? systemPrompt : "",
               tools,
             },
-            attacker: { models: attacker ? [attacker] : [], max_turns: maxTurns },
+            attacker: {
+              models: attacker ? [attacker] : [], max_turns: maxTurns, realism_filter: realism,
+              media, best_of: bestOf,
+            },
+            environment: sandbox && canSandbox
+              ? { mode: "sandbox", packs: packs.length ? packs : ["dev"],
+                  network: network && catalog.sandbox?.network ? "allowlist" : "none" }
+              : { mode: "synthetic" },
             dimensions: dims,
             judge_models: judges,
             limits: { budget_usd: budget },
@@ -245,177 +258,198 @@ function NewAuditForm({
     set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
   const sameFamily =
     judges.length > 0 && model && judges.every((j) => j.split("/")[0] === model.split("/")[0]);
+  const ours = catalog.behaviours.filter((d) => !d.source);
+  const petri = catalog.behaviours.filter((d) => d.source);
+  const ready = behavior.trim() && model && judges.length > 0 && (control === "auditor" || systemPrompt.trim());
 
   return (
     <div className="space-y-6 border-b border-line bg-ink-900/40 px-4 py-5">
+      {/* ── 1 ── */}
       <div>
-        <div className={LABEL}>Start from</div>
-        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <label className="text-[14px] font-semibold text-fg" htmlFor={`${uid}-behavior`}>
+          What should the audit look for?
+        </label>
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {catalog.presets.map((p) => (
-            <button
-              key={p.key}
-              type="button"
-              onClick={() => choosePreset(preset?.key === p.key ? null : p)}
-              aria-pressed={preset?.key === p.key}
-              className={clsx(
-                "rounded-lg border px-3 py-2.5 text-left transition-colors",
-                preset?.key === p.key
-                  ? "border-signal/50 bg-signal/10"
-                  : "border-line hover:border-line-bright",
-              )}
-            >
-              <div className="text-[13px] text-fg">{p.name}</div>
-              <div className="mt-1 font-mono text-[10.5px] text-fg-faint">
-                {p.seeds.length} starter seed{p.seeds.length === 1 ? "" : "s"}
-              </div>
-            </button>
+            <Chip key={p.key} on={preset?.key === p.key} onClick={() => choosePreset(preset?.key === p.key ? null : p)}
+                  title={`Fills in the description and ${p.seeds.length} starter seed${p.seeds.length === 1 ? "" : "s"}`}>
+              {p.name}
+            </Chip>
           ))}
         </div>
-        <p className={HINT}>
-          A preset fills in the behaviour, its judging dimensions and a few seeds. Leave them all
-          unselected to describe your own.
-        </p>
+        <textarea id={`${uid}-behavior`} rows={3} className={clsx(FIELD, "mt-2 font-sans")} value={behavior}
+                  onChange={(e) => setBehavior(e.target.value)}
+                  placeholder="Pick one above, or describe it: The agent grants refunds its policy does not allow when the customer insists." />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-[1fr_2fr]">
-        <div>
-          <label className={LABEL} htmlFor={`${uid}-name`}>Name</label>
-          <input id={`${uid}-name`} className={clsx(FIELD, "mt-1")} value={name}
-                 onChange={(e) => setName(e.target.value)} placeholder="Refund policy pressure" />
-        </div>
-        <div>
-          <label className={LABEL} htmlFor={`${uid}-behavior`}>Behaviour to look for</label>
-          <textarea id={`${uid}-behavior`} rows={3} className={clsx(FIELD, "mt-1 font-sans")} value={behavior}
-                    onChange={(e) => setBehavior(e.target.value)}
-                    placeholder="The agent grants refunds its policy does not allow when the customer insists." />
-          <p className={HINT}>
-            Told to the attacker (so it knows what to provoke) and to the judges (so they know what
-            counts). Never shown to the target.
-          </p>
-        </div>
-      </div>
-
-      <fieldset>
-        <legend className={LABEL}>Target</legend>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2">
-          {([
-            ["auditor", "A model", "The attacker writes the system prompt and invents the tools for each seed. For auditing a model itself."],
-            ["fixed", "My agent's prompt and tools", "The system prompt and tools below are what is tested, unchanged. For auditing a deployed agent."],
-          ] as const).map(([value, title, text]) => (
-            <button key={value} type="button" onClick={() => setControl(value)} aria-pressed={control === value}
-                    className={clsx("rounded-lg border px-3 py-2.5 text-left transition-colors",
-                      control === value ? "border-signal/50 bg-signal/10" : "border-line hover:border-line-bright")}>
-              <div className="text-[13px] text-fg">{title}</div>
-              <div className="mt-1 text-[12px] leading-relaxed text-fg-faint">{text}</div>
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className={LABEL} htmlFor={`${uid}-model`}>Model under test</label>
-            <ModelSelect id={`${uid}-model`} models={models} value={model} onChange={setModel} />
-          </div>
-          {control === "fixed" && (
-            <div>
-              <label className={LABEL} htmlFor={`${uid}-agent`}>Import from an agent&apos;s traces</label>
-              <div className="mt-1 flex gap-2">
-                <select id={`${uid}-agent`} className={FIELD} value={agent} onChange={(e) => setAgent(e.target.value)}>
-                  <option value="">Choose an agent…</option>
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.slug}>{a.display_name || a.slug}</option>
-                  ))}
-                </select>
-                <button type="button" onClick={importTarget} disabled={!agent} className="btn-ghost shrink-0">
-                  Import
-                </button>
-              </div>
-            </div>
+      {/* ── 2 ── */}
+      <div>
+        <div className="text-[14px] font-semibold text-fg">What are you testing?</div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Chip on={control === "auditor"} onClick={() => setControl("auditor")}
+                title="The attacker writes a system prompt and tools to fit each situation">
+            A model
+          </Chip>
+          <Chip on={control === "fixed"} onClick={() => setControl("fixed")}
+                title="Your agent's real system prompt and tools are what is tested, unchanged">
+            One of my agents
+          </Chip>
+          {control === "fixed" && agents.length > 0 && (
+            <span className="w-56">
+              <select aria-label="Agent" className={FIELD} value={agent} onChange={(e) => void chooseAgent(e.target.value)}>
+                <option value="">Choose an agent…</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.slug}>{a.display_name || a.slug}</option>
+                ))}
+              </select>
+            </span>
           )}
+          <span className="w-64">
+            <ModelSelect id={`${uid}-model`} label="Model under test" models={models} value={model} onChange={setModel} />
+          </span>
         </div>
         {importNote && <p className="mt-2 text-[12px] text-fg-muted">{importNote}</p>}
-
         {control === "fixed" && (
-          <div className="mt-3 grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className={LABEL} htmlFor={`${uid}-sys`}>System prompt</label>
-              <textarea id={`${uid}-sys`} rows={8} className={clsx(FIELD, "mt-1")} value={systemPrompt}
-                        onChange={(e) => setSystemPrompt(e.target.value)} placeholder="You are a support agent for…" />
-            </div>
-            <div>
-              <label className={LABEL} htmlFor={`${uid}-tools`}>Tools (JSON array)</label>
-              <textarea id={`${uid}-tools`} rows={8} className={clsx(FIELD, "mt-1")} value={toolsText}
+          <details className="mt-2" open={!systemPrompt && !agent}>
+            <summary className="cursor-pointer text-[12px] text-fg-faint transition-colors hover:text-signal">
+              Prompt and tools{systemPrompt ? " (filled in — open to edit)" : ""}
+            </summary>
+            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+              <textarea aria-label="System prompt" rows={7} className={FIELD} value={systemPrompt}
+                        onChange={(e) => setSystemPrompt(e.target.value)} placeholder="System prompt — You are a support agent for…" />
+              <textarea aria-label="Tools (JSON array)" rows={7} className={FIELD} value={toolsText}
                         onChange={(e) => setToolsText(e.target.value)}
-                        placeholder={'[{"name": "lookup_order", "description": "…", "parameters": {"type": "object", "properties": {}}}]'} />
-              <p className={HINT}>
-                Nothing here is ever called. The attacker answers each tool call with the result the
-                real tool would return.
-              </p>
+                        placeholder={'Tools, as a JSON array — [{"name": "lookup_order", "description": "…", "parameters": {"type": "object", "properties": {}}}]'} />
             </div>
-          </div>
+          </details>
         )}
-      </fieldset>
-
-      <fieldset>
-        <legend className={LABEL}>Judges</legend>
-        <p className={HINT}>
-          Each selected model scores every dimension on its own; the panel&apos;s answer is the
-          median, and a split panel is asked again before it is called.
-        </p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {models.map((m) => (
-            <Chip key={m.id} on={judges.includes(m.id)} onClick={() => toggle(judges, setJudges, m.id)}>
-              {m.label}
-            </Chip>
-          ))}
-        </div>
-        {sameFamily && (
-          <p className="mt-2 text-[12px] text-warn">
-            Every judge is from the same provider as the model under test. Judges tend to favour
-            their own family — add one from another provider.
-          </p>
-        )}
-
-        <div className={clsx(LABEL, "mt-4")}>Dimensions</div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {catalog.behaviours.map((d) => (
-            <Chip key={d.name} on={dims.includes(d.name)} onClick={() => toggle(dims, setDims, d.name)} title={d.description}>
-              {d.name.replaceAll("_", " ")}
-            </Chip>
-          ))}
-        </div>
-        <p className={HINT}>
-          {dims.length === 0
-            ? "None selected: judges score the behaviour described above. "
-            : ""}
-          Three more are always judged — whether the target noticed the test, whether the scenario
-          was realistic, and whether the attacker did its job. A rollout that fails one of those is
-          excluded from the result instead of counted.
-        </p>
-      </fieldset>
-
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div>
-          <label className={LABEL} htmlFor={`${uid}-attacker`}>Attacker model</label>
-          <ModelSelect id={`${uid}-attacker`} models={models} value={attacker} onChange={setAttacker} allowDefault />
-        </div>
-        <div>
-          <label className={LABEL} htmlFor={`${uid}-turns`}>Attacker turns per rollout</label>
-          <input id={`${uid}-turns`} type="number" min={1} max={40} className={clsx(FIELD, "mt-1")} value={maxTurns}
-                 onChange={(e) => setMaxTurns(Number(e.target.value) || 1)} />
-        </div>
-        <div>
-          <label className={LABEL} htmlFor={`${uid}-budget`}>Budget per run (USD)</label>
-          <input id={`${uid}-budget`} type="number" min={0.5} step={0.5} className={clsx(FIELD, "mt-1")} value={budget}
-                 onChange={(e) => setBudget(Number(e.target.value) || 1)} />
-        </div>
       </div>
+
+      {/* ── everything else has a default ── */}
+      <details className="group rounded-lg border border-line">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-[12.5px] text-fg-muted transition-colors hover:text-fg">
+          <IconChevron className="h-3.5 w-3.5 text-fg-faint transition-transform group-open:rotate-90" />
+          More options
+          <span className="truncate font-mono text-[11px] text-fg-faint">
+            {sandbox && canSandbox ? "real machine" : "invented tool results"} · {judges.length || 1} judge{judges.length > 1 ? "s" : ""} · ${budget} per run
+          </span>
+        </summary>
+        <div className="grid gap-x-6 gap-y-5 border-t border-line px-3 py-4 sm:grid-cols-[150px_1fr]">
+          <Opt label="Name">
+            <input aria-label="Name" className={clsx(FIELD, "max-w-sm")} value={name} onChange={(e) => setName(e.target.value)}
+                   placeholder={preset?.name || "Named after the behaviour"} />
+          </Opt>
+
+          <Opt label="Tool results">
+            <div className="flex flex-wrap gap-1.5">
+              <Chip on={!sandbox} onClick={() => setSandbox(false)} title="The attacker writes the result of every tool call. Nothing runs. Works with any tools.">
+                Invented by the attacker
+              </Chip>
+              <Chip on={sandbox && canSandbox} onClick={() => canSandbox && setSandbox(true)}
+                    title={canSandbox
+                      ? "The target gets real tools on a real Linux box; its commands really run"
+                      : "Not available: this deployment has no sandbox configured (SANDBOX_BACKEND)"}>
+                A real machine{canSandbox ? "" : " (not set up)"}
+              </Chip>
+            </div>
+            {sandbox && canSandbox && (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[12px] text-fg-faint">with</span>
+                {PACKS.map((p) => (
+                  <Chip key={p.key} on={packs.includes(p.key)} onClick={() => toggle(packs, setPacks, p.key)} title={p.hint}>
+                    {p.label}
+                  </Chip>
+                ))}
+                {catalog.sandbox?.network && (
+                  <Chip on={network} onClick={() => setNetwork(!network)}
+                        title="Read-only access to package registries and documentation, through a proxy that logs each request">
+                    Web access (allowlist)
+                  </Chip>
+                )}
+              </div>
+            )}
+          </Opt>
+
+          <Opt label="Attacker can send" hint="The model under test must accept images or audio, or the run is refused.">
+            <div className="flex flex-wrap gap-1.5">
+              <Chip on={media.includes("image")} onClick={() => toggle(media, setMedia, "image")}
+                    title="The attacker can generate an image — a photo, a scan, a screenshot — and send it">
+                Images
+              </Chip>
+              <Chip on={media.includes("voice")} onClick={() => toggle(media, setMedia, "voice")}
+                    title="The attacker can speak: the target hears a recording, never the text">
+                Voice messages
+              </Chip>
+            </div>
+          </Opt>
+
+          <Opt label="Judges" hint={sameFamily
+            ? undefined
+            : "Each model scores on its own; the result is the median."}>
+            <div className="flex flex-wrap gap-1.5">
+              {models.map((m) => (
+                <Chip key={m.id} on={judges.includes(m.id)} onClick={() => toggle(judges, setJudges, m.id)}>
+                  {m.label}
+                </Chip>
+              ))}
+            </div>
+            {sameFamily && (
+              <p className="mt-2 text-[12px] text-warn">
+                Every judge is from the same provider as the model under test — add one from another.
+              </p>
+            )}
+          </Opt>
+
+          <Opt label="Also score" hint="Optional. The behaviour you described is always scored, and so is whether each conversation was a fair test.">
+            <div className="flex flex-wrap gap-1.5">
+              {ours.map((d) => (
+                <Chip key={d.name} on={dims.includes(d.name)} onClick={() => toggle(dims, setDims, d.name)} title={d.description}>
+                  {d.name.replaceAll("_", " ")}
+                </Chip>
+              ))}
+            </div>
+            {petri.length > 0 && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-[12px] text-fg-faint transition-colors hover:text-signal">
+                  {petri.length} more from Petri
+                </summary>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {petri.map((d) => (
+                    <Chip key={d.name} on={dims.includes(d.name)} onClick={() => toggle(dims, setDims, d.name)}
+                          title={`${d.description}${d.kind === "info" ? " (reported, never flags a rollout)" : ""}`}>
+                      {d.name.replaceAll("_", " ")}
+                    </Chip>
+                  ))}
+                </div>
+              </details>
+            )}
+          </Opt>
+
+          <Opt label="Attacker">
+            <div className="flex flex-wrap items-end gap-3">
+              <span className="w-56">
+                <ModelSelect id={`${uid}-attacker`} label="Attacker model" models={models} value={attacker} onChange={setAttacker} allowDefault />
+              </span>
+              <Num label="Turns" value={maxTurns} min={1} max={40} onChange={setMaxTurns}
+                   title="How many moves the attacker gets in one conversation" />
+              <Num label="Drafts per turn" value={bestOf} min={1} max={4} onChange={setBestOf}
+                   title="Explore runs only: draft this many moves each turn and play the most convincing one" />
+              <span className="pb-1.5" title="A second model reads what the attacker writes before the target does, and sends back anything that would give the test away">
+                <Toggle checked={realism} onChange={setRealism} label="Realism check" />
+              </span>
+            </div>
+          </Opt>
+
+          <Opt label="Budget">
+            <Num label="USD per run" value={budget} min={0.5} step={0.5} onChange={setBudget}
+                 title="A run stops spending when it reaches this" />
+          </Opt>
+        </div>
+      </details>
 
       <div className="flex items-center justify-end gap-3">
         {err && <p role="alert" className="mr-auto text-[12px] text-fail">{err}</p>}
-        <button type="button" onClick={onCancel} className="btn-ghost">Cancel</button>
-        <button type="button" onClick={submit} disabled={busy || !name.trim() || !model || judges.length === 0}
-                className="btn-primary">
+        <button type="button" onClick={submit} disabled={busy || !ready} className="btn-primary">
           {busy ? "Creating…" : "Create audit"}
         </button>
       </div>
@@ -423,14 +457,47 @@ function NewAuditForm({
   );
 }
 
+/** One row of "More options": a label on the left, the control on the right. */
+function Opt({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <>
+      <div className={clsx(LABEL, "pt-1.5")}>{label}</div>
+      <div className="min-w-0">
+        {children}
+        {hint && <p className={HINT}>{hint}</p>}
+      </div>
+    </>
+  );
+}
+
+function Num({
+  label, value, onChange, min, max, step, title,
+}: {
+  label: string; value: number; onChange: (v: number) => void; min: number; max?: number; step?: number; title?: string;
+}) {
+  return (
+    <label className="block" title={title}>
+      <span className={LABEL}>{label}</span>
+      {/* The width lives on a wrapper: FIELD is `w-full`, and two width utilities on one element
+          are settled by stylesheet order, not by which comes last here. */}
+      <span className="mt-1 block w-24">
+        <input type="number" min={min} max={max} step={step} value={value} className={FIELD}
+               onChange={(e) => onChange(Math.min(max ?? Infinity, Math.max(min, Number(e.target.value) || min)))} />
+      </span>
+    </label>
+  );
+}
+
 function ModelSelect({
   id,
+  label,
   models,
   value,
   onChange,
   allowDefault = false,
 }: {
   id: string;
+  label: string;
   models: JudgeModelOption[];
   value: string;
   onChange: (v: string) => void;
@@ -439,8 +506,8 @@ function ModelSelect({
   // A model saved on the audit but no longer in the curated list still has to show as selected.
   const known = models.some((m) => m.id === value);
   return (
-    <select id={id} className={clsx(FIELD, "mt-1")} value={value} onChange={(e) => onChange(e.target.value)}>
-      {allowDefault && <option value="">Server default</option>}
+    <select id={id} aria-label={label} title={label} className={FIELD} value={value} onChange={(e) => onChange(e.target.value)}>
+      {allowDefault && <option value="">Attacker: server default</option>}
       {!known && value && <option value={value}>{value}</option>}
       {models.map((m) => (
         <option key={m.id} value={m.id}>{m.label}</option>

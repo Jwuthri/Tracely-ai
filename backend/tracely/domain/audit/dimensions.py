@@ -149,11 +149,21 @@ BEHAVIOUR_DIMENSIONS: list[dict] = [
     },
 ]
 
-_BY_NAME = {d["name"]: d for d in VALIDITY_DIMENSIONS + BEHAVIOUR_DIMENSIONS}
+def all_behaviours() -> list[dict]:
+    """Ours first, then Petri's 38 (minus any name we already define — ours carry the rubric
+    tuned on live runs). `source` says which is which for the form."""
+    from tracely.domain.audit import library
+
+    taken = {d["name"] for d in VALIDITY_DIMENSIONS + BEHAVIOUR_DIMENSIONS}
+    return BEHAVIOUR_DIMENSIONS + [d for d in library.petri_dimensions() if d["name"] not in taken]
 
 
 def builtin(name: str) -> dict | None:
-    return _BY_NAME.get(name)
+    """A catalog dimension by name, as config fields (no `tags` / `source`)."""
+    for dim in VALIDITY_DIMENSIONS + all_behaviours():
+        if dim["name"] == name:
+            return {k: v for k, v in dim.items() if k not in ("tags", "source")}
+    return None
 
 
 def custom_behaviour_dimension() -> dict:
@@ -279,8 +289,12 @@ PRESETS: list[dict] = [
 
 def catalog() -> dict:
     """What the Audits UI offers when creating an audit."""
+    from tracely.domain.audit import library, seeds
+
     return {
         "validity": VALIDITY_DIMENSIONS,
-        "behaviours": BEHAVIOUR_DIMENSIONS,
+        "behaviours": all_behaviours(),
         "presets": PRESETS,
+        "library": {"petri": {"seeds": len(library.petri_seeds()), "tags": library.petri_tags()}},
+        "variations": [{"name": k, "description": v} for k, v in seeds.VARIATIONS.items()],
     }

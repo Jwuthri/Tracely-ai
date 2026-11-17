@@ -3,11 +3,11 @@ import { notFound } from "next/navigation";
 import { AuditDetail } from "@/app/components/AuditDetail";
 import { DocLink } from "@/app/components/DocLink";
 import { IconArrowLeft } from "@/app/components/icons";
-import { getAudit } from "@/app/lib/api";
+import { getAudit, getAuditCatalog } from "@/app/lib/api";
 
 export default async function AuditPage({ params }: { params: Promise<{ auditId: string }> }) {
   const { auditId } = await params;
-  const audit = await getAudit(auditId);
+  const [audit, catalog] = await Promise.all([getAudit(auditId), getAuditCatalog()]);
   if (!audit) notFound();
 
   return (
@@ -22,7 +22,7 @@ export default async function AuditPage({ params }: { params: Promise<{ auditId:
         </div>
         {audit.behavior && <p className="mt-1.5 max-w-3xl text-[14px] text-fg-muted">{audit.behavior}</p>}
       </header>
-      <AuditDetail audit={audit} />
+      <AuditDetail audit={audit} catalog={catalog} />
     </div>
   );
 }

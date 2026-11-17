@@ -918,6 +918,9 @@ class AuditSeed(Base):
     tags: Mapped[list] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="manual")
     parent_seed_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Media the attacker may send with this seed: `[{asset, mime, name}]`, `asset` a sha256 into
+    # the blob store (migration 0042).
+    attachments: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -941,6 +944,8 @@ class AuditRun(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     status: Mapped[str] = mapped_column(String(16), default="RUNNING")  # RUNNING|DONE|CANCELLED
     mode: Mapped[str] = mapped_column(String(16), default="measure")
+    # Explore runs: 0 = first pass, 1 = the deepen pass has been planned (migration 0042).
+    stage: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     budget_usd: Mapped[float] = mapped_column(Float, default=0.0)
     spend_usd: Mapped[float] = mapped_column(Float, default=0.0)

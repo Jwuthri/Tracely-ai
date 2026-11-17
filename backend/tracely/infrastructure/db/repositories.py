@@ -862,13 +862,18 @@ def audit_runs_list(s: Session, audit_id: str, limit: int = 50) -> list[AuditRun
 
 
 def audit_latest_runs(s: Session, project_id: str) -> dict[str, AuditRun]:
-    """`{audit_id: its most recent run}`."""
-    out: dict[str, AuditRun] = {}
+    """`{audit_id: the run its headline comes from}` — the most recent MEASURE run, and only
+    where an audit has none, its most recent explore run. An explore run's rollouts learn from
+    each other, so its elicitation rate must never replace a measured one on the list page."""
+    measured: dict[str, AuditRun] = {}
+    any_mode: dict[str, AuditRun] = {}
     for run in s.execute(
         select(AuditRun).where(AuditRun.project_id == project_id).order_by(AuditRun.created_at.desc())
     ).scalars():
-        out.setdefault(run.audit_id, run)
-    return out
+        any_mode.setdefault(run.audit_id, run)
+        if run.mode == "measure":
+            measured.setdefault(run.audit_id, run)
+    return {**any_mode, **measured}
 
 
 def audit_run_get(s: Session, project_id: str, run_id: str) -> AuditRun | None:

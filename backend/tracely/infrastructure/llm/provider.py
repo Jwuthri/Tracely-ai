@@ -869,7 +869,7 @@ def _prompt_text(system_prompt: str | None, prompt: str) -> str:
 
 
 def run_structured_agent(
-    prompt: str,
+    prompt: str | list[dict],
     *,
     response_format: type[T],
     system_prompt: str | None = None,
@@ -902,7 +902,7 @@ def run_structured_agent(
         response_format=response_format,
         **({"checkpointer": checkpointer} if checkpointer else {}),
     )
-    with _recorded(prompt, system_prompt, model) as sink:
+    with _recorded(_blocks_text(prompt), system_prompt, model) as sink:
         result = _invoke(
             agent, prompt, chat_id if checkpointer else None,
             posthog_session_id=chat_id if checkpointer else None,
@@ -1245,6 +1245,97 @@ def run_chat(
         "usage": usage,
         "message": message,
     }
+
+
+def _media_post(path: str, body: dict, timeout_s: float):
+    """POST to the workspace's OpenRouter account — media has no legacy-OpenAI fallback, so a
+    workspace without an OpenRouter key simply cannot make any."""
+    import httpx
+
+    key = effective_openrouter_key()
+    if not key:
+        raise RuntimeError("This workspace has no OpenRouter API key — media generation needs one.")
+    resp = None
+    for attempt in range(_DECISION_ATTEMPTS):
+        resp = httpx.post(
+            f"{settings.openrouter_base_url.rstrip('/')}{path}",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=body, timeout=timeout_s,
+        )
+        if resp.status_code not in _DECISION_RETRY_STATUSES or attempt == _DECISION_ATTEMPTS - 1:
+            break
+        time.sleep(_retry_delay(resp, attempt))
+    assert resp is not None
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{path} {resp.status_code} for {body.get('model')}: {_error_message(resp)}")
+    return resp
+
+
+def generate_image(prompt: str, *, model: str | None = None, on_usage: UsageSink | None = None) -> bytes:
+    """One image from an image-output chat model (OpenRouter: `modalities: ["image", "text"]`,
+    the picture comes back as a data URL on `message.images`). Returns the raw bytes."""
+    import base64
+
+    mid = _normalize_model((model or settings.audit_image_model).strip())
+    data = _media_post("/chat/completions", {
+        "model": mid, "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"], "usage": {"include": True},
+    }, 180.0).json()
+    message = ((data.get("choices") or [{}])[0].get("message") or {})
+    url = next((
+        (i.get("image_url") or {}).get("url") or "" for i in message.get("images") or []
+    ), "")
+    if not url.startswith("data:") or "," not in url:
+        raise RuntimeError(f"{mid} returned no image: {_wire_text(message.get('content'))[:200] or 'empty reply'}")
+    if on_usage is not None:
+        u = data.get("usage") or {}
+        on_usage({
+            "model": mid, "input_tokens": int(u.get("prompt_tokens") or 0),
+            "output_tokens": int(u.get("completion_tokens") or 0),
+            **({"cost_usd": float(u["cost"])} if isinstance(u.get("cost"), (int, float)) else {}),
+        })
+    return base64.b64decode(url.split(",", 1)[1])
+
+
+# What a second of speech costs when the provider reports nothing — a ceiling, not a price list:
+# the budget brake must move even where the bill is silent.
+_TTS_USD_PER_1K_CHARS = 0.03
+
+
+def synthesize_speech(
+    text: str, *, voice: str | None = None, model: str | None = None, on_usage: UsageSink | None = None
+) -> bytes:
+    """`text` spoken, as MP3 or WAV bytes (OpenRouter's `/audio/speech`).
+
+    Speech models there are provider-specific in two ways seen live: every one needs an explicit
+    `voice` from its own list (there is no common "alloy"), and some only return raw PCM — which
+    no player or model accepts, so it is wrapped into a WAV here."""
+    import io
+    import re
+    import wave
+
+    mid = _normalize_model((model or settings.audit_tts_model).strip())
+    body = {"model": mid, "input": text, "voice": voice or settings.audit_tts_voice}
+    try:
+        resp = _media_post("/audio/speech", {**body, "response_format": "mp3"}, 120.0)
+    except RuntimeError as exc:
+        if "pcm" not in str(exc).lower():
+            raise
+        resp = _media_post("/audio/speech", {**body, "response_format": "pcm"}, 120.0)
+    audio = resp.content
+    if "pcm" in (resp.headers.get("content-type") or ""):
+        rate = re.search(r"rate=(\d+)", resp.headers.get("content-type") or "")
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as out:  # 16-bit mono, the only PCM these endpoints return
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(int(rate.group(1)) if rate else 24000)
+            out.writeframes(audio)
+        audio = buf.getvalue()
+    if on_usage is not None:
+        on_usage({"model": mid, "input_tokens": 0, "output_tokens": 0,
+                  "cost_usd": len(text) / 1000 * _TTS_USD_PER_1K_CHARS})
+    return audio
 
 
 def model_modalities(model_id: str | None) -> dict[str, list[str]]:

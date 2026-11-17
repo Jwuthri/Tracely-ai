@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  fileBase64,
   byBranch,
   finalPath,
   formatRate,
@@ -76,5 +77,13 @@ describe("transcript tree", () => {
       [0, ["M1", "M2", "M3"]],
       [1, ["M4", "M5"]],
     ]);
+  });
+});
+
+describe("fileBase64", () => {
+  it("encodes bytes past one chunk without mangling them", async () => {
+    const bytes = new Uint8Array(0x8000 + 3).map((_, i) => i % 251);
+    const back = Uint8Array.from(atob(await fileBase64(new Blob([bytes]))), (c) => c.charCodeAt(0));
+    expect(back).toEqual(bytes);
   });
 });

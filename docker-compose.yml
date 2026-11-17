@@ -70,6 +70,15 @@ x-app-env: &app-env
   # many rollouts of one run may be in flight (needs CELERY_CONCURRENCY > 1 to matter).
   AUDIT_SLICE_S: ${AUDIT_SLICE_S:-45}
   AUDIT_MAX_PARALLEL: ${AUDIT_MAX_PARALLEL:-2}
+  AUDIT_IMAGE_MODEL: ${AUDIT_IMAGE_MODEL:-google/gemini-2.5-flash-image}
+  AUDIT_TTS_MODEL: ${AUDIT_TTS_MODEL:-hexgrad/kokoro-82m}
+  AUDIT_TTS_VOICE: ${AUDIT_TTS_VOICE:-af_heart}
+  # Real environments for audits. Blank = audits can only invent tool results. `docker` runs each
+  # rollout in a sibling container and needs the Docker socket in the worker — start the stack
+  # with `-f docker-compose.yml -f docker-compose.sandbox.yml`, which sets this and mounts it.
+  SANDBOX_BACKEND: ${SANDBOX_BACKEND:-}
+  SANDBOX_IMAGE: ${SANDBOX_IMAGE:-tracely-sandbox:latest}
+  SANDBOX_EGRESS_NETWORK: ${SANDBOX_EGRESS_NETWORK:-}
   # Assistant speech mode: realtime voice, browser-direct via ephemeral tokens the backend
   # mints. OpenAI rides OPENAI_API_KEY above; Grok needs its own. Blank = provider hidden.
   XAI_API_KEY: ${XAI_API_KEY:-}

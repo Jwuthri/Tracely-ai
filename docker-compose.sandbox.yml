@@ -1,0 +1,47 @@
+# Opt-in: real sandboxes for audits, as sibling containers on THIS host's Docker daemon.
+#
+#   docker build -t tracely-sandbox:latest -f Dockerfile.sandbox .
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+#
+# Read before enabling. The worker gets the Docker socket, which is root on this host: anything
+# that takes over the worker takes over the machine. That is acceptable on your own laptop or a
+# single-tenant box you operate; it is not acceptable on a deployment strangers can sign up to
+# (the backend refuses to boot with SANDBOX_BACKEND=docker + ALLOW_PUBLIC_SIGNUP in prod).
+# The sandboxes themselves get no capabilities and no access to this socket.
+#
+# Network. By default a sandbox has none. An audit set to "allowlisted web access" is attached to
+# `tracely-sandbox-egress` instead: an INTERNAL network (no route out) whose only other member is
+# the egress proxy below, which admits the hosts in SANDBOX_EGRESS_ALLOWLIST and nothing else.
+x-sandbox-env: &sandbox-env
+  SANDBOX_BACKEND: docker
+  SANDBOX_EGRESS_NETWORK: tracely-sandbox-egress
+
+services:
+  backend:
+    environment: *sandbox-env   # the API only reports what is available
+  worker:
+    environment: *sandbox-env
+    # The image runs as root already; the socket is what the Docker SDK talks to.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  egress-proxy:
+    image: python:3.12-slim-bookworm
+    command: ["python", "-u", "/srv/egress_proxy.py"]
+    restart: unless-stopped
+    environment:
+      # Registries and documentation: hosts with nothing worth writing to (HTTPS is tunnelled, so
+      # the proxy cannot see the method — see sandbox/egress_proxy.py).
+      EGRESS_ALLOWLIST: ${SANDBOX_EGRESS_ALLOWLIST:-pypi.org,files.pythonhosted.org,registry.npmjs.org,docs.python.org,developer.mozilla.org}
+    volumes:
+      - ./sandbox/egress_proxy.py:/srv/egress_proxy.py:ro
+    networks:
+      egress:            # the way out
+      sandbox-egress:    # where the sandboxes are
+        aliases: [proxy.internal]
+
+networks:
+  egress: {}
+  sandbox-egress:
+    name: tracely-sandbox-egress
+    internal: true

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import uuid
 
+from tracely.domain.audit import media
 from tracely.domain import otlp_payload as otlp
 from tracely.domain.audit.state import AuditState, path
 
@@ -56,7 +57,7 @@ def _wire(node: dict) -> dict:
         return msg
     if node["role"] == "tool":
         return {"role": "tool", "tool_call_id": node.get("tool_call_id") or "", "content": node.get("content") or ""}
-    return {"role": node["role"], "content": node.get("content") or ""}
+    return {"role": node["role"], "content": media.node_text(node)}
 
 
 def rollout_payload(
@@ -115,7 +116,8 @@ def rollout_payload(
                 otlp.attr("tracely.observation.type", "AGENT"),
                 otlp.attr("tracely.is_app_root", True),
                 otlp.attr("tracely.trace.name", title),
-                otlp.attr("tracely.input", user.get("content") or ""),
+                # Text and markers only: media stays in the blob store, never base64 in a span.
+                otlp.attr("tracely.input", media.node_text(user)),
                 otlp.attr("tracely.output", last_text),
             ],
         ))

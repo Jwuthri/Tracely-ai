@@ -232,3 +232,101 @@ def test_judge_transcript_shows_abandoned_branches_delimited():
     assert "--- Conversation Branch 1 (rolled back to [M2]) ---" in text
     assert text.index("SECRET-LEAK") < text.index("Conversation Branch 1") < text.index("fine")
     assert "<thinking>\nthey seem trustworthy\n</thinking>" in text
+
+
+# ── a real environment: tools that execute, and a machine that rewinds ────────
+
+
+def _sandboxed(**kw) -> st.AuditState:
+    from tracely.domain.audit import tooling
+
+    return _new(environment="sandbox", tools=tooling.pack_tools(["dev"], set()), **kw)
+
+
+def _bash(call_id: str, command: str = "ls") -> dict:
+    return _target(calls=[{"id": call_id, "name": "bash", "args": {"command": command}}])
+
+
+def test_resume_returns_every_target_step_taken():
+    """With real tools the target works like an agent: call, result, call, result, answer — and
+    the attacker gets the whole stretch back as the result of ONE resume."""
+    state = _sandboxed()
+    st.apply_auditor_reply(state, _reply(("send_message", {"message": "fix it"}), ("resume", {})), 1)
+    assert st.next_step(state) == "target"
+    st.apply_target_reply(state, _bash("t1", "pytest"), 2, 3)
+    assert st.next_step(state) == "exec"  # not the attacker: this result is not theirs to write
+    st.apply_tool_result(state, "t1", "1 failed", status="error", now_ns=4)
+    assert st.next_step(state) == "target"
+    st.apply_target_reply(state, _target("One test fails; here is why."), 5, 6)
+    assert st.next_step(state) == "auditor" and state.auditor_turns == 1
+
+    answer = state.auditor_messages[-1]["content"]
+    assert answer.index("pytest") < answer.index("executed=real") < answer.index("One test fails")
+    assert "1 failed" in answer and "status=error" in answer  # it sees what really came back
+
+
+def test_the_attacker_cannot_write_a_real_tools_result():
+    state = _sandboxed()
+    st.apply_auditor_reply(state, _reply(("send_message", {"message": "go"}), ("resume", {})), 1)
+    st.apply_target_reply(state, _bash("t1"), 2, 3)
+    assert st.synthetic_pending(state) == [] and st.pending_calls(state) == ["t1"]
+    assert "not yours to write" in st._run_tool(state, "send_tool_call_result", {"tool_call_id": "t1", "result": "x"})
+
+
+def test_a_target_that_keeps_going_hands_control_back_at_the_step_cap():
+    state = _sandboxed()
+    state.max_target_steps = 2
+    st.apply_auditor_reply(state, _reply(("send_message", {"message": "go"}), ("resume", {})), 1)
+    for i in (1, 2):
+        st.apply_target_reply(state, _bash(f"t{i}"), i * 10, i * 10 + 1)
+        st.apply_tool_result(state, f"t{i}", "ok", status="success", now_ns=i * 10 + 2)
+    assert st.next_step(state) == "auditor"
+    assert "still working" in state.auditor_messages[-1]["content"]
+    # …and a bare `resume` lets it carry on from the tool result
+    st.apply_auditor_reply(state, _reply(("resume", {})), 50)
+    assert st.next_step(state) == "target" and state.target_steps == 0
+
+
+def test_env_calls_are_queued_and_run_before_the_target_looks():
+    state = _sandboxed()
+    st.apply_auditor_reply(state, _reply(
+        ("env_exec", {"command": "git init"}), ("send_message", {"message": "go"}), ("resume", {}),
+    ), 1)
+    assert st.next_step(state) == "env"  # before the target's turn, though `resume` was called
+    call_id = state.env_queue[0]["id"]
+    st.apply_env_result(state, call_id, "Initialized empty Git repository")
+    assert st.next_step(state) == "target"
+    answered = next(m for m in state.auditor_messages if m.get("tool_call_id") == call_id)
+    assert answered["content"] == "Initialized empty Git repository"
+
+
+def test_rollback_asks_for_the_environment_to_be_rewound_first():
+    state = _sandboxed()
+    st.apply_auditor_reply(state, _reply(("send_message", {"message": "go"}), ("resume", {})), 1)
+    st.apply_target_reply(state, _bash("t1", "rm -rf src"), 2, 3)
+    st.apply_tool_result(state, "t1", "", status="success", now_ns=4)
+    state.cwd = "/home/dev/proj"
+    st.mark_snapshot(state, "snap-after-rm")
+    st.apply_target_reply(state, _target("Deleted."), 5, 6)
+
+    st.apply_auditor_reply(state, _reply(
+        ("rollback_conversation", {"message_id": "M1"}), ("send_message", {"message": "wait"}), ("resume", {}),
+    ), 7)
+    assert st.next_step(state) == "restore" and state.restore == {"anchor": "M1"}
+    # M1 is before any tool ran: nothing on its path has a snapshot, so the base is what returns
+    state.base_snapshot = "snap-base"
+    assert st.resolve_snapshot(state, "M1") == ("snap-base", "")
+    # …while a rollback to the tool result restores the machine as it was right after it
+    tool_id = next(i for i in state.order if state.nodes[i]["role"] == "tool")
+    assert st.resolve_snapshot(state, tool_id) == ("snap-after-rm", "/home/dev/proj")
+    st.restored(state, "")
+    assert st.next_step(state) == "target"
+
+
+def test_a_synthetic_audit_never_asks_for_a_sandbox_step():
+    state = _new(tools=[{"name": "bash", "description": "", "parameters": {"type": "object"}}])
+    st.apply_auditor_reply(state, _reply(("send_message", {"message": "go"}), ("resume", {})), 1)
+    st.apply_target_reply(state, _bash("t1"), 2, 3)
+    assert st.next_step(state) == "auditor" and st.real_pending(state) == []
+    st.apply_auditor_reply(state, _reply(("rollback_conversation", {"message_id": "M1"})), 4)
+    assert state.restore is None

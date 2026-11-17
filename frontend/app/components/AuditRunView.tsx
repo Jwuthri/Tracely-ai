@@ -28,8 +28,9 @@ export function AuditRunView({ run }: { run: AuditRunDetail }) {
   const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const running = run.status === "RUNNING";
-  // Behaviour first, then validity, then info — the order a reader decides in.
-  const dims = [...run.dimensions].sort((a, b) => rank(a) - rank(b));
+  // One column per behaviour. The validity dimensions answer a single question — was this a fair
+  // test? — so they share one column; the rest is in each rollout's Judges tab.
+  const dims = run.dimensions.filter((d) => d.kind === "behaviour");
 
   async function act(action: "cancel" | "resume") {
     setErr(null);
@@ -72,6 +73,10 @@ export function AuditRunView({ run }: { run: AuditRunDetail }) {
                   {d.name.replaceAll("_", " ")}
                 </th>
               ))}
+              <th className="px-2 py-2 text-center font-medium"
+                  title="Whether the conversation counts: the target did not notice the test, the scenario was believable, and the attacker did its job">
+                Fair test
+              </th>
               <th className="px-2 py-2 text-right font-medium">Turns</th>
               <th className="px-4 py-2 text-right font-medium">Cost</th>
             </tr>
@@ -88,7 +93,29 @@ export function AuditRunView({ run }: { run: AuditRunDetail }) {
   );
 }
 
-const rank = (d: AuditDimension) => (d.kind === "behaviour" ? 0 : d.kind === "validity" ? 1 : 2);
+/** The validity dimensions as one answer: ✓, or what made the rollout not count. */
+function FairTest({ results }: { results: DimensionResult[] }) {
+  const validity = results.filter((r) => r.kind === "validity");
+  if (validity.length === 0) return <span className="text-fg-faint">·</span>;
+  const scores = validity.map((r) => `${r.name.replaceAll("_", " ")}: ${r.graded ? r.value : "n/a"}`).join("\n");
+  const failed = validity.filter((r) => r.graded && r.flagged);
+  if (failed.length > 0) {
+    return (
+      <span className="font-mono text-[11px] text-warn" title={scores}>
+        {failed.map((r) => FAILED[r.name] ?? r.name.replaceAll("_", " ")).join(", ")}
+      </span>
+    );
+  }
+  return validity.every((r) => r.graded)
+    ? <span className="text-ok" title={scores}>✓</span>
+    : <span className="font-mono text-[11px] text-warn" title={scores}>n/a</span>;
+}
+
+const FAILED: Record<string, string> = {
+  eval_awareness: "target noticed",
+  unrealism: "unrealistic",
+  auditor_failure: "attacker failed",
+};
 
 function RolloutRows({
   rollout,
@@ -133,7 +160,14 @@ function RolloutRows({
           <div className="flex items-center gap-1.5">
             <IconChevron className={clsx("h-3.5 w-3.5 shrink-0 text-fg-faint transition-transform", open && "rotate-90")} />
             <span className="truncate text-fg">{rollout.title || "(untitled seed)"}</span>
-            {rollout.rep > 0 && <span className="font-mono text-[10.5px] text-fg-faint">#{rollout.rep + 1}</span>}
+            {rollout.stage ? (
+              <span className="shrink-0 font-mono text-[10.5px] uppercase tracking-wide text-signal"
+                    title="Added by the second pass: a variation of a seed that elicited, or a repeat of one that split">
+                second pass
+              </span>
+            ) : rollout.rep > 0 ? (
+              <span className="font-mono text-[10.5px] text-fg-faint">#{rollout.rep + 1}</span>
+            ) : null}
           </div>
           {why && <div className="mt-0.5 truncate pl-5 font-mono text-[11px] text-fg-faint" title={why}>{why}</div>}
         </td>
@@ -142,6 +176,9 @@ function RolloutRows({
             <ScoreCell result={byName.get(d.name)} />
           </td>
         ))}
+        <td className="px-2 py-2.5 text-center">
+          <FairTest results={rollout.results} />
+        </td>
         <td className="px-2 py-2.5 text-right font-mono text-[11.5px] text-fg-muted">
           {rollout.detail.turns ?? "—"}
           {rollout.detail.branches ? <span className="text-fg-faint" title="times the attacker rewound the target"> ↺{rollout.detail.branches}</span> : null}
@@ -150,7 +187,7 @@ function RolloutRows({
       </tr>
       {open && (
         <tr className="border-b border-line/50 bg-ink-900/40">
-          <td colSpan={dims.length + 4} className="px-4 py-4">
+          <td colSpan={dims.length + 5} className="px-4 py-4">
             <RolloutPanel rolloutId={rollout.id} live={!done} />
           </td>
         </tr>
@@ -288,7 +325,21 @@ function Node({ node, abandoned }: { node: TranscriptNode; abandoned: boolean })
         {node.reasoning && (
           <span className="mb-2 block border-l-2 border-line pl-2 italic text-fg-faint">{node.reasoning}</span>
         )}
-        {node.content || (node.tool_calls?.length ? "" : <span className="text-fg-faint">(empty)</span>)}
+        {node.content || (node.tool_calls?.length || node.attachments?.length ? "" : <span className="text-fg-faint">(empty)</span>)}
+        {(node.attachments ?? []).map((a) => (
+          <span key={a.asset} className="mt-2 block">
+            {a.kind === "image" ? (
+              // eslint-disable-next-line @next/next/no-img-element -- a private, hash-addressed file behind our own proxy
+              <img src={`/api/audit-assets/${a.asset}`} alt={a.text || a.name} className="max-h-72 rounded-md border border-line" />
+            ) : (
+              <>
+                <audio controls preload="none" src={`/api/audit-assets/${a.asset}`} className="h-9 w-full max-w-md" />
+                {a.text && <span className="mt-1 block italic text-fg-muted">“{a.text}”</span>}
+              </>
+            )}
+            <span className="mt-1 block font-mono text-[10.5px] text-fg-faint">{a.name}</span>
+          </span>
+        ))}
         {(node.tool_calls ?? []).map((c) => (
           <span key={c.id} className="mt-1.5 block font-mono text-[11.5px] text-info">
             → {c.name}({JSON.stringify(c.args)})

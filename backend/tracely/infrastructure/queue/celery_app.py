@@ -52,6 +52,12 @@ celery_app.conf.update(
             "task": "tracely.audit_watchdog",
             "schedule": crontab(minute="*/5"),
         },
+        # Audit sandboxes left behind by a rollout that ended without cleaning up. A no-op on a
+        # deployment with no sandbox backend.
+        "tracely.reap_sandboxes-every-15-min": {
+            "task": "tracely.reap_sandboxes",
+            "schedule": crontab(minute="*/15"),
+        },
         # Judge-conversation checkpoints grow quadratically and are never re-read. Nightly is
         # plenty — this reclaims space, it does not keep anything correct.
         "tracely.prune_chats-nightly": {

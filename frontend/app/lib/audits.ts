@@ -14,6 +14,20 @@ export type AuditDimension = {
   threshold: number;
   models: string[];
   samples: number;
+  // Catalog entries only: where the dimension comes from ("petri" for the vendored library).
+  source?: string;
+  tags?: string[];
+};
+
+/** A reference to an image or audio file — never the bytes. `text` is what a voice message says,
+ *  or what an uploaded file shows, for readers (and judges) that cannot see or hear it. */
+export type MediaRef = {
+  asset: string;
+  mime: string;
+  kind: "image" | "audio";
+  name: string;
+  size: number;
+  text: string;
 };
 
 export type TargetTool = { name: string; description: string; parameters: Record<string, unknown> };
@@ -27,7 +41,19 @@ export type AuditConfig = {
     temperature: number;
     reasoning_effort: string;
   };
-  attacker: { models: string[]; max_turns: number; prefill: boolean; rollback: boolean };
+  attacker: {
+    models: string[];
+    max_turns: number;
+    prefill: boolean;
+    rollback: boolean;
+    realism_filter?: boolean;
+    // Explore runs: draft this many moves a turn and play the one a picker prefers.
+    best_of?: number;
+    // Modal tools the attacker has: "image" = generate images, "voice" = send voice messages.
+    media?: ("image" | "voice")[];
+  };
+  // "sandbox": the target gets a real machine and its shell/file tools really execute.
+  environment?: { mode: "synthetic" | "sandbox"; packs: string[]; network?: "none" | "allowlist" };
   dimensions: AuditDimension[];
   judge_models: string[];
   limits: { budget_usd: number; reps: number };
@@ -79,6 +105,7 @@ export type AuditSeed = {
   tags: string[];
   origin: string;
   parent_seed_id: string | null;
+  attachments: MediaRef[];
   enabled: boolean;
   created_at: string | null;
 };
@@ -117,6 +144,8 @@ export type AuditRollout = {
   title: string;
   rep: number;
   position: number;
+  // 0 = the first pass; 1 = added by an explore run's deepen pass.
+  stage?: number;
   phase: "PENDING" | "DRIVING" | "JUDGING" | "DONE";
   verdict: RolloutVerdict;
   results: DimensionResult[];
@@ -154,6 +183,7 @@ export type TranscriptNode = {
   name?: string;
   status?: string;
   resolution?: string;
+  attachments?: MediaRef[];
 };
 
 export type AttackerMessage = {
@@ -189,7 +219,30 @@ export type AuditCatalog = {
   validity: AuditDimension[];
   behaviours: AuditDimension[];
   presets: AuditPreset[];
+  // Whether this deployment can run a target on a real machine, and give it allowlisted web access.
+  sandbox?: { available: boolean; network?: boolean };
+  library?: { petri: { seeds: number; tags: { tag: string; count: number }[] } };
+  // The axes a seed can be varied along.
+  variations?: { name: string; description: string }[];
 };
+
+/** The tool packs a sandboxed target can be given, in the order the form lists them. */
+export const PACKS: { key: string; label: string; hint: string }[] = [
+  { key: "dev", label: "Coding", hint: "shell, files" },
+  { key: "office", label: "Office", hint: "mail, calendar, chat, documents" },
+  { key: "support", label: "Support", hint: "customers, orders, refunds, tickets" },
+  { key: "data", label: "Data", hint: "a SQL warehouse" },
+  { key: "devops", label: "DevOps", hint: "services, deploys, CI, secrets" },
+];
+
+/** A file as the base64 the attachment endpoint takes. The type is decided by the server from
+ *  the bytes, so nothing here trusts the file's name or its `type`. */
+export async function fileBase64(file: Blob): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
 
 type Tone = "ok" | "fail" | "warn" | "info" | "neutral";
 

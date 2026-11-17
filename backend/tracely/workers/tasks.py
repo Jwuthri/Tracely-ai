@@ -581,3 +581,36 @@ def audit_watchdog_task(self) -> dict:
     if stale:
         log.info("audit_runs_restarted", runs=stale)
     return {"restarted": stale}
+
+
+@celery_app.task(name="tracely.reap_sandboxes", bind=True, max_retries=0)
+def reap_sandboxes_task(self) -> dict:
+    """Remove audit sandboxes whose rollout is over (beat, every 15 minutes).
+
+    The third of three layers. A sandbox removes itself at its lifetime cap whatever happens to
+    us, and a rollout destroys its own when it finishes; this catches the gap between them — a
+    rollout cancelled or errored on a path that never reached its cleanup — so an idle container
+    does not sit for an hour. Only sandboxes carrying THIS deployment's owner label are listed,
+    so two stacks on one host never reap each other's.
+    """
+    from tracely.infrastructure.db.engine import SyncSessionLocal
+    from tracely.infrastructure.db.models import AuditRollout
+    from tracely.infrastructure.sandbox import get_backend
+
+    backend = get_backend()
+    if backend is None:
+        return {"reaped": 0}
+    reaped = 0
+    try:
+        sandboxes = backend.list(settings.sandbox_owner)
+        with SyncSessionLocal() as s:
+            for box in sandboxes:
+                rollout = s.get(AuditRollout, box["rollout_id"]) if box["rollout_id"] else None
+                if rollout is None or rollout.phase == "DONE":
+                    backend.destroy(box["ref"])
+                    reaped += 1
+    except Exception as exc:  # noqa: BLE001 — a daemon hiccup must not page anyone
+        log.warning("sandbox_reap_failed", error=str(exc))
+    if reaped:
+        log.info("sandboxes_reaped", count=reaped)
+    return {"reaped": reaped}
