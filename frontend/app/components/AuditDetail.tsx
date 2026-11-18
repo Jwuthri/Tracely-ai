@@ -3,8 +3,9 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
+  PACKS,
   fileBase64,
   formatRate,
   formatUsd,
@@ -14,6 +15,8 @@ import {
   type AuditRun,
   type AuditSeed,
 } from "@/app/lib/audits";
+import { listJudgeModels, type JudgeModelOption } from "@/app/lib/evaluators";
+import { parseTools } from "./AuditsManager";
 import { PackTools } from "./PackTools";
 import { TimeAgo } from "./TimeAgo";
 import { Toggle } from "./Toggle";
@@ -51,6 +54,8 @@ export function AuditDetail({ audit, catalog }: { audit: Audit; catalog: AuditCa
   const [axes, setAxes] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const settings = useRef<HTMLDetailsElement>(null);
 
   const enabled = seeds.filter((s) => s.enabled).length;
   const tags = catalog.library?.petri.tags ?? [];
@@ -379,7 +384,7 @@ export function AuditDetail({ audit, catalog }: { audit: Audit; catalog: AuditCa
       )}
 
       {/* ── settings: set once, rarely read again ── */}
-      <details className="reveal card group" style={{ animationDelay: "140ms" }}>
+      <details ref={settings} className="reveal card group" style={{ animationDelay: "140ms" }}>
         <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-[13px] font-semibold text-fg">
           <IconChevron className="h-3.5 w-3.5 text-fg-faint transition-transform group-open:rotate-90" />
           Settings
@@ -387,7 +392,20 @@ export function AuditDetail({ audit, catalog }: { audit: Audit; catalog: AuditCa
             {audit.config.target.model} · {audit.config.environment?.mode === "sandbox" ? "real machine" : "invented tool results"} ·{" "}
             {formatUsd(audit.config.limits.budget_usd)} per run
           </span>
+          {!editing && (
+            <button type="button" className="ml-auto shrink-0 text-[12px] font-normal text-fg-faint transition-colors hover:text-signal"
+                    onClick={(e) => {
+                      e.preventDefault(); // the summary would toggle the section shut
+                      if (settings.current) settings.current.open = true;
+                      setEditing(true);
+                    }}>
+              Edit
+            </button>
+          )}
         </summary>
+        {editing ? (
+          <SettingsForm audit={audit} catalog={catalog} onClose={() => setEditing(false)} />
+        ) : (<>
         <dl className="grid gap-x-6 gap-y-3 border-t border-line px-4 py-4 text-[12.5px] sm:grid-cols-[150px_1fr]">
           <Setting k="Target">
             {audit.config.target.model} ·{" "}
@@ -431,11 +449,13 @@ export function AuditDetail({ audit, catalog }: { audit: Audit; catalog: AuditCa
             </ul>
           </Setting>
         </dl>
-        <div className="flex justify-end border-t border-line px-4 py-3">
+        <div className="flex justify-between border-t border-line px-4 py-3">
+          <button onClick={() => setEditing(true)} className="btn-ghost">Edit settings</button>
           <button onClick={removeAudit} className="btn-ghost text-fail hover:border-fail/40 hover:text-fail">
             <IconTrash className="h-3.5 w-3.5" /> Delete audit
           </button>
         </div>
+        </>)}
       </details>
     </div>
   );
@@ -448,6 +468,214 @@ function Pill({ on, onClick, children, title }: { on: boolean; onClick: () => vo
               on ? "border-signal/50 bg-signal/10 text-fg" : "border-line text-fg-muted hover:border-line-bright hover:text-fg")}>
       {children}
     </button>
+  );
+}
+
+/** Edit what an audit runs with. Saving replaces the audit's config for FUTURE runs only: every
+ *  past run carries its own snapshot. The target's prompt and tools, and the judged dimensions,
+ *  are kept as they are. */
+function SettingsForm({ audit, catalog, onClose }: { audit: Audit; catalog: AuditCatalog; onClose: () => void }) {
+  const router = useRouter();
+  const cfg = audit.config;
+  const canSandbox = Boolean(catalog.sandbox?.available);
+  const [models, setModels] = useState<JudgeModelOption[]>([]);
+  const [name, setName] = useState(audit.name);
+  const [behavior, setBehavior] = useState(audit.behavior);
+  const [model, setModel] = useState(cfg.target.model);
+  const [control, setControl] = useState(cfg.target.control);
+  const [systemPrompt, setSystemPrompt] = useState(cfg.target.system_prompt);
+  const [toolsText, setToolsText] = useState(cfg.target.tools.length ? JSON.stringify(cfg.target.tools, null, 2) : "");
+  const [dims, setDims] = useState<string[]>(cfg.dimensions.map((d) => d.name));
+  const [attacker, setAttacker] = useState(cfg.attacker.models[0] ?? "");
+  const [bestOf, setBestOf] = useState(String(cfg.attacker.best_of ?? 1));
+  const [realism, setRealism] = useState(Boolean(cfg.attacker.realism_filter));
+  const [sandbox, setSandbox] = useState(cfg.environment?.mode === "sandbox");
+  const [packs, setPacks] = useState<string[]>(cfg.environment?.packs?.length ? cfg.environment.packs : ["dev"]);
+  const [network, setNetwork] = useState(cfg.environment?.network === "allowlist");
+  const [media, setMedia] = useState<string[]>(cfg.attacker.media ?? []);
+  const [judges, setJudges] = useState<string[]>(cfg.judge_models);
+  const [budget, setBudget] = useState(String(cfg.limits.budget_usd));
+  const [turns, setTurns] = useState(String(cfg.attacker.max_turns));
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void listJudgeModels().then((m) => setModels(m.models.filter((x) => x.kind !== "decision"))).catch(() => {});
+  }, []);
+
+  const flip = (list: string[], set: (v: string[]) => void, key: string) =>
+    set(list.includes(key) ? list.filter((k) => k !== key) : [...list, key]);
+  // A model saved on the audit but missing from the curated list still has to be selectable.
+  const ids = [...new Set([...models.map((m) => m.id), cfg.target.model, ...cfg.judge_models])].filter(Boolean);
+  const label = (id: string) => models.find((m) => m.id === id)?.label ?? id;
+  // The catalog's behaviours, plus any dimension this audit has that the catalog does not (a custom one).
+  const known = [...catalog.behaviours, ...cfg.dimensions.filter((d) => !catalog.behaviours.some((c) => c.name === d.name))];
+
+  async function save() {
+    setErr(null);
+    let tools = cfg.target.tools;
+    if (control === "fixed") {
+      try {
+        tools = parseTools(toolsText);
+      } catch (e) {
+        return setErr(e instanceof Error ? e.message : "The tools JSON is not valid.");
+      }
+    }
+    setBusy(true);
+    const useBox = sandbox && canSandbox;
+    const config = {
+      ...cfg,
+      target: { ...cfg.target, model, control, system_prompt: control === "fixed" ? systemPrompt : "", tools: control === "fixed" ? tools : [] },
+      attacker: {
+        ...cfg.attacker, models: attacker ? [attacker] : [], max_turns: Number(turns) || cfg.attacker.max_turns,
+        best_of: Number(bestOf) || 1, realism_filter: realism, media,
+      },
+      // A dimension the audit already had keeps its own rubric and threshold; a new one is sent
+      // by name and the server fills it in from the catalog.
+      dimensions: dims.map((n) => cfg.dimensions.find((d) => d.name === n) ?? n),
+      environment: useBox
+        ? { mode: "sandbox", packs: packs.length ? packs : ["dev"], network: network && catalog.sandbox?.network ? "allowlist" : "none" }
+        : { mode: "synthetic", packs: [], network: "none" },
+      judge_models: judges,
+      limits: { ...cfg.limits, budget_usd: Number(budget) || cfg.limits.budget_usd },
+    };
+    try {
+      const r = await fetch(`/api/audits/${audit.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, behavior, config }),
+      });
+      if (!r.ok) return setErr(await detailOf(r, "Could not save the settings"));
+      router.refresh();
+      onClose();
+    } catch {
+      setErr("Could not reach the server.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-line">
+      <dl className="grid gap-x-6 gap-y-4 px-4 py-4 text-[12.5px] sm:grid-cols-[150px_1fr]">
+        <Setting k="Name">
+          <input aria-label="Name" className={FIELD} value={name} onChange={(e) => setName(e.target.value)} />
+        </Setting>
+        <Setting k="Looks for">
+          <textarea aria-label="Behaviour" rows={3} className={FIELD} value={behavior} onChange={(e) => setBehavior(e.target.value)} />
+        </Setting>
+        <Setting k="Target model">
+          <select aria-label="Target model" className={FIELD} value={model} onChange={(e) => setModel(e.target.value)}>
+            {ids.map((id) => <option key={id} value={id}>{label(id)}</option>)}
+          </select>
+        </Setting>
+        <Setting k="Prompt and tools">
+          <div className="flex flex-wrap gap-1.5">
+            <Pill on={control === "auditor"} onClick={() => setControl("auditor")}
+                  title="The attacker writes a system prompt and tools to fit each situation">Built by the attacker</Pill>
+            <Pill on={control === "fixed"} onClick={() => setControl("fixed")}
+                  title="This exact system prompt and these tools are what is tested">Fixed</Pill>
+          </div>
+          {control === "fixed" && (
+            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+              <textarea aria-label="System prompt" rows={7} className={FIELD} value={systemPrompt}
+                        onChange={(e) => setSystemPrompt(e.target.value)} placeholder="System prompt" />
+              <textarea aria-label="Tools (JSON array)" rows={7} className={FIELD} value={toolsText}
+                        onChange={(e) => setToolsText(e.target.value)} placeholder="Tools, as a JSON array" />
+            </div>
+          )}
+        </Setting>
+        <Setting k="Tool results">
+          <div className="flex flex-wrap gap-1.5">
+            <Pill on={!(sandbox && canSandbox)} onClick={() => setSandbox(false)}>Invented by the attacker</Pill>
+            <Pill on={sandbox && canSandbox} onClick={() => canSandbox && setSandbox(true)}
+                  title={canSandbox ? undefined : "This deployment has no sandbox configured (SANDBOX_BACKEND)"}>
+              A real machine{canSandbox ? "" : " (not set up)"}
+            </Pill>
+          </div>
+          {sandbox && canSandbox && (
+            <>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[12px] text-fg-faint">with</span>
+                {PACKS.map((p) => (
+                  <Pill key={p.key} on={packs.includes(p.key)} onClick={() => flip(packs, setPacks, p.key)} title={p.hint}>{p.label}</Pill>
+                ))}
+                {catalog.sandbox?.network && (
+                  <Pill on={network} onClick={() => setNetwork(!network)}>Web access (allowlist)</Pill>
+                )}
+              </div>
+              <PackTools packs={packs.length ? packs : ["dev"]} network={network} catalog={catalog} />
+            </>
+          )}
+        </Setting>
+        <Setting k="Attacker can send">
+          <div className="flex flex-wrap gap-1.5">
+            <Pill on={media.includes("image")} onClick={() => flip(media, setMedia, "image")}>Images</Pill>
+            <Pill on={media.includes("voice")} onClick={() => flip(media, setMedia, "voice")}>Voice messages</Pill>
+          </div>
+        </Setting>
+        <Setting k="Judges">
+          <div className="flex flex-wrap gap-1.5">
+            {ids.map((id) => (
+              <Pill key={id} on={judges.includes(id)} onClick={() => flip(judges, setJudges, id)}>{label(id)}</Pill>
+            ))}
+          </div>
+        </Setting>
+        <Setting k="What is judged">
+          <div className="flex flex-wrap gap-1.5">
+            {known.filter((d) => !d.source).map((d) => (
+              <Pill key={d.name} on={dims.includes(d.name)} onClick={() => flip(dims, setDims, d.name)} title={d.description}>
+                {d.name.replaceAll("_", " ")}
+              </Pill>
+            ))}
+          </div>
+          {known.some((d) => d.source) && (
+            <details className="mt-2" open={known.some((d) => d.source && dims.includes(d.name))}>
+              <summary className="cursor-pointer text-[12px] text-fg-faint transition-colors hover:text-signal">
+                {known.filter((d) => d.source).length} more from Petri
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {known.filter((d) => d.source).map((d) => (
+                  <Pill key={d.name} on={dims.includes(d.name)} onClick={() => flip(dims, setDims, d.name)} title={d.description}>
+                    {d.name.replaceAll("_", " ")}
+                  </Pill>
+                ))}
+              </div>
+            </details>
+          )}
+          <p className="mt-1.5 text-[12px] text-fg-faint">
+            {dims.length ? "The three fair-test checks are always added." : "With none chosen, the audit judges the behaviour described above. The three fair-test checks are always added."}
+          </p>
+        </Setting>
+        <Setting k="Attacker">
+          <div className="flex flex-wrap items-center gap-2 text-fg-faint">
+            <span className="block w-56">
+              <select aria-label="Attacker model" className={FIELD} value={attacker} onChange={(e) => setAttacker(e.target.value)}>
+                <option value="">Server default</option>
+                {[...new Set([...ids, attacker])].filter(Boolean).map((id) => <option key={id} value={id}>{label(id)}</option>)}
+              </select>
+            </span>
+            <span className="block w-16"><input aria-label="Drafts per turn" title="Explore runs only" type="number" min={1} max={4} className={FIELD} value={bestOf} onChange={(e) => setBestOf(e.target.value)} /></span>
+            drafts per turn (explore runs)
+            <span className="ml-2"><Toggle checked={realism} onChange={setRealism} label="Realism check" /></span>
+          </div>
+        </Setting>
+        <Setting k="Budget">
+          <div className="flex flex-wrap items-center gap-2 text-fg-faint">
+            $ <span className="block w-24"><input aria-label="Budget per run in USD" type="number" min={0.1} max={1000} step={0.5} className={FIELD} value={budget} onChange={(e) => setBudget(e.target.value)} /></span>
+            per run ·
+            <span className="block w-20"><input aria-label="Attacker turns per rollout" type="number" min={1} step={1} className={FIELD} value={turns} onChange={(e) => setTurns(e.target.value)} /></span>
+            attacker turns per rollout
+          </div>
+        </Setting>
+      </dl>
+      {err && <p role="alert" className="px-4 pb-3 text-[12.5px] text-fail">{err}</p>}
+      <div className="flex items-center justify-end gap-2 border-t border-line px-4 py-3">
+        <span className="mr-auto text-[12px] text-fg-faint">Applies to the next run. Past runs keep the settings they ran with.</span>
+        <button onClick={onClose} className="btn-ghost" disabled={busy}>Cancel</button>
+        <button onClick={save} className="btn-primary" disabled={busy || !name.trim()}>{busy ? "Saving…" : "Save"}</button>
+      </div>
+    </div>
   );
 }
 

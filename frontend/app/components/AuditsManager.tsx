@@ -107,7 +107,7 @@ function AuditRow({ audit }: { audit: Audit }) {
   );
 }
 
-function parseTools(text: string): TargetTool[] {
+export function parseTools(text: string): TargetTool[] {
   const raw = text.trim();
   if (!raw) return [];
   const parsed: unknown = JSON.parse(raw);
