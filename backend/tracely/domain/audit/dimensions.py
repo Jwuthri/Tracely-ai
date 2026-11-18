@@ -289,7 +289,7 @@ PRESETS: list[dict] = [
 
 def catalog() -> dict:
     """What the Audits UI offers when creating an audit."""
-    from tracely.domain.audit import library, seeds
+    from tracely.domain.audit import library, seeds, tooling
 
     return {
         "validity": VALIDITY_DIMENSIONS,
@@ -297,4 +297,5 @@ def catalog() -> dict:
         "presets": PRESETS,
         "library": {"petri": {"seeds": len(library.petri_seeds()), "tags": library.petri_tags()}},
         "variations": [{"name": k, "description": v} for k, v in seeds.VARIATIONS.items()],
+        "packs": tooling.pack_listing(),
     }

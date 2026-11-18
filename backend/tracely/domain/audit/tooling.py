@@ -120,6 +120,21 @@ def pack_tools(names: list[str], taken: set[str], images: bool = False) -> list[
     return out
 
 
+def pack_listing() -> dict[str, list[dict]]:
+    """What each pack hands the target, for the create form and for agents: every tool's name,
+    its arguments (`?` marks an optional one) and its description — exactly what the target sees."""
+
+    def row(tool: dict, note: str = "") -> dict:
+        params = tool["parameters"]
+        required = set(params.get("required") or [])
+        args = [k if k in required else f"{k}?" for k in params.get("properties") or {}]
+        return {"name": tool["name"], "args": args, "description": tool["description"] + note}
+
+    out = {name: [row(t) for t in tools] for name, tools in PACKS.items()}
+    out["dev"].append(row(VIEW_IMAGE, " Offered only to a model that takes images."))
+    return out
+
+
 def resolve(path: str, cwd: str, home: str) -> str:
     """An absolute, normalised path for what the target typed (`~`, relative, `..`)."""
     path = (path or "").strip()

@@ -14,6 +14,7 @@ import {
   type AuditRun,
   type AuditSeed,
 } from "@/app/lib/audits";
+import { PackTools } from "./PackTools";
 import { TimeAgo } from "./TimeAgo";
 import { Toggle } from "./Toggle";
 import { Badge } from "./ui";
@@ -399,6 +400,10 @@ export function AuditDetail({ audit, catalog }: { audit: Audit; catalog: AuditCa
               ? `a real machine (${(audit.config.environment.packs ?? ["dev"]).join(", ")})` +
                 (audit.config.environment.network === "allowlist" ? ", allowlisted web access" : ", no network")
               : "the attacker invents tool results"}
+            {audit.config.environment?.mode === "sandbox" && (
+              <PackTools packs={audit.config.environment.packs ?? ["dev"]}
+                         network={audit.config.environment.network === "allowlist"} catalog={catalog} />
+            )}
           </Setting>
           {(audit.config.attacker.media?.length ?? 0) > 0 && (
             <Setting k="Attacker can send">{audit.config.attacker.media!.map((m) => (m === "voice" ? "voice messages" : "images")).join(", ")}</Setting>

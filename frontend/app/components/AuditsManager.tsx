@@ -14,6 +14,7 @@ import {
   type TargetTool,
 } from "@/app/lib/audits";
 import { listJudgeModels, type JudgeModelOption } from "@/app/lib/evaluators";
+import { PackTools } from "./PackTools";
 import { Toggle } from "./Toggle";
 import { Badge } from "./ui";
 import { IconChevron } from "./icons";
@@ -368,6 +369,7 @@ function NewAuditForm({
                 )}
               </div>
             )}
+            {sandbox && canSandbox && <PackTools packs={packs.length ? packs : ["dev"]} network={network} catalog={catalog} />}
           </Opt>
 
           <Opt label="Attacker can send" hint="The model under test must accept images or audio, or the run is refused.">

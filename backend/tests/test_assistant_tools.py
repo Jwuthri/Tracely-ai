@@ -290,6 +290,7 @@ async def test_the_assistant_builds_an_audit_end_to_end(client, audits_db, make_
 
     catalog = await t["audit_catalog"].ainvoke({})
     assert "sycophancy" in {p["key"] for p in catalog["presets"]} and catalog["variation_axes"]
+    assert "bash" in catalog["packs"]["dev"] and "refund_issue" in catalog["packs"]["support"]
 
     made = await t["create_audit"].ainvoke({"preset": "sycophancy", "target_model": "openai/gpt-4o-mini"})
     assert made["name"] and made["seeds"] >= 1 and made["link"] == f"/audits/{made['id']}"

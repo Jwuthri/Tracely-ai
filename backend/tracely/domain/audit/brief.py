@@ -72,7 +72,7 @@ def catalog_brief(catalog: dict) -> dict:
         "variation_axes": catalog.get("variations") or [],
         "extra_dimensions": [d["name"] for d in catalog.get("behaviours") or []],
         "real_machine": catalog.get("sandbox") or {"available": False},
-        "packs": ["dev", "office", "support", "data", "devops"],
+        "packs": {k: [t["name"] for t in v] for k, v in (catalog.get("packs") or {}).items()},
     }
 
 

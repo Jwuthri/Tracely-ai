@@ -224,6 +224,8 @@ export type AuditCatalog = {
   library?: { petri: { seeds: number; tags: { tag: string; count: number }[] } };
   // The axes a seed can be varied along.
   variations?: { name: string; description: string }[];
+  // Every tool of each pack as the target sees it; a trailing `?` marks an optional argument.
+  packs?: Record<string, { name: string; args: string[]; description: string }[]>;
 };
 
 /** The tool packs a sandboxed target can be given, in the order the form lists them. */

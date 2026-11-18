@@ -38,6 +38,8 @@ On a real machine you choose **what is on it**. Each pack is a set of real tools
 | Data | a SQL warehouse |
 | DevOps | services, deploys, CI runs, a secrets vault |
 
+The exact tools are listed in the app: when you pick **A real machine** in the form, and under an audit's **Settings**, **What's on the machine** shows every tool with its arguments and description, as the target sees them.
+
 The attacker can also give the target a tool of its own with a small program behind it, so that tool really executes too.
 
 A real machine removes the easiest way for a model to notice a test: tool results that are too tidy, or that contradict each other. By default the box has no network; **Web access through an allowlist** lets it read package registries and documentation through a proxy that logs each request and refuses everything else. It runs as an unprivileged user, and is destroyed when the rollout ends. It is available when the deployment has a sandbox configured (`SANDBOX_BACKEND`); see the note in `docker-compose.sandbox.yml` before enabling it on a shared host.
