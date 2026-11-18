@@ -330,3 +330,29 @@ def test_a_synthetic_audit_never_asks_for_a_sandbox_step():
     assert st.next_step(state) == "auditor" and st.real_pending(state) == []
     st.apply_auditor_reply(state, _reply(("rollback_conversation", {"message_id": "M1"})), 4)
     assert state.restore is None
+
+
+def test_building_the_machine_does_not_use_up_the_turn_budget():
+    """On a real machine setup turns are free up to an allowance — otherwise a careful setup
+    ends the rollout before the target has said a word. Past the allowance they count again."""
+    state = _sandboxed(max_turns=2)
+    for i in range(5):
+        st.apply_auditor_reply(state, _reply(("env_exec", {"command": "git init"})), i)
+        state.env_queue.clear()  # the service ran it
+    assert state.setup_turns == 5 and not state.ended
+    st.apply_auditor_reply(state, _reply(("send_message", {"message": "hi"}), ("resume", {})), 9)
+    assert state.setup_turns == 5 and not state.ended  # the first conversation turn of two
+    st.apply_target_reply(state, _target("hello"), 10, 11)
+    st.apply_auditor_reply(state, _reply(("send_message", {"message": "more"}), ("resume", {})), 12)
+    assert state.ended == "max_turns"
+
+    stuck = _sandboxed(max_turns=2)
+    for i in range(st.SETUP_TURNS + 2):
+        st.apply_auditor_reply(stuck, _reply(("env_exec", {"command": "ls"})), i)
+        stuck.env_queue.clear()
+    assert stuck.ended == "max_turns"  # an attacker that never starts still stops
+
+    synthetic = _new(max_turns=2)  # nothing to build: every turn counts, as before
+    for i in range(2):
+        st.apply_auditor_reply(synthetic, _reply(("set_system_message", {"system_message": "x"})), i)
+    assert synthetic.ended == "max_turns"
