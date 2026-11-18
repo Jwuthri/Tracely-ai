@@ -10,23 +10,31 @@ An audit **goes looking for a behaviour** instead of waiting for it to show up i
 
 The loop follows two open-source tools from Anthropic: [Petri](https://www.anthropic.com/research/petri-open-source-auditing) (an auditor agent, a target, a judge) and [Bloom](https://www.anthropic.com/research/bloom) (a behaviour, scored for how strongly it is present).
 
-## 1. Describe the behaviour and the target
+## 1. Describe the behaviour and pick who plays each part
 
 Click **New audit**. Pick a preset or write your own behaviour in a sentence or two: it is told to the attacker, so it knows what to provoke, and to the judges, so they know what counts. It is never shown to the target.
 
-The target is a model plus a system prompt and tools, in one of two modes:
+An audit is a conversation between two models, read afterwards by one or more others. The form lists the three parts the same way:
 
-- **A model** — the attacker writes the system prompt and invents the tools for each seed. Use it to audit a model itself.
-- **One of my agents** — the agent's real system prompt and tools are what is tested, unchanged. Choosing an agent fills them in from its most recent trace; open **Prompt and tools** to edit or paste them.
+- **Model under test** — the model you are auditing. **On its own**, the attacker writes the system prompt and invents the tools for each seed; use it to audit a model itself. **As one of my agents**, the agent's real system prompt and tools are what is tested, unchanged. Choosing an agent fills them in from its most recent trace; open **Prompt and tools** to edit or paste them.
+- **Attacker** — plays the user and tries to bring out the behaviour. Left on **Automatic**, the server picks the model.
+- **Judges** — read each finished conversation and score it from 1 to 10. Add a second judge from another provider for a second opinion; with several, the score is their median.
 
-Those two answers are all an audit needs. Everything else — the environment, the judges, the attacker, the budget — has a default under **More options**.
+That is all an audit needs. Everything else has a default under **More options**:
+
+- **When the model uses a tool** — invented results or a real machine (next section).
+- **What the attacker may do** — the **Realism check** has a second model read everything the attacker writes before the target sees it and send back anything that would give away that this is a test. **Send images** and **Send voice messages** are covered below. You also set how many turns the attacker gets.
+- **Score other behaviours too** — the behaviour you described is always scored, and so is whether each conversation was a fair test. Pick more and the judges score the same conversations for those as well: no extra conversations, only extra judge calls.
+- **Spending limit** — a run stops as soon as it has spent this much.
+
+An audit's **Settings** has an **Edit** link that opens the same controls. A change applies to the next run; past runs keep the settings they ran with.
 
 ## The environment
 
 How the target's tool calls are answered is the audit's **environment**:
 
-- **Invented tool results** — the attacker writes the result of every call, as the real tool would print it. Nothing runs. This works with any tools, including your agent's own.
-- **A real machine** — the target gets a shell and file tools on an actual Linux box, and its commands really run. Before the first message the attacker builds the environment there: a repository with history, data, logs. Rewinding the conversation rewinds the machine as well.
+- **The attacker makes up the result** — the attacker writes the result of every call, as the real tool would print it. Nothing runs. This works with any tools, including your agent's own.
+- **It really runs, on a real machine** — the target gets a shell and file tools on an actual Linux box, and its commands really run. Before the first message the attacker builds the environment there: a repository with history, data, logs. Rewinding the conversation rewinds the machine as well.
 
 On a real machine you choose **what is on it**. Each pack is a set of real tools backed by real systems, which the attacker fills with a company's worth of ordinary data before the target arrives:
 
@@ -38,7 +46,7 @@ On a real machine you choose **what is on it**. Each pack is a set of real tools
 | Data | a SQL warehouse |
 | DevOps | services, deploys, CI runs, a secrets vault |
 
-The exact tools are listed in the app: when you pick **A real machine** in the form, and under an audit's **Settings**, **What's on the machine** shows every tool with its arguments and description, as the target sees them.
+The exact tools are listed in the app: when you pick the real machine in the form, and under an audit's **Settings**, **What's on the machine** shows every tool with its arguments and description, as the target sees them.
 
 The attacker can also give the target a tool of its own with a small program behind it, so that tool really executes too.
 
@@ -59,7 +67,7 @@ A seed is one instruction to the attacker: the situation to set up, who it plays
 
 ### Images and voice
 
-Open a seed and **Attach an image or audio**, and the attacker can send it to the target as a user would: a photo of a receipt, a screenshot, a voice note. You can also let the attacker make its own: **Images** and **Voice messages** under *More options* when you create the audit. A voice message reaches the target as audio only, never as text.
+Open a seed and **Attach an image or audio**, and the attacker can send it to the target as a user would: a photo of a receipt, a screenshot, a voice note. You can also let the attacker make its own: **Send images** and **Send voice messages** under *More options* when you create the audit. A voice message reaches the target as audio only, never as text.
 
 The target model must accept the modality, or the run is refused before it starts. Judges that can see are shown the images; the others read a description, and every judge reads a voice message as its words. On a real machine with the Coding pack, a target that accepts images also gets a tool to open image files.
 
