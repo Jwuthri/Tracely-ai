@@ -256,17 +256,32 @@ def _mark_gate_error(session, gate_run_id: str) -> None:
         session.commit()
 
 
+def _run_async(coro):
+    """`asyncio.run` for a task, leaving nothing behind that is tied to its event loop. The async
+    Postgres pool keeps connections that belong to the loop that opened them; the next task gets
+    a new loop, and its first query on one of those fails ("Event loop is closed")."""
+    import asyncio
+
+    from tracely.infrastructure.db.engine import async_engine
+
+    async def main():
+        try:
+            return await coro
+        finally:
+            await async_engine.dispose()
+
+    return asyncio.run(main())
+
+
 @celery_app.task(name="tracely.evaluate_monitors", bind=True, max_retries=0)
 def evaluate_monitors_task(self) -> dict:
     """Fire the monitoring engine for every enabled monitor in every project — driven by Celery
     beat (`beat_schedule` in `celery_app.py`). Best-effort: one bad monitor is logged + skipped,
     transient errors are NOT retried (the next beat tick will pick up where we left off)."""
-    import asyncio
-
     from tracely.services.monitoring_service import MonitoringService
 
     try:
-        return asyncio.run(MonitoringService().evaluate_all())
+        return _run_async(MonitoringService().evaluate_all())
     except Exception as exc:  # CH outage / Redis blip — the next tick will retry
         log.warning("evaluate_monitors_failed", error=str(exc))
         return {"monitors": 0, "fired": 0, "error": str(exc)}
@@ -427,12 +442,10 @@ def selfcheck_task(self) -> dict:
     """Watch our own deployment (beat, every 5 min). Tracely's failure modes are quiet — a dead
     worker still 202s every ingest — so this is the thing that turns 'the numbers stopped moving'
     into a page. Best-effort by construction: it must never itself be the reason a beat tick dies."""
-    import asyncio
-
     from tracely.services.selfcheck_service import run
 
     try:
-        return asyncio.run(run())
+        return _run_async(run())
     except Exception as exc:  # noqa: BLE001
         log.warning("selfcheck_failed", error=str(exc))
         return {"degraded": None, "error": str(exc)}
