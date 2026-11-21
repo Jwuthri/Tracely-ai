@@ -83,13 +83,14 @@ function AuditRow({ audit }: { audit: Audit }) {
             <div
               className={clsx(
                 "font-display text-[20px] font-bold leading-none",
-                rate == null ? "text-fg-faint" : rate > 0 ? "text-fail" : "text-ok",
+                // an explore run's rollouts learn from each other: shown, but never as a measured rate
+                rate == null || run.mode === "explore" ? "text-fg-faint" : rate > 0 ? "text-fail" : "text-ok",
               )}
             >
               {run.status === "RUNNING" ? "…" : formatRate(rate)}
             </div>
             <div className="mt-1 font-mono text-[10.5px] uppercase tracking-wide text-fg-faint">
-              {run.status === "RUNNING" ? `running ${run.done}/${run.total}` : "elicitation"}
+              {run.status === "RUNNING" ? `running ${run.done}/${run.total}` : run.mode === "explore" ? "explore run" : "elicitation"}
             </div>
           </div>
         ) : (
