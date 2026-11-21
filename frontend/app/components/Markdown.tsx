@@ -4,7 +4,7 @@ import { createElement, type ReactNode } from "react";
 // hand-rolls its primitives). Builds React nodes — text is escaped by React, so there's no
 // dangerouslySetInnerHTML / XSS surface.
 //
-// Block: fenced code, ATX headings, hr, blockquote, ordered/unordered lists, paragraphs.
+// Block: fenced code, ATX headings, hr, blockquote, ordered/unordered lists, pipe tables, paragraphs.
 // Inline: **bold**, *italic*, `code`, [links](url). Emphasis is ASTERISK-only — underscores are
 // left literal so identifiers (tool_call_names, snake_case) in prompts don't get italicised.
 
@@ -67,8 +67,12 @@ const HEAD_CLS = [
   "text-[11px] font-semibold text-fg-faint mt-1 mb-0.5",
 ];
 
-const SPECIAL = /^(```|#{1,6}\s|>\s?|\s*[-*+]\s+|\s*\d+\.\s+)/;
+const SPECIAL = /^(```|#{1,6}\s|>\s?|\s*[-*+]\s+|\s*\d+\.\s+|\s*\|)/;
 const HR = /^\s*([-*_])\1{2,}\s*$/;
+const ROW = /^\s*\|/;
+const DIVIDER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+const cells = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 
 function parseBlocks(src: string): ReactNode[] {
   const lines = src.replace(/\r\n/g, "\n").split("\n");
@@ -127,6 +131,44 @@ function parseBlocks(src: string): ReactNode[] {
         <blockquote key={k++} className="border-l-2 border-line pl-2.5 text-fg-faint">
           {parseBlocks(buf.join("\n"))}
         </blockquote>,
+      );
+      continue;
+    }
+
+    // A pipe table. The first row is the header only when a |---| line follows it; every line
+    // that starts with a pipe is consumed here, so a stray one can never stall the loop.
+    if (ROW.test(line)) {
+      const rows: string[][] = [];
+      while (i < lines.length && ROW.test(lines[i])) rows.push(cells(lines[i++]));
+      const head = rows.length > 1 && DIVIDER.test(`|${rows[1].join("|")}|`) ? rows.splice(0, 2)[0] : null;
+      const tk = k++;
+      blocks.push(
+        <div key={tk} className="my-1.5 overflow-x-auto">
+          <table className="w-full border-collapse text-left text-[11px] leading-snug text-fg-muted">
+            {head && (
+              <thead>
+                <tr>
+                  {head.map((c, j) => (
+                    <th key={j} className="whitespace-nowrap border-b border-line px-1.5 py-1 font-semibold text-fg">
+                      {inline(c, `th${tk}-${j}`)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+            )}
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri}>
+                  {r.map((c, j) => (
+                    <td key={j} className="border-b border-line/50 px-1.5 py-1 align-top">
+                      {inline(c, `td${tk}-${ri}-${j}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
       );
       continue;
     }
